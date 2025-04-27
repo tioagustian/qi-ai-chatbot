@@ -6,7 +6,9 @@ import {
   getAvailablePersonalities, 
   getMoodDescription, 
   getPersonalityDescription,
-  MOODS
+  MOODS,
+  getCharacterKnowledge,
+  PERSONALITIES
 } from './personalityService.js';
 
 // Base URL for OpenRouter API

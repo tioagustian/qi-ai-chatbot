@@ -207,6 +207,10 @@ async function executeCommand(sock, message, commandData, db) {
         const knowledgeResult = await setCharacterKnowledge(db, args.join(' '));
         return knowledgeResult.message;
         
+      case 'removecharacter':
+        const removeResult = await setCharacterKnowledge(db, '');
+        return removeResult.message;
+        
       default:
         return `Perintah tidak dikenal: ${command}. Gunakan !help untuk bantuan.`;
     }
@@ -419,6 +423,7 @@ function getHelpText() {
 !setname [nama] - Mengatur nama bot
 !clear - Menghapus konteks percakapan
 !setcharacter [deskripsi] - Mengatur pengetahuan karakter
+!removecharacter - Menghapus pengetahuan karakter
 
 *Pengaturan Mood:*
 !setmood [mood] - Mengatur mood bot
