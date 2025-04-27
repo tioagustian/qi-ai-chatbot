@@ -418,6 +418,7 @@ function getHelpText() {
 *Pengaturan Bot:*
 !setname [nama] - Mengatur nama bot
 !clear - Menghapus konteks percakapan
+!setcharacter [deskripsi] - Mengatur pengetahuan karakter
 
 *Pengaturan Mood:*
 !setmood [mood] - Mengatur mood bot
@@ -454,6 +455,12 @@ function getStatusText(db) {
     openrouterConfigured: !!process.env.OPENROUTER_API_KEY,
     geminiConfigured: !!process.env.GEMINI_API_KEY,
     togetherConfigured: !!process.env.TOGETHER_API_KEY,
+    enhancedMemory: db.data.config.enhancedMemoryEnabled || false,
+    maxContextMessages: db.data.config.maxContextMessages || 100,
+    maxRelevantMessages: db.data.config.maxRelevantMessages || 20,
+    maxCrossChatMessages: db.data.config.maxCrossChatMessages || 8,
+    maxImageAnalysisMessages: db.data.config.maxImageAnalysisMessages || 3,
+    maxTopicSpecificMessages: db.data.config.maxTopicSpecificMessages || 10
   };
   
   // Format status as text
@@ -468,7 +475,13 @@ function getStatusText(db) {
 • Model: ${status.model}
 • OpenRouter API: ${status.openrouterConfigured ? '✅ Terkonfigurasi' : '❌ Belum dikonfigurasi'} 
 • Gemini API: ${status.geminiConfigured ? '✅ Terkonfigurasi' : '❌ Belum dikonfigurasi'}
-• Together.AI API: ${status.togetherConfigured ? '✅ Terkonfigurasi' : '❌ Belum dikonfigurasi'}`;
+• Together.AI API: ${status.togetherConfigured ? '✅ Terkonfigurasi' : '❌ Belum dikonfigurasi'}
+• Enhanced Memory: ${status.enhancedMemory ? '✅ Aktif' : '❌ Nonaktif'}
+• Max Context Messages: ${status.maxContextMessages}
+• Max Relevant Messages: ${status.maxRelevantMessages}
+• Max Cross-Chat Messages: ${status.maxCrossChatMessages}
+• Max Image Analysis Messages: ${status.maxImageAnalysisMessages}
+• Max Topic-Specific Messages: ${status.maxTopicSpecificMessages}`;
 }
 
 // Get model selection text
@@ -553,7 +566,10 @@ function getDebugInfo(db, chatId, sender) {
       `Bot ID: ${botId}`,
       `Chat ID: ${chatId}`,
       `Chat Type: ${isGroup ? 'Group' : 'Private'}`,
-      `Sender ID: ${sender}`
+      `Sender ID: ${sender}`,
+      `Provider: ${db.data.config.defaultProvider || 'openrouter'}`,
+      `Model: ${db.data.config.model || 'N/A'}`,
+      `Enhanced Memory: ${db.data.config.enhancedMemoryEnabled ? 'Enabled' : 'Disabled'}`
     ];
     
     // Collect chat info
@@ -568,6 +584,18 @@ function getDebugInfo(db, chatId, sender) {
       if (chat.lastIntroduction) {
         const lastIntro = new Date(chat.lastIntroduction);
         chatInfo.push(`Last Introduction: ${lastIntro.toLocaleString()}`);
+      }
+      
+      // Add image analysis info if available
+      if (db.data.imageAnalysis[chatId]) {
+        const imageCount = Object.keys(db.data.imageAnalysis[chatId]).length;
+        chatInfo.push(`Image Analysis Count: ${imageCount}`);
+      }
+      
+      // Add topic memory info if available
+      if (db.data.topicMemory[chatId]) {
+        const topicCount = Object.keys(db.data.topicMemory[chatId]).length;
+        chatInfo.push(`Topic Memory Count: ${topicCount}`);
       }
     } else {
       chatInfo.push('No conversation data found for this chat');

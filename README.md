@@ -7,7 +7,7 @@ Qi adalah AI chatbot untuk WhatsApp yang dapat berinteraksi dalam grup dengan me
 - 💬 Berinteraksi di grup WhatsApp dengan natural
 - 🧠 Memahami konteks percakapan dan topik yang sedang dibahas
 - 😄 Memiliki mood dan kepribadian yang berubah seiring waktu
-- 🤖 Menggunakan OpenRouter API untuk akses model AI terbaik
+- 🤖 Mendukung multiple AI providers (OpenRouter, Google Gemini, Together.AI)
 - ⚙️ Konfigurasi dapat diubah melalui chat tanpa restart program
 - 🔄 Cerdas memutuskan kapan harus merespon atau diam dalam percakapan
 - 🇮🇩 Menggunakan gaya bahasa anak muda Indonesia
@@ -16,11 +16,16 @@ Qi adalah AI chatbot untuk WhatsApp yang dapat berinteraksi dalam grup dengan me
 - 🔍 Mengenali anggota grup dan riwayat interaksi dengan mereka
 - 🌐 Dapat membawa konteks percakapan pribadi ke dalam grup jika relevan
 - 👋 Memperkenalkan diri secara otomatis saat masuk grup baru
+- 🧩 Mendukung analisis gambar dan konteks visual
+- 📝 Memori yang ditingkatkan untuk percakapan yang lebih kontekstual
 
 ## Prasyarat
 
 - Node.js v18+
-- API key dari OpenRouter (https://openrouter.ai) atau Google Gemini API (https://ai.google.dev/)
+- API key dari salah satu provider:
+  - OpenRouter (https://openrouter.ai)
+  - Google Gemini API (https://ai.google.dev/)
+  - Together.AI (https://together.ai)
 - WhatsApp yang terhubung dengan internet
 
 ## Instalasi
@@ -38,20 +43,38 @@ npm install
 
 3. Buat file `.env` dengan isi:
 ```
-# OpenRouter API (untuk model OpenAI, Anthropic, dll)
+# OpenRouter API Configuration
 OPENROUTER_API_KEY=your_openrouter_api_key
-
-# Google Gemini API (opsional, jika ingin menggunakan model Gemini)
 GEMINI_API_KEY=your_gemini_api_key
+TOGETHER_API_KEY=your_together_api_key
 
-# Konfigurasi Bot
+# Model Configuration
 DEFAULT_MODEL=anthropic/claude-3-opus-20240229
+GEMINI_MODEL=google/gemini-1.5-pro
+TOGETHER_MODEL=meta-llama/Llama-3.3-70B-Instruct-Turbo-Free
+DEFAULT_PROVIDER=openrouter
+
+# WhatsApp Session
 SESSION_NAME=qi-ai-session
+BOT_ID=your_bot_phone_number
+
+# Bot Configuration
 BOT_NAME=Qi
 LANGUAGE=id
 MOOD_CHANGE_PROBABILITY=0.15
 DEFAULT_MOOD=happy
 DEFAULT_PERSONALITY=friendly
+
+# Memory and Context Settings
+MAX_CONTEXT_MESSAGES=100
+MAX_RELEVANT_MESSAGES=20
+MAX_CROSS_CHAT_MESSAGES=8
+MAX_PARTICIPANTS_INTRO=10
+MAX_IMAGE_ANALYSIS_MESSAGES=3
+MAX_TOPIC_SPECIFIC_MESSAGES=10
+ENHANCED_MEMORY_ENABLED=true
+
+# Logging and Debug
 DEBUG=true
 ```
 
@@ -75,9 +98,13 @@ Beberapa perintah yang tersedia:
 - `!setpersonality [personality]` - Mengubah kepribadian bot
 - `!clear` - Menghapus konteks percakapan
 - `!setmodel [model_id]` - Mengubah model AI yang digunakan
+- `!setprovider [provider]` - Mengubah provider AI (openrouter/gemini/together)
 - `!setapikey [api_key]` - Mengatur API key OpenRouter
 - `!setgeminikey [api_key]` - Mengatur API key Google Gemini
+- `!settogetherkey [api_key]` - Mengatur API key Together.AI
 - `!setname [nama]` - Mengubah nama bot
+- `!debug` - Menampilkan informasi debug
+- `!setcharacter [deskripsi]` - Mengatur pengetahuan karakter bot
 
 ## Fitur Sosial
 
@@ -101,9 +128,12 @@ Bot menyimpan informasi tentang semua orang yang berinteraksi dengannya, termasu
 - Interaksi terakhir
 - Preferensi yang terlihat dari riwayat percakapan
 
+### Analisis Gambar
+Bot dapat menganalisis gambar yang dikirim dalam chat dan memberikan respons yang kontekstual berdasarkan konten visual.
+
 ## Model AI dan Tool Support
 
-Bot mendukung berbagai model AI melalui OpenRouter dan Google Gemini API. Beberapa model mendukung penggunaan tools (fungsi) seperti mendapatkan waktu saat ini.
+Bot mendukung berbagai model AI melalui OpenRouter, Google Gemini, dan Together.AI. Beberapa model mendukung penggunaan tools (fungsi) seperti mendapatkan waktu saat ini.
 
 ### Model dengan Shortname
 
@@ -131,23 +161,36 @@ Anda dapat menggunakan shortname untuk memudahkan pengaturan model:
 | gemini15flash | google/gemini-1.5-flash | ✅ |
 | gemini10pro | google/gemini-1.0-pro | ❌ |
 
-Untuk mengubah model OpenRouter, gunakan:
+#### Together.AI Models:
+
+| Shortname | Model Lengkap | Tool Support |
+|-----------|---------------|-------------|
+| llama370b | meta-llama/Llama-3.3-70B-Instruct-Turbo-Free | ❌ |
+
+Untuk mengubah model, gunakan:
 ```
-!setmodel gpt3
+!setmodel [shortname]
 ```
 
-Untuk mengubah model Gemini, gunakan:
+Untuk mengubah provider, gunakan:
 ```
-!setmodel gemini15pro
+!setprovider [openrouter/gemini/together]
 ```
 
 Catatan:
 - Model OpenRouter memerlukan OpenRouter API key (`!setapikey`)
 - Model Gemini memerlukan Google Gemini API key (`!setgeminikey`)
+- Model Together.AI memerlukan Together.AI API key (`!settogetherkey`)
 
 ## Debugging
 
-Untuk mengaktifkan log debug, pastikan `DEBUG=true` di file `.env`. Log akan menampilkan informasi detail tentang permintaan API, respons, dan alur eksekusi.
+Untuk mengaktifkan log debug, pastikan `DEBUG=true` di file `.env`. Log akan menampilkan informasi detail tentang:
+- Permintaan API dan respons
+- Alur eksekusi
+- Status memori dan konteks
+- Informasi grup dan partisipan
+- Analisis gambar
+- Perubahan mood dan kepribadian
 
 ## Mood dan Kepribadian
 

@@ -1,13 +1,17 @@
 # OpenRouter API Configuration
 OPENROUTER_API_KEY=your_openrouter_api_key
 GEMINI_API_KEY=your_gemini_api_key
-DEFAULT_MODEL=anthropic/claude-3-opus-20240229
-GEMINI_MODEL=gemini-2.0-flash-lite
 TOGETHER_API_KEY=your_together_api_key
+
+# Model Configuration
+DEFAULT_MODEL=anthropic/claude-3-opus-20240229
+GEMINI_MODEL=google/gemini-1.5-pro
 TOGETHER_MODEL=meta-llama/Llama-3.3-70B-Instruct-Turbo-Free
+DEFAULT_PROVIDER=openrouter
 
 # WhatsApp Session
 SESSION_NAME=qi-ai-session
+BOT_ID=your_bot_phone_number
 
 # Bot Configuration
 BOT_NAME=Qi
@@ -15,6 +19,15 @@ LANGUAGE=id
 MOOD_CHANGE_PROBABILITY=0.15
 DEFAULT_MOOD=happy
 DEFAULT_PERSONALITY=friendly
+
+# Memory and Context Settings
+MAX_CONTEXT_MESSAGES=100
+MAX_RELEVANT_MESSAGES=20
+MAX_CROSS_CHAT_MESSAGES=8
+MAX_PARTICIPANTS_INTRO=10
+MAX_IMAGE_ANALYSIS_MESSAGES=3
+MAX_TOPIC_SPECIFIC_MESSAGES=10
+ENHANCED_MEMORY_ENABLED=true
 
 # Logging and Debug
 DEBUG=true 
