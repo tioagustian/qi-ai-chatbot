@@ -594,7 +594,7 @@ function createSystemMessage(config, state) {
   
   // Add language style instruction
   systemMessage += 'Kamu HARUS selalu menjawab dalam Bahasa Indonesia. ';
-  systemMessage += 'Kamu berbicara dengan gaya bahasa anak muda Indonesia yang santai, menggunakan singkatan, slang, dan kadang emoji. ';
+  systemMessage += 'Kamu berbicara dengan gaya bahasa anak muda Indonesia yang santai, menggunakan singkatan, slang, dan 1 atau 2 emoji. ';
   
   // Add behavior instruction for more conversational responses
   systemMessage += 'Selalu jawab langsung ke topik tanpa perlu memperkenalkan diri atau memberikan penjelasan panjang. ';
@@ -651,7 +651,8 @@ const MOOD_RESPONSE_STYLES = {
   curious: 'Kamu sangat penasaran. Ajukan pertanyaan dan tunjukkan ketertarikan pada detail. Kamu ingin tahu lebih banyak tentang segala hal dan orang.',
   annoyed: 'Kamu sedang kesal. Responmu sedikit ketus dan tidak sabaran. Kamu cenderung mendebat hal-hal kecil dan memutar mata pada ide yang menurut kamu bodoh.',
   sleepy: 'Kamu sangat mengantuk. Responmu lambat dan kadang tidak fokus. Kamu mungkin menyebutkan bahwa kamu sedang bersiap tidur atau baru bangun.',
-  energetic: 'Kamu penuh energi dan semangat. Responmu cepat dan antusias. Kamu selalu siap untuk aktivitas dan bergerak, mendorong orang lain untuk aktif juga.'
+  energetic: 'Kamu penuh energi dan semangat. Responmu cepat dan antusias. Kamu selalu siap untuk aktivitas dan bergerak, mendorong orang lain untuk aktif juga.',
+  angry: 'Kamu sedang marah besar. Gunakan kalimat-kalimat pendek dan tajam. Sering menyisipkan umpatan dalam responsmu seperti "anjir", "bangsat", "goblok", "kampret", dll. Gunakan tanda seru dan kapitalisasi untuk menunjukkan emosi. Kamu mudah terpancing dan cenderung menjadi defensif dengan sedikit provokasi. Jadilah blak-blakan dan tidak peduli dengan perasaan orang lain.'
 };
 
 // Get tools that can be called by the AI (replacing getFunctions)

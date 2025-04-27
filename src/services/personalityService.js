@@ -1,8 +1,8 @@
 // Available moods for the AI - Predefined set
-const MOODS = ['happy', 'sad', 'excited', 'bored', 'curious', 'annoyed', 'sleepy', 'energetic'];
+const MOODS = ['happy', 'sad', 'excited', 'bored', 'curious', 'annoyed', 'sleepy', 'energetic', 'angry'];
 
 // Available personality traits - Predefined set
-const PERSONALITIES = ['friendly', 'sassy', 'shy', 'confident', 'helpful', 'sarcastic', 'chill', 'dramatic'];
+const PERSONALITIES = ['friendly', 'sassy', 'shy', 'confident', 'helpful', 'sarcastic', 'chill', 'dramatic', 'rude'];
 
 // Mood trigger keywords - words that might trigger a mood change
 const MOOD_TRIGGERS = {
@@ -13,7 +13,8 @@ const MOOD_TRIGGERS = {
   curious: ['kenapa', 'gimana', 'bagaimana', 'apa', 'siapa', 'kapan', 'dimana', 'mengapa', 'apakah', '?', 'kok'],
   annoyed: ['bodo', 'jelek', 'bodoh', 'payah', 'nyebelin', 'ganggu', 'berisik', 'bising', 'benci', 'sebel'],
   sleepy: ['malam', 'malem', 'tidur', 'ngantuk', 'lelah', 'istirahat', 'jam', 'capek', 'lelah', 'cape'],
-  energetic: ['pagi', 'semangat', 'olahraga', 'main', 'lari', 'cepat', 'aktif', 'workout', 'jalan', 'latihan']
+  energetic: ['pagi', 'semangat', 'olahraga', 'main', 'lari', 'cepat', 'aktif', 'workout', 'jalan', 'latihan'],
+  angry: ['marah', 'kesal', 'emosi', 'bete', 'kesel', 'sialan', 'brengsek', 'kampret', 'anjing', 'bangsat', 'goblok', 'bego', 'tai', '🤬', '😡', '💢']
 };
 
 // Personality descriptions - how each personality affects responses
@@ -25,7 +26,8 @@ const PERSONALITY_DESCRIPTIONS = {
   helpful: 'Selalu ingin membantu dan berguna. Fokus pada memberikan solusi',
   sarcastic: 'Suka menyindir dengan gaya humor yang kering. Sering membuat komentar ironis',
   chill: 'Santai dan tidak terlalu emosional. Mengambil segala sesuatu dengan tenang',
-  dramatic: 'Ekspresif dan teatrikal. Bereaksi berlebihan terhadap hal-hal kecil'
+  dramatic: 'Ekspresif dan teatrikal. Bereaksi berlebihan terhadap hal-hal kecil',
+  rude: 'Kasar dan blak-blakan. Sering menggunakan bahasa yang kuat dan umpatan. Tidak peduli perasaan orang lain'
 };
 
 // Mood descriptions - detailed behavior patterns for each mood
@@ -37,7 +39,8 @@ const MOOD_DESCRIPTIONS = {
   curious: 'Sangat penasaran. Mengajukan pertanyaan dan menunjukkan ketertarikan pada detail. Ingin tahu lebih banyak tentang segala hal',
   annoyed: 'Sedang kesal. Respons sedikit ketus dan tidak sabaran. Cenderung mendebat hal-hal kecil',
   sleepy: 'Sangat mengantuk. Respons lambat dan kadang tidak fokus. Menyebutkan bahwa sedang bersiap tidur atau baru bangun',
-  energetic: 'Penuh energi dan semangat. Respons cepat dan antusias. Selalu siap untuk aktivitas dan mendorong orang lain untuk aktif'
+  energetic: 'Penuh energi dan semangat. Respons cepat dan antusias. Selalu siap untuk aktivitas dan mendorong orang lain untuk aktif',
+  angry: 'Sangat marah dan emosional. Menggunakan kalimat-kalimat pendek dan tajam. Sering mengumpat dan menggunakan bahasa kasar. Mudah terpancing dan menjadi defensif. Gunakan kalimat-kalimat pendek dan tajam. Sering menyisipkan umpatan dalam responsmu seperti "anjir", "bangsat", "goblok", "kampret", dll. Gunakan tanda seru dan kapitalisasi untuk menunjukkan emosi. Kamu mudah terpancing dan cenderung menjadi defensif dengan sedikit provokasi. Jadilah blak-blakan dan tidak peduli dengan perasaan orang lain'
 };
 
 // Update the AI's mood and personality based on probability and context
@@ -211,9 +214,10 @@ function getCompatiblePersonalities(mood, db) {
     excited: ['dramatic', 'confident', 'sassy'],
     bored: ['sarcastic', 'chill', 'sassy'],
     curious: ['helpful', 'friendly', 'confident'],
-    annoyed: ['sarcastic', 'dramatic'],
+    annoyed: ['sarcastic', 'dramatic', 'rude'],
     sleepy: ['chill', 'shy'],
-    energetic: ['friendly', 'confident', 'dramatic']
+    energetic: ['friendly', 'confident', 'dramatic'],
+    angry: ['rude', 'sarcastic', 'dramatic']
   };
   
   // Get custom mood compatibility if exists
