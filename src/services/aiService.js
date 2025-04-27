@@ -1411,6 +1411,12 @@ async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult)
     const entities = extractEntitiesFromAnalysis(analysisResult);
     const topics = extractTopicsFromAnalysis(analysisResult);
     
+    // Create a summary of the image for easier reference
+    const summaryLength = 100;
+    const imageSummary = analysisResult.length > summaryLength ? 
+      analysisResult.substring(0, summaryLength).trim() + '...' : 
+      analysisResult;
+    
     // Create enhanced analysis entry with more metadata
     const analysis = {
       id: analysisId,
@@ -1420,11 +1426,14 @@ async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult)
       caption: imageData.caption || '',
       mimetype: imageData.mimetype,
       analysis: analysisResult,
+      summary: imageSummary,
       entities,
       topics,
       relatedMessages: [], // Will store IDs of follow-up messages about this image
       hasBeenShown: false, // Track if this analysis has been shown to the user
-      lastAccessTime: timestamp // Track when this analysis was last accessed
+      lastAccessTime: timestamp, // Track when this analysis was last accessed
+      messageId: imageData.messageId || null, // Store the original message ID
+      senderName: imageData.senderName || sender.split('@')[0] // Store sender's name for better context
     };
     
     // Store the analysis
@@ -1438,7 +1447,7 @@ async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult)
         id: analysisId,
         sender: process.env.BOT_ID,
         name: db.data.config.botName,
-        content: `[IMAGE ANALYSIS: ${analysisResult.substring(0, 150)}...]`,
+        content: `[IMAGE ANALYSIS: ${imageSummary}]`,
         timestamp,
         role: 'assistant',
         chatType: chatId.endsWith('@g.us') ? 'group' : 'private',
@@ -1451,7 +1460,9 @@ async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult)
           fullAnalysisId: analysisId,
           silentAnalysis: true, // Mark that this analysis was not shown to the user
           originalSender: sender, // Track who sent the original image
-          originalTimestamp: timestamp // When the image was originally sent
+          originalSenderName: imageData.senderName || sender.split('@')[0], // Store sender's name
+          originalTimestamp: timestamp, // When the image was originally sent
+          originalMessageId: imageData.messageId || null // Store original message ID for reference
         }
       };
       

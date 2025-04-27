@@ -49,6 +49,11 @@ async function processMessage(sock, message) {
     
     // Check if the message contains an image
     const imageData = extractImageData(message);
+    // Add additional metadata to imageData if it exists
+    if (imageData) {
+      imageData.messageId = message.key.id;
+      imageData.senderName = message.pushName || sender.split('@')[0];
+    }
     const containsImage = !!imageData;
     
     // Skip empty messages that don't have images
@@ -209,19 +214,66 @@ async function processMessage(sock, message) {
       // 2. Respond if explicitly tagged
       // 3. If the message contains the bot's number in any form, consider it a tag
       // 4. Only respond to images if there's a caption asking for analysis or if it's in a private chat
-      // 5. Otherwise use the AI to decide if it should respond
+      // 5. Respond to messages that appear to be asking about previously shared images
+      // 6. Otherwise use the AI to decide if it should respond
       const botPhoneNumber = process.env.BOT_ID?.split('@')[0]?.split(':')[0];
       const containsBotNumber = botPhoneNumber && content && content.includes(botPhoneNumber);
       
-      // Check if the image has a caption that explicitly asks for analysis
+      // Enhanced image analysis detection - more flexible than just keywords
+      // Check if this message is likely referring to a previously shared image
+      let isPreviousImageQuery = false;
+      
+      if (content && !containsImage) {
+        const lowerContent = content.toLowerCase();
+        
+        // Check for temporal references combined with demonstrative pronouns
+        const hasTemporalReference = [
+          'tadi', 'sebelumnya', 'sebelum ini', 'yang tadi', 'yang sebelumnya', 'yang barusan',
+          'earlier', 'before', 'previous', 'just now', 'just sent'
+        ].some(ref => lowerContent.includes(ref));
+        
+        const hasDemonstrativeReference = [
+          'ini', 'itu', 'tersebut', 'this', 'that', 'those', 'these'
+        ].some(ref => lowerContent.includes(ref));
+        
+        // Check for image-related terms
+        const hasImageTerms = [
+          'gambar', 'foto', 'image', 'picture', 'photo', 'lihat', 'cek', 'check', 'analisis', 'analyze',
+          'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat'
+        ].some(term => lowerContent.includes(term));
+        
+        // If the message has temporal references and demonstrative pronouns, or explicitly mentions images
+        // it's likely referring to a previously shared image
+        isPreviousImageQuery = (hasTemporalReference && hasDemonstrativeReference) || hasImageTerms;
+        
+        // Additional check: if it's a question and has demonstrative pronouns, it might be about a previous image
+        const isQuestion = content.endsWith('?') || 
+          ['apa', 'siapa', 'kapan', 'dimana', 'gimana', 'bagaimana', 'kenapa', 'mengapa', 'tolong'].some(q => lowerContent.includes(q));
+          
+        if (isQuestion && hasDemonstrativeReference) {
+          isPreviousImageQuery = true;
+        }
+        
+        logger.debug('Image query detection', { 
+          isPreviousImageQuery, 
+          hasTemporalReference, 
+          hasDemonstrativeReference,
+          hasImageTerms,
+          isQuestion
+        });
+      }
+      
+      // Check if the current image has a caption that explicitly asks for analysis
       const imageAnalysisKeywords = ['analisis', 'analyze', 'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat', 'cek'];
       const isExplicitImageAnalysisRequest = containsImage && content && 
         imageAnalysisKeywords.some(keyword => content.toLowerCase().includes(keyword));
       
-      // Direct addressing conditions (respond only when directly addressed)
-      // For images, only respond if explicitly requested or in private chat
+      // Direct addressing conditions (respond when directly addressed or asking about images)
+      // For new images, only respond if explicitly requested or in private chat
+      // For queries about previous images, respond regardless of group/private
       const isDirectlyAddressed = !isGroup || isTagged || containsBotNumber || 
-        (containsImage && (!isGroup || isExplicitImageAnalysisRequest));
+        (containsImage && (!isGroup || isExplicitImageAnalysisRequest)) ||
+        isPreviousImageQuery;
       
       let shouldBotRespond = isDirectlyAddressed;
       
@@ -274,15 +326,43 @@ async function processMessage(sock, message) {
           // Enhanced message content for AI to include image context
           // For new images, only include analysis in the prompt if we're supposed to respond
           // For image-related queries about past images, the context will already include the analysis
+          
+          // Check if this is a query about a previously shared image
+          const isPreviousImageQuery = !containsImage && content && (
+            // Check for temporal references combined with demonstrative pronouns
+            ([
+              'tadi', 'sebelumnya', 'sebelum ini', 'yang tadi', 'yang sebelumnya', 'yang barusan',
+              'earlier', 'before', 'previous', 'just now', 'just sent'
+            ].some(ref => content.toLowerCase().includes(ref)) && 
+            [
+              'ini', 'itu', 'tersebut', 'this', 'that', 'those', 'these'
+            ].some(ref => content.toLowerCase().includes(ref))) ||
+            // Or explicit image-related terms
+            [
+              'gambar', 'foto', 'image', 'picture', 'photo', 'lihat', 'cek', 'check', 'analisis', 'analyze',
+              'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat'
+            ].some(term => content.toLowerCase().includes(term))
+          );
+          
+          // For current image, check if it's an explicit request for analysis
           const imageAnalysisKeywords = ['analisis', 'analyze', 'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat', 'cek'];
           const isExplicitImageRequest = content && imageAnalysisKeywords.some(keyword => content.toLowerCase().includes(keyword));
           
-          // Only include image analysis in the prompt if it's a direct request or private chat
+          // Only include current image analysis in the prompt if it's a direct request or private chat
           const shouldIncludeImageAnalysis = containsImage && (!isGroup || isExplicitImageRequest);
           
+          // For current images, include the analysis in the prompt
+          // For queries about past images, the context service will have already added the analysis to the context
           const enhancedContent = shouldIncludeImageAnalysis ? 
             (content ? `${content} [Image: ${(imageAnalysis ? imageAnalysis.substring(0, 200) : 'Image received, but analysis failed')}...]` : `[Image: ${(imageAnalysis ? imageAnalysis.substring(0, 200) : 'Image received, but analysis failed')}...]`) : 
             content;
+            
+          logger.debug('AI prompt preparation', { 
+            isPreviousImageQuery, 
+            shouldIncludeImageAnalysis,
+            containsImage,
+            contextSize: context.length
+          });
           
           let aiResponse = await generateAIResponseLegacy(enhancedContent, context, db.data);
 

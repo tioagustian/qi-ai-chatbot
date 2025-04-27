@@ -253,15 +253,63 @@ async function getRelevantContext(db, chatId, message) {
     
     console.log(`[CONTEXT] Taking ${combinedMessages.length} combined relevant messages`);
 
-    // Enhanced image context handling with support for silent analysis
-    const imageFollowupKeywords = [
-      'gambar', 'foto', 'isi gambar', 'isi fotonya', 'apa ini', 'apa yang ada di gambar', 'apa yang ada di foto', 'analisa gambar', 'analisis gambar', 'jelaskan gambar', 'jelasin gambar', 'gambar apa', 'foto apa', 'apa isi', 'apa yang terlihat', 'apa yang terjadi di gambar', 'apa yang terjadi di foto', 'maksud', 'arti', 'artinya', 'maksudnya', 'jelaskan lagi', 'detail', 'lebih jelas', 'tadi', 'sebelumnya', 'yang tadi', 'yang sebelumnya', 'yang barusan'
-    ];
-    const lowerMsg = (message || '').toLowerCase();
-    const isImageFollowup = imageFollowupKeywords.some(k => lowerMsg.includes(k));
+    // Enhanced image context handling with AI-based detection
+    // First check if there are any image analyses in the conversation
+    const hasImageAnalysisInHistory = chatMessages.some(msg => 
+      msg.role === 'assistant' && 
+      typeof msg.content === 'string' && 
+      (msg.content.startsWith('[IMAGE ANALYSIS:') || msg.metadata?.hasImage || msg.metadata?.isImageAnalysis)
+    );
+    
+    // Only proceed with image context analysis if there's at least one image in history
+    let isImageFollowup = false;
+    if (hasImageAnalysisInHistory && message && typeof message === 'string') {
+      // Basic keyword check as a fallback
+      const imageFollowupKeywords = [
+        'gambar', 'foto', 'isi gambar', 'isi fotonya', 'apa ini', 'apa yang ada di gambar', 'apa yang ada di foto', 
+        'analisa gambar', 'analisis gambar', 'jelaskan gambar', 'jelasin gambar', 'gambar apa', 'foto apa', 'apa isi', 
+        'apa yang terlihat', 'apa yang terjadi di gambar', 'apa yang terjadi di foto', 'maksud', 'arti', 'artinya', 
+        'maksudnya', 'jelaskan lagi', 'detail', 'lebih jelas', 'tadi', 'sebelumnya', 'yang tadi', 'yang sebelumnya', 
+        'yang barusan', 'lihat', 'cek', 'check', 'image', 'picture'
+      ];
+      const lowerMsg = message.toLowerCase();
+      
+      // Check for direct keyword matches
+      const hasKeyword = imageFollowupKeywords.some(k => lowerMsg.includes(k));
+      
+      // Check for temporal references that might indicate referring to something shared earlier
+      const hasTemporalReference = [
+        'tadi', 'sebelumnya', 'sebelum ini', 'yang tadi', 'yang sebelumnya', 'yang barusan',
+        'earlier', 'before', 'previous', 'just now', 'just shared', 'just sent',
+        'yang kamu kirim', 'yang dikirim', 'yang dishare', 'yang dibagikan'
+      ].some(ref => lowerMsg.includes(ref));
+      
+      // Check for demonstrative pronouns that might indicate referring to something specific
+      const hasDemonstrativeReference = [
+        'ini', 'itu', 'tersebut', 'this', 'that', 'those', 'these'
+      ].some(ref => lowerMsg.includes(ref));
+      
+      // Combine all signals to determine if this is likely an image followup
+      isImageFollowup = hasKeyword || (hasTemporalReference && hasDemonstrativeReference);
+      
+      // If we still can't determine, use more advanced heuristics for ambiguous queries
+      if (!isImageFollowup && message.length > 3) {
+        // Check if the message is a question (ends with ? or contains question words)
+        const isQuestion = message.endsWith('?') || 
+          ['apa', 'siapa', 'kapan', 'dimana', 'gimana', 'bagaimana', 'kenapa', 'mengapa', 'tolong'].some(q => lowerMsg.includes(q));
+        
+        // If it's a question and contains demonstrative pronouns, it's likely referring to something shared before
+        if (isQuestion && hasDemonstrativeReference) {
+          isImageFollowup = true;
+          console.log(`[CONTEXT] Detected likely image reference in question: "${message}"`);  
+        }
+      }
+    }
     
     // Check if this is an image-related query
     if (isImageFollowup) {
+      console.log(`[CONTEXT] Detected image-related query: "${message}"`);  
+      
       // Get all image analysis messages, most recent first
       const imageAnalysisMessages = [...chatMessages]
         .reverse()
@@ -272,20 +320,77 @@ async function getRelevantContext(db, chatId, message) {
         )
         .slice(0, MAX_IMAGE_ANALYSIS_MESSAGES);
       
+      console.log(`[CONTEXT] Found ${imageAnalysisMessages.length} image analysis messages in history`);  
+      
       if (imageAnalysisMessages.length > 0) {
         // Check if we have any image analysis in the database
         if (db.data.imageAnalysis) {
-          // Find the most recent image analysis
-          const recentAnalysisMsg = imageAnalysisMessages[0];
-          const analysisId = recentAnalysisMsg.imageAnalysisId || recentAnalysisMsg.metadata?.fullAnalysisId;
+          // Try to find the most relevant image analysis based on the query
+          // Start with the most recent one as default
+          let relevantAnalysisMsg = imageAnalysisMessages[0];
+          let relevantAnalysisId = relevantAnalysisMsg.imageAnalysisId || relevantAnalysisMsg.metadata?.fullAnalysisId;
           
-          if (analysisId && db.data.imageAnalysis[analysisId]) {
+          // If the message contains temporal references like "tadi" (earlier), "sebelumnya" (previously),
+          // we should try to find the image that best matches the query
+          if (message && typeof message === 'string') {
+            const lowerMsg = message.toLowerCase();
+            const hasTemporalReference = [
+              'tadi', 'sebelumnya', 'sebelum ini', 'yang tadi', 'yang sebelumnya', 'yang barusan',
+              'earlier', 'before', 'previous', 'just now', 'just shared', 'just sent'
+            ].some(ref => lowerMsg.includes(ref));
+            
+            if (hasTemporalReference && imageAnalysisMessages.length > 1) {
+              console.log(`[CONTEXT] Message contains temporal reference, searching for most relevant image`);  
+              
+              // Look through all available image analyses to find the best match
+              // For now, we'll use a simple approach - if the message mentions specific entities or topics
+              // that are in an image analysis, prioritize that one
+              for (const analysisMsg of imageAnalysisMessages) {
+                const analysisId = analysisMsg.imageAnalysisId || analysisMsg.metadata?.fullAnalysisId;
+                if (analysisId && db.data.imageAnalysis[analysisId]) {
+                  const analysis = db.data.imageAnalysis[analysisId];
+                  
+                  // Check if any entities or topics from this image match the query
+                  const matchesQuery = [...(analysis.entities || []), ...(analysis.topics || [])]
+                    .some(item => lowerMsg.includes(item.toLowerCase()));
+                  
+                  if (matchesQuery) {
+                    console.log(`[CONTEXT] Found better matching image analysis: ${analysisId}`);  
+                    relevantAnalysisMsg = analysisMsg;
+                    relevantAnalysisId = analysisId;
+                    break;
+                  }
+                }
+              }
+            }
+          }
+          
+          // Now use the most relevant analysis (either most recent or best match)
+          if (relevantAnalysisId && db.data.imageAnalysis[relevantAnalysisId]) {
             // Get the full analysis from the database
-            const fullAnalysis = db.data.imageAnalysis[analysisId];
+            const fullAnalysis = db.data.imageAnalysis[relevantAnalysisId];
             
             // Update the last access time for this analysis
             fullAnalysis.lastAccessTime = new Date().toISOString();
             fullAnalysis.hasBeenShown = true; // Mark that this analysis has been shown to the user
+            
+            // Format the timestamp in a human-readable format
+            const imageTimestamp = new Date(fullAnalysis.timestamp);
+            const now = new Date();
+            const timeDiffMinutes = Math.floor((now - imageTimestamp) / (1000 * 60));
+            const timeDiffHours = Math.floor(timeDiffMinutes / 60);
+            const timeDiffDays = Math.floor(timeDiffHours / 24);
+            
+            let timeDescription;
+            if (timeDiffMinutes < 1) {
+              timeDescription = 'baru saja';
+            } else if (timeDiffMinutes < 60) {
+              timeDescription = `${timeDiffMinutes} menit yang lalu`;
+            } else if (timeDiffHours < 24) {
+              timeDescription = `${timeDiffHours} jam yang lalu`;
+            } else {
+              timeDescription = `${timeDiffDays} hari yang lalu`;
+            }
             
             // Add the full analysis to the context
             recentMessages.unshift({
@@ -295,24 +400,34 @@ async function getRelevantContext(db, chatId, message) {
             });
             
             // Add information about who sent the image and when
-            if (fullAnalysis.sender && fullAnalysis.sender !== process.env.BOT_ID) {
-              const senderName = db.data.conversations[chatId]?.participants[fullAnalysis.sender]?.name || 'User';
+            const senderName = fullAnalysis.senderName || 
+                              db.data.conversations[chatId]?.participants[fullAnalysis.sender]?.name || 
+                              fullAnalysis.sender.split('@')[0];
+            
+            recentMessages.unshift({
+              role: 'system',
+              content: `Gambar tersebut dikirim oleh ${senderName} ${timeDescription} (${new Date(fullAnalysis.timestamp).toLocaleString('id-ID')}).`,
+              name: 'system'
+            });
+            
+            // If the image had a caption, include it
+            if (fullAnalysis.caption && fullAnalysis.caption.trim() !== '') {
               recentMessages.unshift({
                 role: 'system',
-                content: `Gambar tersebut dikirim oleh ${senderName} pada ${new Date(fullAnalysis.timestamp).toLocaleString('id-ID')}.`,
+                content: `Caption gambar tersebut: "${fullAnalysis.caption}"`,
                 name: 'system'
               });
             }
             
             // Track this as a related message
-            if (!fullAnalysis.relatedMessages.includes(message?.key?.id)) {
-              fullAnalysis.relatedMessages.push(message?.key?.id);
+            if (message?.key?.id && !fullAnalysis.relatedMessages.includes(message.key.id)) {
+              fullAnalysis.relatedMessages.push(message.key.id);
             }
           } else {
             // Fallback to the old method if we can't find the full analysis
             recentMessages.unshift({
               role: 'system',
-              content: `Sebelumnya, user mengirim gambar dan aku sudah menganalisa: ${recentAnalysisMsg.content.replace('[IMAGE ANALYSIS:', '').replace(']', '').trim()}`,
+              content: `Sebelumnya, user mengirim gambar dan aku sudah menganalisa: ${relevantAnalysisMsg.content.replace('[IMAGE ANALYSIS:', '').replace(']', '').trim()}`,
               name: 'system'
             });
           }
