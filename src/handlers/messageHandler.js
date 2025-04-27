@@ -261,8 +261,32 @@ async function processMessage(sock, message) {
             (content ? `${content} [Image: ${(imageAnalysis ? imageAnalysis.substring(0, 200) : 'Image received, but analysis failed')}...]` : `[Image: ${(imageAnalysis ? imageAnalysis.substring(0, 200) : 'Image received, but analysis failed')}...]`) : 
             content;
           
-          const aiResponse = await generateAIResponseLegacy(enhancedContent, context, db.data);
-          
+          let aiResponse = await generateAIResponseLegacy(enhancedContent, context, db.data);
+
+          // Detect if the response is an error indicating provider failure (rate limit, API error, etc.)
+          const isProviderError = typeof aiResponse === 'string' && (
+            aiResponse.includes('Gagal terhubung') ||
+            aiResponse.includes('API error') ||
+            aiResponse.includes('Together.AI API error') ||
+            aiResponse.includes('rate limit') ||
+            aiResponse.includes('429')
+          );
+
+          // Store original provider/model
+          const originalProvider = db.data.config.defaultProvider;
+          const originalModel = db.data.config.model;
+          let switchedToGemini = false;
+
+          if (isProviderError && originalProvider !== 'gemini') {
+            logger.warning('Provider error detected, switching to Gemini temporarily...');
+            db.data.config.defaultProvider = 'gemini';
+            db.data.config.model = process.env.GEMINI_MODEL
+            await db.write();
+            // Retry with Gemini
+            aiResponse = await generateAIResponseLegacy(enhancedContent, context, db.data);
+            switchedToGemini = true;
+          }
+
           logger.success(`AI response generated (${aiResponse.length} chars)`);
           logger.debug('AI response preview', { 
             preview: aiResponse 
@@ -385,6 +409,14 @@ async function processMessage(sock, message) {
           
           // Save changes to db
           await db.write();
+
+          // If we switched to Gemini, switch back to the original provider/model
+          if (switchedToGemini) {
+            db.data.config.defaultProvider = originalProvider;
+            db.data.config.model = originalModel;
+            await db.write();
+            logger.info('Switched provider/model back to original after successful message send.');
+          }
         } catch (responseError) {
           logger.error('Error during response generation or sending', responseError);
           
