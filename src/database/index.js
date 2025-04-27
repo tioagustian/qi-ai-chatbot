@@ -18,7 +18,11 @@ const defaultData = {
     model: process.env.DEFAULT_MODEL || 'anthropic/claude-3-opus-20240229',
     moodChangeProbability: parseFloat(process.env.MOOD_CHANGE_PROBABILITY || 0.15),
     personality: process.env.DEFAULT_PERSONALITY || 'friendly',
-    geminiApiKey: process.env.GEMINI_API_KEY || ''
+    geminiApiKey: process.env.GEMINI_API_KEY || '',
+    // Enhanced context settings
+    maxContextMessages: parseInt(process.env.MAX_CONTEXT_MESSAGES || 100),
+    maxRelevantMessages: parseInt(process.env.MAX_RELEVANT_MESSAGES || 20),
+    enhancedMemoryEnabled: process.env.ENHANCED_MEMORY_ENABLED !== 'false'
   },
   state: {
     currentMood: process.env.DEFAULT_MOOD || 'happy',
@@ -28,7 +32,9 @@ const defaultData = {
   },
   conversations: {},
   contextMemory: [],
-  participantsRegistry: {}
+  participantsRegistry: {},
+  imageAnalysis: {},
+  topicMemory: {}
 };
 
 // Initialize database
@@ -80,10 +86,25 @@ function ensureDataStructure() {
   if (!db.data.conversations) db.data.conversations = {};
   if (!db.data.contextMemory) db.data.contextMemory = [];
   if (!db.data.participantsRegistry) db.data.participantsRegistry = {};
+  if (!db.data.imageAnalysis) db.data.imageAnalysis = {};
+  if (!db.data.topicMemory) db.data.topicMemory = {};
   
-  // Ensure geminiApiKey is in the config
+  // Ensure config fields are present
   if (db.data.config.geminiApiKey === undefined) {
     db.data.config.geminiApiKey = process.env.GEMINI_API_KEY || '';
+  }
+  
+  // Ensure enhanced context settings are present
+  if (db.data.config.maxContextMessages === undefined) {
+    db.data.config.maxContextMessages = parseInt(process.env.MAX_CONTEXT_MESSAGES || 100);
+  }
+  
+  if (db.data.config.maxRelevantMessages === undefined) {
+    db.data.config.maxRelevantMessages = parseInt(process.env.MAX_RELEVANT_MESSAGES || 20);
+  }
+  
+  if (db.data.config.enhancedMemoryEnabled === undefined) {
+    db.data.config.enhancedMemoryEnabled = process.env.ENHANCED_MEMORY_ENABLED !== 'false';
   }
   
   // Ensure existing conversations have the updated structure
@@ -129,4 +150,4 @@ function getDb() {
   return db;
 }
 
-export { setupDatabase, getDb }; 
+export { setupDatabase, getDb };

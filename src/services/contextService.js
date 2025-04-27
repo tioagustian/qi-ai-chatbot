@@ -1,14 +1,20 @@
 // Maximum number of messages to keep in context memory per chat
-const MAX_CONTEXT_MESSAGES = 50;
+const MAX_CONTEXT_MESSAGES = 100;
 
 // Maximum number of relevant messages to return for AI prompt
-const MAX_RELEVANT_MESSAGES = 15;
+const MAX_RELEVANT_MESSAGES = 20;
 
 // Maximum number of cross-chat context messages to include
-const MAX_CROSS_CHAT_MESSAGES = 5;
+const MAX_CROSS_CHAT_MESSAGES = 8;
 
 // Maximum number of participants to include in introductions
 const MAX_PARTICIPANTS_INTRO = 10;
+
+// Maximum number of image analysis messages to include in context
+const MAX_IMAGE_ANALYSIS_MESSAGES = 3;
+
+// Maximum number of topic-specific messages to include
+const MAX_TOPIC_SPECIFIC_MESSAGES = 10;
 
 // Update context with new message
 async function updateContext(db, chatId, sender, content, message) {
@@ -94,7 +100,14 @@ async function updateContext(db, chatId, sender, content, message) {
       content,
       timestamp: new Date().toISOString(),
       role: sender === process.env.BOT_ID ? 'assistant' : 'user',
-      chatType: chatType
+      chatType: chatType,
+      // Add metadata for better context tracking
+      metadata: {
+        hasImage: message.message?.imageMessage || message.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage ? true : false,
+        isReply: message.message?.extendedTextMessage?.contextInfo?.quotedMessage ? true : false,
+        quotedMessageId: message.message?.extendedTextMessage?.contextInfo?.stanzaId || null,
+        topics: extractTopics(content)
+      }
     };
     
     db.data.conversations[chatId].messages.push(contextMessage);
@@ -175,34 +188,116 @@ async function getRelevantContext(db, chatId, message) {
     const chatType = isGroup ? 'group' : 'private';
     console.log(`[CONTEXT] Chat type: ${chatType}`);
     
-    // Get recent messages from this chat
+    // Get all messages from this chat
     const chatMessages = db.data.conversations[chatId].messages;
     console.log(`[CONTEXT] Total messages in conversation: ${chatMessages.length}`);
     
-    // Get recent messages from this chat
+    // Extract topics from current message to find relevant past messages
+    const messageTopics = message ? extractTopics(message) : [];
+    console.log(`[CONTEXT] Current message topics: ${messageTopics.join(', ')}`);
+    
+    // Start with recent messages as base context
     let recentMessages = chatMessages.slice(-MAX_RELEVANT_MESSAGES);
-    console.log(`[CONTEXT] Taking ${recentMessages.length} recent messages`);
+    
+    // If we have topics, find topic-specific messages to include
+    let topicSpecificMessages = [];
+    if (messageTopics.length > 0) {
+      // For each topic, find relevant messages
+      messageTopics.forEach(topic => {
+        const topicMessages = findTopicSpecificMessages(chatMessages, topic, MAX_TOPIC_SPECIFIC_MESSAGES/2);
+        topicSpecificMessages = [...topicSpecificMessages, ...topicMessages];
+      });
+      
+      // Remove duplicates
+      topicSpecificMessages = [...new Map(topicSpecificMessages.map(msg => [msg.id, msg])).values()];
+      console.log(`[CONTEXT] Found ${topicSpecificMessages.length} topic-specific messages`);
+    }
+    
+    // Check if this is a reply to a specific message
+    let replyContext = [];
+    if (message && typeof message === 'object' && message.message?.extendedTextMessage?.contextInfo?.quotedMessage) {
+      const quotedMsgId = message.message.extendedTextMessage.contextInfo.stanzaId;
+      if (quotedMsgId) {
+        // Find the quoted message and its context
+        const quotedMsgIndex = chatMessages.findIndex(msg => msg.id === quotedMsgId);
+        if (quotedMsgIndex !== -1) {
+          // Get messages around the quoted message for context
+          const contextStart = Math.max(0, quotedMsgIndex - 2);
+          const contextEnd = Math.min(chatMessages.length, quotedMsgIndex + 3);
+          replyContext = chatMessages.slice(contextStart, contextEnd);
+          console.log(`[CONTEXT] Adding ${replyContext.length} messages as reply context`);
+        }
+      }
+    }
+    
+    // Combine all context sources, prioritizing recent messages
+    let combinedMessages = [...recentMessages];
+    
+    // Add topic-specific and reply context, avoiding duplicates
+    const existingIds = new Set(combinedMessages.map(msg => msg.id));
+    
+    [...topicSpecificMessages, ...replyContext].forEach(msg => {
+      if (!existingIds.has(msg.id)) {
+        combinedMessages.push(msg);
+        existingIds.add(msg.id);
+      }
+    });
+    
+    // Sort by timestamp to maintain conversation flow
+    combinedMessages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    
+    // Limit to maximum context size
+    if (combinedMessages.length > MAX_RELEVANT_MESSAGES) {
+      combinedMessages = combinedMessages.slice(-MAX_RELEVANT_MESSAGES);
+    }
+    
+    console.log(`[CONTEXT] Taking ${combinedMessages.length} combined relevant messages`);
 
-    // If the current message is a follow-up about an image, add the last image analysis as a system message
+    // Enhanced image context handling
     const imageFollowupKeywords = [
-      'gambar', 'foto', 'isi gambar', 'isi fotonya', 'apa ini', 'apa yang ada di gambar', 'apa yang ada di foto', 'analisa gambar', 'analisis gambar', 'jelaskan gambar', 'jelasin gambar', 'gambar apa', 'foto apa', 'apa isi', 'apa yang terlihat', 'apa yang terjadi di gambar', 'apa yang terjadi di foto'
+      'gambar', 'foto', 'isi gambar', 'isi fotonya', 'apa ini', 'apa yang ada di gambar', 'apa yang ada di foto', 'analisa gambar', 'analisis gambar', 'jelaskan gambar', 'jelasin gambar', 'gambar apa', 'foto apa', 'apa isi', 'apa yang terlihat', 'apa yang terjadi di gambar', 'apa yang terjadi di foto', 'maksud', 'arti', 'artinya', 'maksudnya', 'jelaskan lagi', 'detail', 'lebih jelas'
     ];
     const lowerMsg = (message || '').toLowerCase();
     const isImageFollowup = imageFollowupKeywords.some(k => lowerMsg.includes(k));
+    
+    // Check if this is an image-related query
     if (isImageFollowup) {
-      // Find the last image analysis message in the chat
-      const lastImageAnalysis = [...chatMessages].reverse().find(msg =>
-        msg.role === 'assistant' &&
-        typeof msg.content === 'string' &&
-        msg.content.startsWith('[IMAGE ANALYSIS:')
-      );
-      if (lastImageAnalysis) {
-        // Prepend a system message with the last image analysis
+      // Get all image analysis messages, most recent first
+      const imageAnalysisMessages = [...chatMessages]
+        .reverse()
+        .filter(msg => 
+          msg.role === 'assistant' && 
+          typeof msg.content === 'string' && 
+          (msg.content.startsWith('[IMAGE ANALYSIS:') || msg.metadata?.hasImage)
+        )
+        .slice(0, MAX_IMAGE_ANALYSIS_MESSAGES);
+      
+      if (imageAnalysisMessages.length > 0) {
+        // Add the most recent image analysis first
         recentMessages.unshift({
           role: 'system',
-          content: `Sebelumnya, user mengirim gambar dan aku sudah menganalisa: ${lastImageAnalysis.content.replace('[IMAGE ANALYSIS:', '').replace(']', '').trim()}`,
+          content: `Sebelumnya, user mengirim gambar dan aku sudah menganalisa: ${imageAnalysisMessages[0].content.replace('[IMAGE ANALYSIS:', '').replace(']', '').trim()}`,
           name: 'system'
         });
+        
+        // Add additional context from older image analyses if available
+        if (imageAnalysisMessages.length > 1) {
+          recentMessages.unshift({
+            role: 'system',
+            content: `User juga pernah mengirim gambar lain sebelumnya: ${imageAnalysisMessages.slice(1).map(msg => msg.content.replace('[IMAGE ANALYSIS:', '').replace(']', '').trim()).join(' | ')}`,
+            name: 'system'
+          });
+        }
+        
+        // Find any follow-up conversations about the images
+        const imageFollowupMessages = findRelatedMessages(chatMessages, imageAnalysisMessages[0].id, 5);
+        if (imageFollowupMessages.length > 0) {
+          recentMessages.push({
+            role: 'system',
+            content: `Percakapan sebelumnya tentang gambar ini: ${formatConversationSnippet(imageFollowupMessages)}`,
+            name: 'system'
+          });
+        }
       }
     }
     
@@ -462,10 +557,61 @@ async function clearContext(db, chatId) {
   }
 }
 
+// Extract potential topics from message content
+function extractTopics(content) {
+  // Simple topic extraction based on keywords
+  const topics = [];
+  
+  // Check for image-related content
+  if (content.match(/gambar|foto|image|picture/i)) {
+    topics.push('image');
+  }
+  
+  // Check for question patterns
+  if (content.match(/\?|apa|siapa|kapan|dimana|mengapa|bagaimana|how|what|when|where|why|who/i)) {
+    topics.push('question');
+  }
+  
+  // Check for greeting patterns
+  if (content.match(/halo|hai|hello|hi|selamat|pagi|siang|sore|malam/i)) {
+    topics.push('greeting');
+  }
+  
+  // Check for request patterns
+  if (content.match(/tolong|bantu|help|assist|bisa|can you|could you/i)) {
+    topics.push('request');
+  }
+  
+  return topics;
+}
+
+// Find messages related to a specific message by ID
+function findRelatedMessages(messages, messageId, limit = 5) {
+  const messageIndex = messages.findIndex(msg => msg.id === messageId);
+  if (messageIndex === -1) return [];
+  
+  // Get messages that came after the target message, limited by count
+  return messages.slice(messageIndex + 1, messageIndex + 1 + limit);
+}
+
+// Format a conversation snippet for context
+function formatConversationSnippet(messages) {
+  return messages.map(msg => `${msg.role === 'user' ? 'User' : 'Bot'}: ${msg.content.substring(0, 100)}${msg.content.length > 100 ? '...' : ''}`).join(' | ');
+}
+
+// Find topic-specific messages in conversation history
+function findTopicSpecificMessages(messages, topic, limit = 5) {
+  return messages
+    .filter(msg => msg.metadata?.topics?.includes(topic))
+    .slice(-limit);
+}
+
 export {
   updateContext,
   getRelevantContext,
   clearContext,
   shouldIntroduceInGroup,
-  generateGroupIntroduction
-}; 
+  generateGroupIntroduction,
+  findRelatedMessages,
+  findTopicSpecificMessages
+};

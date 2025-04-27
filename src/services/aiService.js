@@ -646,11 +646,39 @@ async function generateAIResponseLegacy(message, context, botData) {
 // Format context messages for the API
 function formatContextForAPI(context) {
   logger.debug(`Formatting ${context.length} context messages for API`);
-  return context.map(item => ({
-    role: item.role,
-    content: item.content,
-    name: item.name
-  }));
+  
+  // Enhanced context formatting with metadata preservation
+  return context.map(item => {
+    // Base message structure
+    const formattedMessage = {
+      role: item.role,
+      content: item.content
+    };
+    
+    // Add name if available (for system messages)
+    if (item.name) {
+      formattedMessage.name = item.name;
+    }
+    
+    // For image analysis messages, ensure the full content is included
+    if (item.role === 'assistant' && 
+        typeof item.content === 'string' && 
+        item.content.startsWith('[IMAGE ANALYSIS:')) {
+      // Remove the prefix for cleaner context
+      formattedMessage.content = item.content.replace('[IMAGE ANALYSIS:', '').replace(']', '').trim();
+    }
+    
+    // For system messages that contain context about previous conversations
+    if (item.role === 'system' && 
+        typeof item.content === 'string' && 
+        (item.content.includes('Percakapan sebelumnya') || 
+         item.content.includes('User juga pernah mengirim gambar'))) {
+      // Emphasize this is important context
+      formattedMessage.content = `IMPORTANT CONTEXT: ${item.content}`;
+    }
+    
+    return formattedMessage;
+  });
 }
 
 // Create system message based on bot's configuration
@@ -945,8 +973,28 @@ async function generateAIResponse2(botConfig, contextMessages, streamCallback = 
       updatedContextMessages.unshift({ role: 'system', content: systemMessage });
     }
     
-    // Format messages for API
+    // Format messages for API with enhanced context handling
     const formattedMessages = formatMessagesForAPI(updatedContextMessages, botConfig);
+    
+    // Log context information for debugging
+    logger.debug(`Sending ${formattedMessages.length} messages to API`);
+    
+    // Check if this is an image-related query
+    const isImageRelated = updatedContextMessages.some(msg => 
+      (msg.role === 'system' && msg.content && msg.content.includes('user mengirim gambar')) ||
+      (msg.metadata && msg.metadata.hasImage) ||
+      (msg.content && msg.content.match(/gambar|foto|image|picture/i))
+    );
+    
+    if (isImageRelated) {
+      logger.info('Detected image-related query, adding extra context instructions');
+      
+      // Add special instruction for image-related queries
+      formattedMessages.unshift({
+        role: 'system',
+        content: 'Pengguna sedang bertanya tentang gambar. Berikan jawaban yang detail dan deskriptif tentang gambar tersebut. Jika ada pertanyaan lanjutan tentang gambar, pastikan untuk menghubungkan dengan analisis gambar sebelumnya.'
+      });
+    }
     
     let response;
     // Choose API provider based on the model
@@ -1359,7 +1407,11 @@ async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult)
     const timestamp = new Date().toISOString();
     const analysisId = `img_${Date.now()}`;
     
-    // Create analysis entry
+    // Extract key entities and topics from the analysis result
+    const entities = extractEntitiesFromAnalysis(analysisResult);
+    const topics = extractTopicsFromAnalysis(analysisResult);
+    
+    // Create enhanced analysis entry with more metadata
     const analysis = {
       id: analysisId,
       chatId,
@@ -1367,7 +1419,10 @@ async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult)
       timestamp,
       caption: imageData.caption || '',
       mimetype: imageData.mimetype,
-      analysis: analysisResult
+      analysis: analysisResult,
+      entities,
+      topics,
+      relatedMessages: [] // Will store IDs of follow-up messages about this image
     };
     
     // Store the analysis
@@ -1375,23 +1430,30 @@ async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult)
     
     // Also add a reference to the chat context
     if (db.data.conversations[chatId]) {
-      // Create a special message to represent the image analysis
+      // Create a special message to represent the image analysis with enhanced metadata
       const imageContextMessage = {
         id: analysisId,
         sender: process.env.BOT_ID,
         name: db.data.config.botName,
-        content: `[IMAGE ANALYSIS: ${analysisResult.substring(0, 100)}...]`,
+        content: `[IMAGE ANALYSIS: ${analysisResult.substring(0, 150)}...]`,
         timestamp,
         role: 'assistant',
         chatType: chatId.endsWith('@g.us') ? 'group' : 'private',
-        imageAnalysisId: analysisId // Reference to the full analysis
+        imageAnalysisId: analysisId, // Reference to the full analysis
+        metadata: {
+          hasImage: true,
+          isImageAnalysis: true,
+          entities,
+          topics: ['image', ...topics],
+          fullAnalysisId: analysisId
+        }
       };
       
       // Add to conversation history
       db.data.conversations[chatId].messages.push(imageContextMessage);
       
-      // Limit history if needed
-      const MAX_MESSAGES = 50;
+      // Limit history if needed - use the constant from contextService
+      const MAX_MESSAGES = 100; // Increased from 50 to match contextService
       if (db.data.conversations[chatId].messages.length > MAX_MESSAGES) {
         db.data.conversations[chatId].messages = db.data.conversations[chatId]
           .messages.slice(-MAX_MESSAGES);
@@ -1400,13 +1462,73 @@ async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult)
     
     // Save to database
     await db.write();
-    logger.success(`Stored image analysis with ID: ${analysisId}`);
+    logger.success(`Stored enhanced image analysis with ID: ${analysisId}`);
     
     return analysisId;
   } catch (error) {
     logger.error('Error storing image analysis:', error);
     throw new Error('Failed to store image analysis in database');
   }
+}
+
+// Extract key entities from image analysis text
+function extractEntitiesFromAnalysis(analysisText) {
+  const entities = [];
+  
+  // Common entity patterns to look for
+  const patterns = [
+    // People
+    /\b(?:orang|seseorang|pria|wanita|laki-laki|perempuan|anak|person|man|woman|child|people)\b/gi,
+    // Objects
+    /\b(?:mobil|motor|sepeda|bangunan|rumah|gedung|pohon|car|vehicle|building|house|tree)\b/gi,
+    // Animals
+    /\b(?:kucing|anjing|burung|hewan|cat|dog|bird|animal)\b/gi,
+    // Places
+    /\b(?:pantai|gunung|kota|desa|taman|jalan|beach|mountain|city|village|park|road)\b/gi,
+    // Food
+    /\b(?:makanan|minuman|food|drink|meal)\b/gi
+  ];
+  
+  // Extract entities using patterns
+  patterns.forEach(pattern => {
+    const matches = analysisText.match(pattern);
+    if (matches) {
+      // Convert to lowercase and remove duplicates
+      const uniqueMatches = [...new Set(matches.map(m => m.toLowerCase()))];
+      entities.push(...uniqueMatches);
+    }
+  });
+  
+  // Return unique entities
+  return [...new Set(entities)];
+}
+
+// Extract topics from image analysis text
+function extractTopicsFromAnalysis(analysisText) {
+  const topics = [];
+  
+  // Check for common topics
+  if (/\b(?:pemandangan|landscape|alam|nature|outdoor)\b/i.test(analysisText)) {
+    topics.push('nature');
+  }
+  
+  if (/\b(?:makanan|minuman|food|drink|meal|restaurant)\b/i.test(analysisText)) {
+    topics.push('food');
+  }
+  
+  if (/\b(?:orang|seseorang|pria|wanita|person|people|group|crowd)\b/i.test(analysisText)) {
+    topics.push('people');
+  }
+  
+  if (/\b(?:dokumen|text|tulisan|document|writing|note)\b/i.test(analysisText)) {
+    topics.push('document');
+  }
+  
+  if (/\b(?:screenshot|layar|screen|capture|aplikasi|app)\b/i.test(analysisText)) {
+    topics.push('screenshot');
+  }
+  
+  return topics;
 }
 
 // Export functions
