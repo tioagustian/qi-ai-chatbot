@@ -207,7 +207,7 @@ async function processMessage(sock, message) {
       }
     }
     
-    // Extract mentioned JIDs and build @name mapping
+    // Extract mentioned JIDs and build @name and @number mapping
     let mentionMap = {};
     let mentionedJids = [];
     if (message.message?.extendedTextMessage?.contextInfo?.mentionedJid) {
@@ -216,16 +216,19 @@ async function processMessage(sock, message) {
       if (isGroup && db.data.conversations[chatId]) {
         mentionedJids.forEach(jid => {
           const participant = db.data.conversations[chatId].participants[jid];
+          const number = jid.split('@')[0];
           if (participant && participant.name) {
             mentionMap[`@${participant.name}`] = jid;
+            mentionMap[`@${number}`] = jid;
           } else {
             // fallback to number
-            mentionMap[`@${jid.split('@')[0]}`] = jid;
+            mentionMap[`@${number}`] = jid;
           }
         });
       } else {
         mentionedJids.forEach(jid => {
-          mentionMap[`@${jid.split('@')[0]}`] = jid;
+          const number = jid.split('@')[0];
+          mentionMap[`@${number}`] = jid;
         });
       }
     }
