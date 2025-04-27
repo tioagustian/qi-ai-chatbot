@@ -1,6 +1,6 @@
 import { setMood, setPersonality, getAvailableMoods, getAvailablePersonalities, addCustomMood, addCustomPersonality, addMoodTriggers, removeCustomMood, removeCustomPersonality, getMoodDescription, getPersonalityDescription, getAllMoodTriggers, MOODS, PERSONALITIES } from './personalityService.js';
 import { clearContext } from './contextService.js';
-import { getAvailableModels } from './aiService.js';
+import { getAvailableModels, TOGETHER_MODELS } from './aiService.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -156,7 +156,7 @@ async function executeCommand(sock, message, commandData, db) {
         
       case 'setprovider':
         if (args.length === 0) {
-          return 'Gunakan format: !setprovider [openrouter/gemini]\nProvider saat ini: ' + (db.data.config.defaultProvider || 'openrouter');
+          return 'Gunakan format: !setprovider [openrouter/gemini/together]\nProvider saat ini: ' + (db.data.config.defaultProvider || 'openrouter');
         }
         const providerResult = await setProvider(db, args[0]);
         return providerResult.message;
@@ -174,6 +174,13 @@ async function executeCommand(sock, message, commandData, db) {
         }
         const geminiKeyResult = await setGeminiApiKey(args[0]);
         return geminiKeyResult.message;
+        
+      case 'settogetherkey':
+        if (args.length === 0) {
+          return 'Gunakan format: !settogetherkey [YOUR_TOGETHER_API_KEY]';
+        }
+        const togetherKeyResult = await setTogetherApiKey(args[0]);
+        return togetherKeyResult.message;
         
       case 'status':
         return getStatusText(db);
@@ -278,139 +285,95 @@ async function setGeminiApiKey(apiKey) {
   }
 }
 
+// Set Together.AI API key
+async function setTogetherApiKey(apiKey) {
+  try {
+    // Validate the API key format (basic validation)
+    if (!apiKey || apiKey.length < 10) {
+      return {
+        success: false,
+        message: 'API key tidak valid. Harap berikan kunci yang valid.'
+      };
+    }
+    
+    // Set the API key in environment variables
+    process.env.TOGETHER_API_KEY = apiKey;
+    
+    // Update the config in database
+    const db = (await import('../database/index.js')).getDb();
+    db.data.config.togetherApiKey = apiKey;
+    await db.write();
+    
+    console.log('Together.AI API key set successfully');
+    
+    return {
+      success: true,
+      message: 'Together.AI API key berhasil dikonfigurasi. Sekarang kamu bisa menggunakan model Together.AI.'
+    };
+  } catch (error) {
+    console.error('Error setting Together.AI API key:', error);
+    return {
+      success: false,
+      message: 'Terjadi kesalahan saat mengatur Together.AI API key: ' + error.message
+    };
+  }
+}
+
 // Set AI model
 async function setModel(db, modelId) {
   try {
+    // Check for empty model ID
+    if (!modelId) {
+      return { success: false, message: 'Model ID tidak boleh kosong' };
+    }
+    
+    // Normalize model ID
+    const normalizedModelId = modelId.trim();
+    
     // Get current provider
     const currentProvider = db.data.config.defaultProvider || 'openrouter';
     
-    // List of supported models with shortnames
-    const supportedModels = {
-      // OpenRouter models
-      'gpt4o': 'openai/gpt-4o',
-      'gpt4': 'openai/gpt-4',
-      'gpt3': 'openai/gpt-3.5-turbo',
-      'claude3opus': 'anthropic/claude-3-opus',
-      'claude3sonnet': 'anthropic/claude-3-sonnet',
-      'claude3haiku': 'anthropic/claude-3-haiku',
-      'deepseek': 'deepseek/deepseek-chat-v3-0324:free',
-      'mistral': 'mistralai/mistral-7b-instruct',
-      'llama3': 'meta-llama/llama-3-8b-instruct',
+    // Check if this is a Together.AI model
+    if (currentProvider === 'together') {
+      // For Together.AI, check if the model is in the allowed list
+      const isValidTogetherModel = TOGETHER_MODELS.includes(normalizedModelId);
       
-      // Google Gemini models - no longer need google/ prefix
-      'gemini15pro': 'gemini-1.5-pro',
-      'gemini15flash': 'gemini-1.5-flash',
-      'gemini10pro': 'gemini-1.0-pro',
-      'gemini20flashlite': 'gemini-2.0-flash-lite',
-      'gemini20flash': 'gemini-2.0-flash',
-      'gemini25flash': 'gemini-2.5-flash-preview-04-17'
-    };
-    
-    // Check if a short name was used and map it to the full model name
-    const fullModelId = supportedModels[modelId.toLowerCase()] || modelId;
-    
-    // Check if this is a Gemini model - no more google/ prefix check
-    const isGeminiModel = currentProvider === 'gemini' || 
-                          fullModelId.startsWith('gemini') || 
-                          fullModelId.startsWith('google/gemini');
-    
-    // Normalize the model ID based on provider
-    let normalizedModelId = fullModelId;
-    if (isGeminiModel) {
-      // For Gemini provider, remove google/ prefix if exists
-      normalizedModelId = fullModelId.replace('google/', '');
-    } else if (currentProvider === 'openrouter' && !fullModelId.includes('/')) {
-      // For OpenRouter, ensure models have proper format with / if missing
-      // This is for backward compatibility
-      if (fullModelId.startsWith('gemini')) {
-        normalizedModelId = 'google/' + fullModelId;
-      }
-    }
-    
-    if (isGeminiModel) {
-      // For Gemini models, check if API key is set
-      if (!process.env.GEMINI_API_KEY && !db.data.config.geminiApiKey) {
+      if (!isValidTogetherModel) {
         return {
           success: false,
-          message: 'Untuk menggunakan model Gemini, kamu harus mengatur Gemini API key terlebih dahulu. Gunakan perintah !setgeminikey [YOUR_API_KEY]'
-        };
-      }
-      
-      // Verify Gemini model is supported
-      const supportedGeminiModels = ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-1.0-pro', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.5-flash-preview-04-17'];
-      if (!supportedGeminiModels.includes(normalizedModelId) && 
-          !supportedGeminiModels.includes(normalizedModelId.replace('google/', ''))) {
-        return {
-          success: false,
-          message: `Model Gemini "${normalizedModelId}" tidak dikenal. Model yang didukung: ${supportedGeminiModels.join(', ')}`
-        };
-      }
-    } else {
-      // For non-Gemini models (OpenRouter), check if API key is set
-      if (!process.env.OPENROUTER_API_KEY) {
-        return {
-          success: false,
-          message: 'Untuk menggunakan model OpenRouter, kamu harus mengatur OpenRouter API key terlebih dahulu. Gunakan perintah !setapikey [YOUR_API_KEY]'
-        };
-      }
-      
-      // Try to get available models from OpenRouter to validate
-      let modelExists = false;
-      try {
-        const models = await getAvailableModels();
-        modelExists = models.some(model => model.id === normalizedModelId);
-      } catch (error) {
-        console.warn('Could not verify model with OpenRouter:', error.message);
-        // Continue anyway, assuming the model ID is valid
-        modelExists = true;
-      }
-      
-      if (!modelExists) {
-        return { 
-          success: false, 
-          message: `Model "${normalizedModelId}" tidak ditemukan. Gunakan !setmodel tanpa argumen untuk melihat daftar model.` 
+          message: `Model "${normalizedModelId}" tidak tersedia di Together.AI. Model yang tersedia: ${TOGETHER_MODELS.join(', ')}`
         };
       }
     }
     
-    // Indicate if the model supports tools
-    const toolSupportedModels = [
-      'anthropic/claude-3-opus',
-      'anthropic/claude-3-sonnet',
-      'anthropic/claude-3-haiku',
-      'openai/gpt-4o',
-      'openai/gpt-4-turbo',
-      'openai/gpt-4',
-      'openai/gpt-3.5-turbo',
-      'gemini-1.5-pro',
-      'gemini-1.5-flash',
-      'gemini-2.0-flash-lite',
-      'gemini-2.0-flash',
-      'gemini-2.5-flash-preview-04-17'
-    ];
-    
-    // Check if model supports tools
-    let supportsTools = false;
-    for (const supportedModel of toolSupportedModels) {
-      if (normalizedModelId === supportedModel || 
-          normalizedModelId.includes(supportedModel) ||
-          normalizedModelId.replace('google/', '') === supportedModel) {
-        supportsTools = true;
-        break;
+    // Check if this is a Gemini model
+    if (currentProvider === 'gemini') {
+      // For Gemini, ensure model ID has the correct prefix
+      const isGeminiModel = normalizedModelId.startsWith('google/') || 
+                            normalizedModelId.startsWith('gemini');
+      
+      if (!isGeminiModel) {
+        return {
+          success: false,
+          message: `Model "${normalizedModelId}" tidak valid untuk provider Gemini. Model harus dimulai dengan "google/" atau "gemini".`
+        };
       }
     }
     
-    // Update model in database
+    // Set the model
     db.data.config.model = normalizedModelId;
     await db.write();
     
-    return { 
-      success: true, 
-      message: `Model AI berhasil diubah menjadi: ${normalizedModelId}. ${supportsTools ? 'Model ini mendukung fungsi tools.' : 'Model ini tidak mendukung fungsi tools.'}`
+    return {
+      success: true,
+      message: `Model berhasil diubah ke: ${normalizedModelId}`
     };
   } catch (error) {
     console.error('Error setting model:', error);
-    return { success: false, message: 'Terjadi kesalahan saat mengubah model AI.' };
+    return {
+      success: false,
+      message: 'Terjadi kesalahan saat mengubah model: ' + error.message
+    };
   }
 }
 
@@ -429,63 +392,75 @@ async function setBotName(db, name) {
 
 // Get help text
 function getHelpText() {
-  const commandList = [
-    { command: 'help', description: 'Menampilkan daftar perintah yang tersedia' },
-    { command: 'ping', description: 'Cek apakah bot aktif' },
-    { command: 'setmood [mood]', description: 'Mengubah suasana hati bot' },
-    { command: 'setpersonality [personality]', description: 'Mengubah kepribadian bot' },
-    { command: 'addmood [nama] [deskripsi]', description: 'Menambahkan mood kustom baru' },
-    { command: 'addpersonality [nama] [deskripsi]', description: 'Menambahkan personality kustom baru' },
-    { command: 'addtriggers [mood] [trigger1] [trigger2] ...', description: 'Menambahkan kata-kata pemicu untuk mood tertentu' },
-    { command: 'removemood [nama]', description: 'Menghapus mood kustom' },
-    { command: 'removepersonality [nama]', description: 'Menghapus personality kustom' },
-    { command: 'listmoods', description: 'Menampilkan daftar mood yang tersedia' },
-    { command: 'listpersonalities', description: 'Menampilkan daftar personality yang tersedia' },
-    { command: 'moodinfo [nama]', description: 'Menampilkan detail mood tertentu' },
-    { command: 'personalityinfo [nama]', description: 'Menampilkan detail personality tertentu' },
-    { command: 'listtriggers', description: 'Menampilkan semua trigger words' },
-    { command: 'listtriggers [mood]', description: 'Menampilkan trigger words untuk mood tertentu' },
-    { command: 'setmodel [model_id]', description: 'Mengubah model AI' },
-    { command: 'setprovider [openrouter/gemini]', description: 'Mengubah provider AI default' },
-    { command: 'setapikey [api_key]', description: 'Atur OpenRouter API key' },
-    { command: 'setgeminikey [api_key]', description: 'Atur Google Gemini API key' },
-    { command: 'status', description: 'Cek status bot' },
-    { command: 'clear', description: 'Hapus konteks percakapan' },
-    { command: 'setname [nama]', description: 'Mengubah nama bot' },
-    { command: 'debug', description: 'Tampilkan informasi debug' },
-  ];
-  
-  let helpText = '*Daftar Perintah Bot*\n\n';
-  
-  for (const cmd of commandList) {
-    helpText += `!${cmd.command}\n${cmd.description}\n\n`;
-  }
-  
-  return helpText;
+  return `🤖 Daftar Perintah:
+
+*Perintah Dasar:*
+!help - Menampilkan bantuan
+!ping - Mengecek apakah bot aktif
+!status - Menampilkan status bot
+!debug - Informasi debug
+
+*Pengaturan AI:*
+!setapikey [key] - Mengatur API key OpenRouter
+!setgeminikey [key] - Mengatur API key Gemini
+!settogetherkey [key] - Mengatur API key Together.AI
+!setmodel [model] - Mengatur model AI
+!setprovider [provider] - Mengatur provider (openrouter/gemini/together)
+
+*Pengaturan Bot:*
+!setname [nama] - Mengatur nama bot
+!clear - Menghapus konteks percakapan
+
+*Pengaturan Mood:*
+!setmood [mood] - Mengatur mood bot
+!listmoods - Menampilkan daftar mood
+!moodinfo [mood] - Info detail tentang mood
+!addmood [nama] [deskripsi] - Menambah mood kustom
+!removemood [nama] - Menghapus mood kustom
+
+*Pengaturan Personality:*
+!setpersonality [personality] - Mengatur personality bot
+!listpersonalities - Menampilkan daftar personality
+!personalityinfo [personality] - Info detail tentang personality
+!addpersonality [nama] [deskripsi] - Menambah personality kustom
+!removepersonality [nama] - Menghapus personality kustom
+
+*Pengaturan Trigger:*
+!listtriggers [mood?] - Menampilkan trigger words
+!addtriggers [mood] [trigger1] [trigger2] ... - Menambah trigger untuk mood
+
+Semua perintah hanya dapat dijalankan oleh admin di chat pribadi.`;
 }
 
 // Get status text
 function getStatusText(db) {
-  const { config, state } = db.data;
-  const { botName, model, personality, defaultProvider } = config;
-  const { currentMood, messageCount, lastInteraction } = state;
+  const status = {
+    botName: db.data.config.botName,
+    version: '1.0.0',
+    currentTime: new Date().toISOString(),
+    mood: db.data.state.currentMood,
+    personality: db.data.config.personality,
+    messageCount: db.data.state.messageCount || 0,
+    provider: db.data.config.defaultProvider || 'openrouter',
+    model: db.data.config.model || 'N/A',
+    openrouterConfigured: !!process.env.OPENROUTER_API_KEY,
+    geminiConfigured: !!process.env.GEMINI_API_KEY,
+    togetherConfigured: !!process.env.TOGETHER_API_KEY,
+  };
   
-  const lastInteractionDate = new Date(lastInteraction);
-  const formattedDate = lastInteractionDate.toLocaleString('id-ID');
-  
-  // Determine which API provider is being used
-  const modelProvider = model.startsWith('google/') ? 'Google Gemini' : 'OpenRouter';
-  
-  return `*Status Bot*
-  
-Nama: ${botName}
-Model: ${model}
-Provider: ${modelProvider}
-Default Provider: ${defaultProvider || 'openrouter'}
-Mood: ${currentMood}
-Personality: ${personality}
-Total Pesan: ${messageCount}
-Interaksi Terakhir: ${formattedDate}`;
+  // Format status as text
+  return `📊 Status Bot:
+• Nama: ${status.botName}
+• Versi: ${status.version}
+• Waktu Server: ${new Date().toLocaleString('id-ID')}
+• Mood: ${status.mood}
+• Personality: ${status.personality}
+• Jumlah Pesan: ${status.messageCount}
+• Provider: ${status.provider}
+• Model: ${status.model}
+• OpenRouter API: ${status.openrouterConfigured ? '✅ Terkonfigurasi' : '❌ Belum dikonfigurasi'} 
+• Gemini API: ${status.geminiConfigured ? '✅ Terkonfigurasi' : '❌ Belum dikonfigurasi'}
+• Together.AI API: ${status.togetherConfigured ? '✅ Terkonfigurasi' : '❌ Belum dikonfigurasi'}`;
 }
 
 // Get model selection text
@@ -608,55 +583,60 @@ async function setProvider(db, provider) {
     const normalizedProvider = provider.toLowerCase();
     
     // Validate provider
-    if (normalizedProvider !== 'openrouter' && normalizedProvider !== 'gemini') {
-      return { success: false, message: 'Provider tidak valid. Gunakan "openrouter" atau "gemini".' };
-    }
-    
-    // Check if API key is configured for the selected provider
-    if (normalizedProvider === 'openrouter' && !process.env.OPENROUTER_API_KEY) {
-      return { 
-        success: false, 
-        message: 'OpenRouter API key belum dikonfigurasi. Gunakan perintah !setapikey untuk mengatur kunci API.' 
+    if (!['openrouter', 'gemini', 'together'].includes(normalizedProvider)) {
+      return {
+        success: false,
+        message: 'Provider tidak valid. Gunakan "openrouter", "gemini", atau "together".'
       };
     }
     
-    if (normalizedProvider === 'gemini' && !process.env.GEMINI_API_KEY && !db.data.config.geminiApiKey) {
-      return { 
-        success: false, 
-        message: 'Gemini API key belum dikonfigurasi. Gunakan perintah !setgeminikey untuk mengatur kunci API Gemini.' 
+    // Check if API key is set for the selected provider
+    if (normalizedProvider === 'gemini' && !process.env.GEMINI_API_KEY) {
+      return {
+        success: false,
+        message: 'Gemini API key belum dikonfigurasi. Gunakan !setgeminikey terlebih dahulu.'
+      };
+    } else if (normalizedProvider === 'together' && !process.env.TOGETHER_API_KEY) {
+      return {
+        success: false,
+        message: 'Together.AI API key belum dikonfigurasi. Gunakan !settogetherkey terlebih dahulu.'
+      };
+    } else if (normalizedProvider === 'openrouter' && !process.env.OPENROUTER_API_KEY) {
+      return {
+        success: false,
+        message: 'OpenRouter API key belum dikonfigurasi. Gunakan !setapikey terlebih dahulu.'
       };
     }
     
-    // Set default provider
+    // Set the provider in database
     db.data.config.defaultProvider = normalizedProvider;
+    
+    // Set default model for the provider if not set
+    if (!db.data.config.model || db.data.config.model.startsWith('gemini') || db.data.config.model.startsWith('google/')) {
+      if (normalizedProvider === 'gemini') {
+        // Default Gemini model
+        db.data.config.model = 'google/gemini-1.5-pro';
+      } else if (normalizedProvider === 'together') {
+        // Default Together model
+        db.data.config.model = 'meta-llama/Llama-3.3-70B-Instruct-Turbo-Free';
+      } else {
+        // Default OpenRouter model
+        db.data.config.model = 'anthropic/claude-3-haiku';
+      }
+    }
+    
     await db.write();
     
-    // Get the Gemini model from .env file, with fallback to gemini-1.5-pro
-    const geminiModelFromEnv = process.env.GEMINI_MODEL || 'gemini-1.5-pro';
-    
-    // Set a default model for the provider if none is set
-    if (normalizedProvider === 'gemini' && (!db.data.config.model || db.data.config.model.startsWith('google/'))) {
-      db.data.config.model = geminiModelFromEnv;
-      await db.write();
-      return { 
-        success: true, 
-        message: `Provider berhasil diubah ke ${normalizedProvider}. Model default diubah ke ${geminiModelFromEnv}.` 
-      };
-    } else if (normalizedProvider === 'openrouter' && (!db.data.config.model || !db.data.config.model.includes('/'))) {
-      // Default OpenRouter model from .env or fallback to claude-3-opus
-      const defaultOpenRouterModel = process.env.DEFAULT_MODEL || 'anthropic/claude-3-opus';
-      db.data.config.model = defaultOpenRouterModel;
-      await db.write();
-      return { 
-        success: true, 
-        message: `Provider berhasil diubah ke ${normalizedProvider}. Model default diubah ke ${defaultOpenRouterModel}.` 
-      };
-    }
-    
-    return { success: true, message: `Provider berhasil diubah ke ${normalizedProvider}.` };
+    return {
+      success: true,
+      message: `Provider berhasil diubah ke ${normalizedProvider}. Model: ${db.data.config.model}`
+    };
   } catch (error) {
     console.error('Error setting provider:', error);
-    return { success: false, message: 'Terjadi kesalahan saat mengubah provider.' };
+    return {
+      success: false,
+      message: 'Terjadi kesalahan saat mengatur provider: ' + error.message
+    };
   }
 }
 
@@ -860,5 +840,11 @@ async function getMoodTriggersMessage(db, moodName) {
 
 export {
   detectCommand,
-  executeCommand
+  executeCommand,
+  setApiKey,
+  setGeminiApiKey,
+  setTogetherApiKey,
+  setModel,
+  setBotName,
+  setProvider
 }; 

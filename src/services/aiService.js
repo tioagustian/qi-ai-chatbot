@@ -15,10 +15,14 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 // Base URL for Google Gemini API
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 
+// Base URL for Together.AI API
+const TOGETHER_API_URL = 'https://api.together.xyz/v1/chat/completions';
+
 // API Providers
 const API_PROVIDERS = {
   OPENROUTER: 'openrouter',
-  GEMINI: 'gemini'
+  GEMINI: 'gemini',
+  TOGETHER: 'together'
 };
 
 // Models supported by tools
@@ -34,7 +38,15 @@ const TOOL_SUPPORTED_MODELS = [
   'google/gemini-1.5-flash',
   'gemini-2.0-flash-lite',
   'gemini-2.0-flash',
-  'gemini-2.5-flash-preview-04-17'
+  'gemini-2.5-flash-preview-04-17',
+  'meta-llama/Llama-3.3-70B-Instruct-Turbo-Free',
+  'deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free'
+];
+
+// Together.AI available models
+const TOGETHER_MODELS = [
+  'meta-llama/Llama-3.3-70B-Instruct-Turbo-Free',
+  'deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free'
 ];
 
 // Rate limit error messages to detect
@@ -88,6 +100,11 @@ async function generateAIResponseLegacy(message, context, botData) {
                           config.model.startsWith('google/') || 
                           config.model.startsWith('gemini')
                          ));
+                         
+    // Determine if we should use Together.AI API based on provider or model name
+    const isTogetherModel = config.defaultProvider === 'together' || 
+                           (config.model && TOGETHER_MODELS.includes(config.model));
+                         
     let apiKey;
     
     if (isGeminiModel) {
@@ -96,6 +113,13 @@ async function generateAIResponseLegacy(message, context, botData) {
       if (!apiKey) {
         logger.warning('Gemini API key not configured');
         return 'Gemini API key belum dikonfigurasi. Gunakan perintah !setgeminikey untuk mengatur kunci API Gemini.';
+      }
+    } else if (isTogetherModel) {
+      apiKey = config.togetherApiKey || process.env.TOGETHER_API_KEY;
+      
+      if (!apiKey) {
+        logger.warning('Together.AI API key not configured');
+        return 'Together.AI API key belum dikonfigurasi. Gunakan perintah !settogetherkey untuk mengatur kunci API Together.AI.';
       }
     } else {
       // Use OpenRouter API
@@ -194,6 +218,55 @@ async function generateAIResponseLegacy(message, context, botData) {
       } catch (geminiError) {
         logger.error('Gemini API request failed', geminiError);
         return `Gagal terhubung ke Gemini API: ${geminiError.message}. Coba lagi nanti ya~`;
+      }
+    } else if (isTogetherModel) {
+      logger.info(`Making request to Together.AI API with model: ${config.model}`);
+      
+      try {
+        // Convert messages to Together.AI format
+        const formattedMessages = formatMessagesForAPI(messages, config);
+        
+        // Call Together.AI API
+        const response = await requestTogetherChat(
+          config.model,
+          apiKey,
+          formattedMessages,
+          {
+            temperature: 0.7,
+            top_p: 0.9,
+            max_tokens: 1000,
+            stop: null,
+            stream: false
+          }
+        );
+        
+        if (!response) {
+          logger.error('Empty response from Together.AI API');
+          return 'Maaf, Together.AI API tidak memberikan respons. Coba lagi nanti ya~';
+        }
+        
+        logger.success(`Successfully processed Together.AI API response`);
+        
+        // Process response in the same format as OpenRouter response for consistency
+        if (response.choices && response.choices.length > 0 && 
+            response.choices[0].message && response.choices[0].message.content) {
+          
+          let processedContent = response.choices[0].message.content;
+          
+          // Trim leading/trailing newlines
+          if (processedContent.match(/^\s*\n+/) || processedContent.match(/\n+\s*$/)) {
+            processedContent = processedContent.replace(/^\s*\n+/, '').replace(/\n+\s*$/, '');
+          }
+          
+          logger.success(`Successfully processed AI response (${processedContent.length} chars)`);
+          return processedContent;
+        } else {
+          logger.error('Invalid response format from Together.AI API');
+          return 'Maaf, format respons dari Together.AI API tidak valid. Coba lagi nanti ya~';
+        }
+      } catch (togetherError) {
+        logger.error('Together.AI API request failed', togetherError);
+        return `Gagal terhubung ke Together.AI API: ${togetherError.message}. Coba lagi nanti ya~`;
       }
     } else {
       // OpenRouter implementation
@@ -820,6 +893,11 @@ async function generateAIResponse2(botConfig, contextMessages, streamCallback = 
                            botConfig.model.startsWith('google/') || 
                            botConfig.model.startsWith('gemini')
                           ));
+    
+    // Determine if we should use Together.AI API based on provider or model name
+    const isTogetherModel = botConfig.defaultProvider === 'together' ||
+                           (botConfig.model && TOGETHER_MODELS.includes(botConfig.model));
+    
     if (isGeminiModel) {
       apiProvider = API_PROVIDERS.GEMINI;
       apiKey = botConfig.geminiApiKey || process.env.GEMINI_API_KEY;
@@ -828,12 +906,22 @@ async function generateAIResponse2(botConfig, contextMessages, streamCallback = 
         console.error(chalk.red(`[AI Service] No Gemini API key provided for model ${botConfig.model}`));
         throw new Error('Gemini API key is required for Gemini models. Use !setgeminikey to set it.');
       }
+    } else if (isTogetherModel) {
+      apiProvider = API_PROVIDERS.TOGETHER;
+      apiKey = botConfig.togetherApiKey || process.env.TOGETHER_API_KEY;
+      
+      if (!apiKey) {
+        console.error(chalk.red(`[AI Service] No Together.AI API key provided for model ${botConfig.model}`));
+        throw new Error('Together.AI API key is required for Together models. Use !settogetherkey to set it.');
+      }
     }
     
     // Check if API key is configured
     if (!apiKey) {
       if (isGeminiModel) {
         throw new Error('Gemini API key is not configured. Please set it using !setgeminikey command.');
+      } else if (isTogetherModel) {
+        throw new Error('Together.AI API key is not configured. Please set it using !settogetherkey command.');
       } else {
         throw new Error('OpenRouter API key is not configured. Please set it using !setapikey command.');
       }
@@ -872,6 +960,24 @@ async function generateAIResponse2(botConfig, contextMessages, streamCallback = 
           temperature: botConfig.temperature || 0.7,
           top_p: botConfig.top_p || 0.95,
           max_tokens: botConfig.max_tokens || 4096,
+          stop: botConfig.stop || null,
+          stream: false // Streaming not supported yet
+        }
+      );
+    } else if (apiProvider === API_PROVIDERS.TOGETHER) {
+      if (streaming) {
+        console.log(chalk.yellow('[AI Service] Streaming not yet supported for Together.AI API, using normal request'));
+        streaming = false;
+      }
+      
+      response = await requestTogetherChat(
+        botConfig.model,
+        apiKey,
+        formattedMessages,
+        {
+          temperature: botConfig.temperature || 0.7,
+          top_p: botConfig.top_p || 0.95,
+          max_tokens: botConfig.max_tokens || 2048,
           stop: botConfig.stop || null,
           stream: false // Streaming not supported yet
         }
@@ -1097,6 +1203,66 @@ async function requestGeminiChat(model, apiKey, messages, params) {
   }
 }
 
+// Request to Together.AI chat API
+async function requestTogetherChat(model, apiKey, messages, params) {
+  try {
+    logger.info(`Making request to Together.AI API with model: ${model}`);
+    
+    // Build API URL
+    const url = TOGETHER_API_URL;
+    
+    // Prepare headers
+    const headers = {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    };
+    
+    // Prepare request body
+    const body = {
+      model: model,
+      messages: messages,
+      temperature: params.temperature || 0.7,
+      top_p: params.top_p || 0.95,
+      max_tokens: params.max_tokens || 2048,
+      stream: params.stream || false
+    };
+    
+    // Add optional parameters if provided
+    if (params.stop) {
+      body.stop = params.stop;
+    }
+    
+    logger.debug('Together.AI request body:', JSON.stringify(body));
+    
+    // Make the API request
+    const response = await axios.post(url, body, { headers });
+    
+    // Process response
+    if (!response.data) {
+      throw new Error('Empty response from Together.AI API');
+    }
+    
+    // Transform to a unified format similar to OpenRouter
+    return {
+      choices: [
+        {
+          message: {
+            content: response.data.choices[0].message.content,
+            role: 'assistant'
+          },
+          finish_reason: response.data.choices[0].finish_reason
+        }
+      ],
+      model: response.data.model,
+      id: response.data.id,
+      created: response.data.created
+    };
+  } catch (error) {
+    logger.error('Error making request to Together.AI API:', error);
+    throw new Error(`Together.AI API error: ${error.message}`);
+  }
+}
+
 // Export functions
 export {
   generateAIResponse2,
@@ -1104,5 +1270,7 @@ export {
   generateAIResponseLegacy as generateAIResponse,
   getAvailableModels,
   requestGeminiChat,
-  formatMessagesForAPI
+  requestTogetherChat,
+  formatMessagesForAPI,
+  TOGETHER_MODELS
 };
