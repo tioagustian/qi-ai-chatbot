@@ -1,4 +1,4 @@
-import { setMood, setPersonality, getAvailableMoods, getAvailablePersonalities } from './personalityService.js';
+import { setMood, setPersonality, getAvailableMoods, getAvailablePersonalities, addCustomMood, addCustomPersonality, addMoodTriggers, removeCustomMood, removeCustomPersonality, getMoodDescription, getPersonalityDescription, getAllMoodTriggers, MOODS, PERSONALITIES } from './personalityService.js';
 import { clearContext } from './contextService.js';
 import { getAvailableModels } from './aiService.js';
 import fs from 'fs';
@@ -66,7 +66,7 @@ async function executeCommand(sock, message, commandData, db) {
         
       case 'setmood':
         if (args.length === 0) {
-          const availableMoods = getAvailableMoods();
+          const availableMoods = getAvailableMoods(db);
           return `Mood yang tersedia: ${availableMoods.join(', ')}\nGunakan: !setmood [nama_mood]`;
         }
         const moodResult = await setMood(db, args[0]);
@@ -74,11 +74,77 @@ async function executeCommand(sock, message, commandData, db) {
         
       case 'setpersonality':
         if (args.length === 0) {
-          const availablePersonalities = getAvailablePersonalities();
+          const availablePersonalities = getAvailablePersonalities(db);
           return `Personality yang tersedia: ${availablePersonalities.join(', ')}\nGunakan: !setpersonality [nama_personality]`;
         }
         const personalityResult = await setPersonality(db, args[0]);
         return personalityResult.message;
+        
+      case 'addmood':
+        if (args.length < 2) {
+          return 'Gunakan format: !addmood [nama_mood] [deskripsi]\nContoh: !addmood playful Suka bermain dan penuh dengan candaan';
+        }
+        const moodName = args[0];
+        const moodDescription = args.slice(1).join(' ');
+        const addMoodResult = await addCustomMood(db, moodName, moodDescription);
+        return addMoodResult.message;
+        
+      case 'addpersonality':
+        if (args.length < 2) {
+          return 'Gunakan format: !addpersonality [nama_personality] [deskripsi]\nContoh: !addpersonality quirky Memiliki pemikiran dan selera humor yang unik';
+        }
+        const personalityName = args[0];
+        const personalityDescription = args.slice(1).join(' ');
+        const addPersonalityResult = await addCustomPersonality(db, personalityName, personalityDescription);
+        return addPersonalityResult.message;
+        
+      case 'addtriggers':
+        if (args.length < 2) {
+          return 'Gunakan format: !addtriggers [nama_mood] [trigger1] [trigger2] ...\nContoh: !addtriggers happy seneng gembira sukses berhasil';
+        }
+        const triggerMood = args[0];
+        const triggers = args.slice(1);
+        const addTriggersResult = await addMoodTriggers(db, triggerMood, triggers);
+        return addTriggersResult.message;
+        
+      case 'removemood':
+        if (args.length === 0) {
+          return 'Gunakan format: !removemood [nama_mood]\nContoh: !removemood playful';
+        }
+        const removeMoodResult = await removeCustomMood(db, args[0]);
+        return removeMoodResult.message;
+        
+      case 'removepersonality':
+        if (args.length === 0) {
+          return 'Gunakan format: !removepersonality [nama_personality]\nContoh: !removepersonality quirky';
+        }
+        const removePersonalityResult = await removeCustomPersonality(db, args[0]);
+        return removePersonalityResult.message;
+        
+      case 'listmoods':
+        return await getMoodsListMessage(db);
+        
+      case 'listpersonalities':
+        return await getPersonalitiesListMessage(db);
+        
+      case 'moodinfo':
+        if (args.length === 0) {
+          return 'Gunakan format: !moodinfo [nama_mood]\nContoh: !moodinfo happy';
+        }
+        return await getMoodInfoMessage(db, args[0]);
+        
+      case 'personalityinfo':
+        if (args.length === 0) {
+          return 'Gunakan format: !personalityinfo [nama_personality]\nContoh: !personalityinfo friendly';
+        }
+        return await getPersonalityInfoMessage(db, args[0]);
+        
+      case 'listtriggers':
+        if (args.length === 0) {
+          return await getAllTriggersMessage(db);
+        } else {
+          return await getMoodTriggersMessage(db, args[0]);
+        }
         
       case 'setmodel':
         if (args.length === 0) {
@@ -363,23 +429,39 @@ async function setBotName(db, name) {
 
 // Get help text
 function getHelpText() {
-  return `*Daftar Perintah*
+  const commandList = [
+    { command: 'help', description: 'Menampilkan daftar perintah yang tersedia' },
+    { command: 'ping', description: 'Cek apakah bot aktif' },
+    { command: 'setmood [mood]', description: 'Mengubah suasana hati bot' },
+    { command: 'setpersonality [personality]', description: 'Mengubah kepribadian bot' },
+    { command: 'addmood [nama] [deskripsi]', description: 'Menambahkan mood kustom baru' },
+    { command: 'addpersonality [nama] [deskripsi]', description: 'Menambahkan personality kustom baru' },
+    { command: 'addtriggers [mood] [trigger1] [trigger2] ...', description: 'Menambahkan kata-kata pemicu untuk mood tertentu' },
+    { command: 'removemood [nama]', description: 'Menghapus mood kustom' },
+    { command: 'removepersonality [nama]', description: 'Menghapus personality kustom' },
+    { command: 'listmoods', description: 'Menampilkan daftar mood yang tersedia' },
+    { command: 'listpersonalities', description: 'Menampilkan daftar personality yang tersedia' },
+    { command: 'moodinfo [nama]', description: 'Menampilkan detail mood tertentu' },
+    { command: 'personalityinfo [nama]', description: 'Menampilkan detail personality tertentu' },
+    { command: 'listtriggers', description: 'Menampilkan semua trigger words' },
+    { command: 'listtriggers [mood]', description: 'Menampilkan trigger words untuk mood tertentu' },
+    { command: 'setmodel [model_id]', description: 'Mengubah model AI' },
+    { command: 'setprovider [openrouter/gemini]', description: 'Mengubah provider AI default' },
+    { command: 'setapikey [api_key]', description: 'Atur OpenRouter API key' },
+    { command: 'setgeminikey [api_key]', description: 'Atur Google Gemini API key' },
+    { command: 'status', description: 'Cek status bot' },
+    { command: 'clear', description: 'Hapus konteks percakapan' },
+    { command: 'setname [nama]', description: 'Mengubah nama bot' },
+    { command: 'debug', description: 'Tampilkan informasi debug' },
+  ];
   
-!help - Menampilkan bantuan
-!ping - Cek bot aktif
-!status - Cek status bot
-!setmood [mood] - Ubah mood bot
-!setpersonality [personality] - Ubah kepribadian bot
-!clear - Hapus konteks percakapan
-!setmodel [model_id] - Ubah model AI
-!setprovider [openrouter/gemini] - Ubah provider AI default
-!setapikey [api_key] - Atur OpenRouter API key
-!setgeminikey [api_key] - Atur Google Gemini API key
-!setname [nama] - Ubah nama bot
-!debug - Tampilkan informasi debug
-
-_Gunakan perintah tanpa argumen untuk melihat opsi yang tersedia._
-_Perintah hanya bisa dijalankan oleh pengguna yang diizinkan di chat pribadi._`;
+  let helpText = '*Daftar Perintah Bot*\n\n';
+  
+  for (const cmd of commandList) {
+    helpText += `!${cmd.command}\n${cmd.description}\n\n`;
+  }
+  
+  return helpText;
 }
 
 // Get status text
@@ -575,6 +657,204 @@ async function setProvider(db, provider) {
   } catch (error) {
     console.error('Error setting provider:', error);
     return { success: false, message: 'Terjadi kesalahan saat mengubah provider.' };
+  }
+}
+
+// Function to get detailed info about moods
+async function getMoodsListMessage(db) {
+  try {
+    const moods = getAvailableMoods(db);
+    const defaultMoods = moods.filter(mood => MOODS.includes(mood));
+    const customMoods = moods.filter(mood => !MOODS.includes(mood));
+    
+    let message = '*Daftar Mood Tersedia*\n\n';
+    
+    if (defaultMoods.length > 0) {
+      message += '*Mood Default:*\n';
+      message += defaultMoods.join(', ');
+      message += '\n\n';
+    }
+    
+    if (customMoods.length > 0) {
+      message += '*Mood Kustom:*\n';
+      message += customMoods.join(', ');
+    } else {
+      message += 'Belum ada mood kustom.\nGunakan !addmood untuk menambahkan mood baru.';
+    }
+    
+    message += '\n\nGunakan !moodinfo [nama_mood] untuk melihat detail mood tertentu.';
+    
+    return message;
+  } catch (error) {
+    console.error('Error getting moods list:', error);
+    return 'Terjadi kesalahan saat mengambil daftar mood';
+  }
+}
+
+// Function to get detailed info about personalities
+async function getPersonalitiesListMessage(db) {
+  try {
+    const personalities = getAvailablePersonalities(db);
+    const defaultPersonalities = personalities.filter(p => PERSONALITIES.includes(p));
+    const customPersonalities = personalities.filter(p => !PERSONALITIES.includes(p));
+    
+    let message = '*Daftar Personality Tersedia*\n\n';
+    
+    if (defaultPersonalities.length > 0) {
+      message += '*Personality Default:*\n';
+      message += defaultPersonalities.join(', ');
+      message += '\n\n';
+    }
+    
+    if (customPersonalities.length > 0) {
+      message += '*Personality Kustom:*\n';
+      message += customPersonalities.join(', ');
+    } else {
+      message += 'Belum ada personality kustom.\nGunakan !addpersonality untuk menambahkan personality baru.';
+    }
+    
+    message += '\n\nGunakan !personalityinfo [nama_personality] untuk melihat detail personality tertentu.';
+    
+    return message;
+  } catch (error) {
+    console.error('Error getting personalities list:', error);
+    return 'Terjadi kesalahan saat mengambil daftar personality';
+  }
+}
+
+// Function to get detailed info about a specific mood
+async function getMoodInfoMessage(db, moodName) {
+  try {
+    const moods = getAvailableMoods(db);
+    moodName = moodName.toLowerCase();
+    
+    if (!moods.includes(moodName)) {
+      return `Mood "${moodName}" tidak ditemukan. Gunakan !listmoods untuk melihat mood yang tersedia.`;
+    }
+    
+    const description = getMoodDescription(moodName, db);
+    const currentMood = db.data.state.currentMood;
+    const isDefault = MOODS.includes(moodName);
+    
+    // Get triggers for this mood
+    const allTriggers = getAllMoodTriggers(db);
+    const triggers = allTriggers[moodName] || [];
+    
+    let message = `*Detail Mood: ${moodName}*\n\n`;
+    message += `Deskripsi: ${description}\n`;
+    message += `Status: ${isDefault ? 'Default' : 'Kustom'}\n`;
+    message += `Active: ${currentMood === moodName ? 'Ya' : 'Tidak'}\n\n`;
+    
+    if (triggers.length > 0) {
+      message += `*Trigger Words (${triggers.length}):*\n`;
+      message += triggers.slice(0, 10).join(', ');
+      
+      if (triggers.length > 10) {
+        message += `, ... dan ${triggers.length - 10} lainnya`;
+      }
+    } else {
+      message += '*Trigger Words:* Tidak ada\n';
+      message += 'Gunakan !addtriggers untuk menambahkan trigger words.';
+    }
+    
+    return message;
+  } catch (error) {
+    console.error('Error getting mood info:', error);
+    return 'Terjadi kesalahan saat mengambil informasi mood';
+  }
+}
+
+// Function to get detailed info about a specific personality
+async function getPersonalityInfoMessage(db, personalityName) {
+  try {
+    const personalities = getAvailablePersonalities(db);
+    personalityName = personalityName.toLowerCase();
+    
+    if (!personalities.includes(personalityName)) {
+      return `Personality "${personalityName}" tidak ditemukan. Gunakan !listpersonalities untuk melihat personality yang tersedia.`;
+    }
+    
+    const description = getPersonalityDescription(personalityName, db);
+    const currentPersonality = db.data.config.personality;
+    const isDefault = PERSONALITIES.includes(personalityName);
+    
+    let message = `*Detail Personality: ${personalityName}*\n\n`;
+    message += `Deskripsi: ${description}\n`;
+    message += `Status: ${isDefault ? 'Default' : 'Kustom'}\n`;
+    message += `Active: ${currentPersonality === personalityName ? 'Ya' : 'Tidak'}\n`;
+    
+    return message;
+  } catch (error) {
+    console.error('Error getting personality info:', error);
+    return 'Terjadi kesalahan saat mengambil informasi personality';
+  }
+}
+
+// Function to get all mood triggers
+async function getAllTriggersMessage(db) {
+  try {
+    const allTriggers = getAllMoodTriggers(db);
+    const availableMoods = getAvailableMoods(db);
+    
+    let message = '*Daftar Trigger Words Semua Mood*\n\n';
+    
+    let hasTriggers = false;
+    
+    for (const mood of availableMoods) {
+      const triggers = allTriggers[mood] || [];
+      
+      if (triggers.length > 0) {
+        hasTriggers = true;
+        message += `*${mood}* (${triggers.length}): `;
+        message += triggers.slice(0, 5).join(', ');
+        
+        if (triggers.length > 5) {
+          message += `, ... dan ${triggers.length - 5} lainnya`;
+        }
+        
+        message += '\n\n';
+      }
+    }
+    
+    if (!hasTriggers) {
+      message += 'Belum ada mood dengan trigger words. Gunakan !addtriggers untuk menambahkan trigger words.';
+    }
+    
+    message += 'Gunakan !listtriggers [nama_mood] untuk melihat semua trigger dari mood tertentu.';
+    
+    return message;
+  } catch (error) {
+    console.error('Error getting all triggers:', error);
+    return 'Terjadi kesalahan saat mengambil daftar trigger words';
+  }
+}
+
+// Function to get triggers for a specific mood
+async function getMoodTriggersMessage(db, moodName) {
+  try {
+    const availableMoods = getAvailableMoods(db);
+    moodName = moodName.toLowerCase();
+    
+    if (!availableMoods.includes(moodName)) {
+      return `Mood "${moodName}" tidak ditemukan. Gunakan !listmoods untuk melihat mood yang tersedia.`;
+    }
+    
+    const allTriggers = getAllMoodTriggers(db);
+    const triggers = allTriggers[moodName] || [];
+    
+    let message = `*Trigger Words untuk Mood: ${moodName}*\n\n`;
+    
+    if (triggers.length > 0) {
+      message += triggers.join(', ');
+    } else {
+      message += 'Mood ini belum memiliki trigger words.\n';
+      message += `Gunakan !addtriggers ${moodName} [trigger1] [trigger2] ... untuk menambahkan trigger words.`;
+    }
+    
+    return message;
+  } catch (error) {
+    console.error('Error getting mood triggers:', error);
+    return 'Terjadi kesalahan saat mengambil trigger words';
   }
 }
 

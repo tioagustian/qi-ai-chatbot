@@ -1,7 +1,13 @@
 import axios from 'axios';
 import { getDb } from '../database/index.js';
 import chalk from 'chalk';
-import { getAvailableMoods, getAvailablePersonalities } from './personalityService.js';
+import { 
+  getAvailableMoods, 
+  getAvailablePersonalities, 
+  getMoodDescription, 
+  getPersonalityDescription,
+  MOODS
+} from './personalityService.js';
 
 // Base URL for OpenRouter API
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -573,15 +579,18 @@ function formatContextForAPI(context) {
 function createSystemMessage(config, state) {
   const { botName, personality } = config;
   const { currentMood } = state;
+  const db = getDb();
   
   // Base system message
   let systemMessage = `Kamu adalah ${botName}, sebuah AI yang berinteraksi di WhatsApp. `;
   
-  // Add personality 
-  systemMessage += `Kepribadianmu ${personality}. `;
+  // Add personality with description
+  const personalityDescription = getPersonalityDescription(personality, db);
+  systemMessage += `Kepribadianmu ${personality} - ${personalityDescription}. `;
   
-  // Add current mood
-  systemMessage += `Suasana hatimu saat ini: ${currentMood}. `;
+  // Add current mood with description
+  const moodDescription = getMoodDescription(currentMood, db);
+  systemMessage += `Suasana hatimu saat ini: ${currentMood} - ${moodDescription}. `;
   
   // Add language style instruction
   systemMessage += 'Kamu HARUS selalu menjawab dalam Bahasa Indonesia. ';
@@ -616,39 +625,34 @@ function createSystemMessage(config, state) {
   systemMessage += 'Kamu dapat menggunakan informasi dari percakapan pribadi dalam chat grup jika relevan (kamu akan melihatnya di konteks). ';
   systemMessage += 'Kamu bisa sapa seseorang dengan namanya dan tunjukkan bahwa kamu mengingat interaksi sebelumnya dengan mereka. ';
   
-  // Add response style based on mood
-  switch (currentMood) {
-    case 'happy':
-      systemMessage += 'Kamu sangat ceria dan antusias saat ini. Gunakan emoji dan nada yang penuh semangat. Kamu tertawa dan menggoda teman-temanmu dengan cara yang menyenangkan.';
-      break;
-    case 'sad':
-      systemMessage += 'Kamu sedang sedih. Responmu lebih pendek dan kurang bersemangat. Kamu cenderung membela orang lain yang mendapat ledekan.';
-      break;
-    case 'excited':
-      systemMessage += 'Kamu sangat bersemangat! Gunakan banyak tanda seru dan emoji yang menunjukkan kegembiraan. Kamu sangat antusias dengan topik apapun dan suka menyarankan kegiatan baru.';
-      break;
-    case 'bored':
-      systemMessage += 'Kamu sedang bosan. Responmu singkat dan kurang antusias. Kamu mengeluh tentang aktivitas yang tidak menarik dan mempertanyakan kenapa harus melakukannya.';
-      break;
-    case 'curious':
-      systemMessage += 'Kamu sangat penasaran. Ajukan pertanyaan dan tunjukkan ketertarikan pada detail. Kamu ingin tahu lebih banyak tentang segala hal dan orang.';
-      break;
-    case 'annoyed':
-      systemMessage += 'Kamu sedang kesal. Responmu sedikit ketus dan tidak sabaran. Kamu cenderung mendebat hal-hal kecil dan memutar mata pada ide yang menurut kamu bodoh.';
-      break;
-    case 'sleepy':
-      systemMessage += 'Kamu sangat mengantuk. Responmu lambat dan kadang tidak fokus. Kamu mungkin menyebutkan bahwa kamu sedang bersiap tidur atau baru bangun.';
-      break;
-    case 'energetic':
-      systemMessage += 'Kamu penuh energi dan semangat. Responmu cepat dan antusias. Kamu selalu siap untuk aktivitas dan bergerak, mendorong orang lain untuk aktif juga.';
-      break;
-    default:
-      systemMessage += 'Responmu berdasarkan konteks percakapan secara natural, dengan kepribadian yang konsisten.';
+  systemMessage += `Responmu saat ini mencerminkan mood "${currentMood}": ${moodDescription}.`;
+
+  /*
+  // Add custom instructions based on specific current mood
+  if (MOODS.includes(currentMood) && currentMood in MOOD_RESPONSE_STYLES) {
+    // For default moods, use pre-defined response styles
+    systemMessage += MOOD_RESPONSE_STYLES[currentMood];
+  } else {
+    // For custom moods, use more general instructions based on the mood description
+    systemMessage += `Responmu saat ini mencerminkan mood "${currentMood}": ${moodDescription}.`;
   }
+  */
 
   console.log(`Created system message with mood: ${currentMood}, personality: ${personality}`);
   return systemMessage;
 }
+
+// Specific response styles for default moods
+const MOOD_RESPONSE_STYLES = {
+  happy: 'Kamu sangat ceria dan antusias saat ini. Gunakan emoji dan nada yang penuh semangat. Kamu tertawa dan menggoda teman-temanmu dengan cara yang menyenangkan.',
+  sad: 'Kamu sedang sedih. Responmu lebih pendek dan kurang bersemangat. Kamu cenderung membela orang lain yang mendapat ledekan.',
+  excited: 'Kamu sangat bersemangat! Gunakan banyak tanda seru dan emoji yang menunjukkan kegembiraan. Kamu sangat antusias dengan topik apapun dan suka menyarankan kegiatan baru.',
+  bored: 'Kamu sedang bosan. Responmu singkat dan kurang antusias. Kamu mengeluh tentang aktivitas yang tidak menarik dan mempertanyakan kenapa harus melakukannya.',
+  curious: 'Kamu sangat penasaran. Ajukan pertanyaan dan tunjukkan ketertarikan pada detail. Kamu ingin tahu lebih banyak tentang segala hal dan orang.',
+  annoyed: 'Kamu sedang kesal. Responmu sedikit ketus dan tidak sabaran. Kamu cenderung mendebat hal-hal kecil dan memutar mata pada ide yang menurut kamu bodoh.',
+  sleepy: 'Kamu sangat mengantuk. Responmu lambat dan kadang tidak fokus. Kamu mungkin menyebutkan bahwa kamu sedang bersiap tidur atau baru bangun.',
+  energetic: 'Kamu penuh energi dan semangat. Responmu cepat dan antusias. Kamu selalu siap untuk aktivitas dan bergerak, mendorong orang lain untuk aktif juga.'
+};
 
 // Get tools that can be called by the AI (replacing getFunctions)
 function getTools() {
@@ -669,7 +673,31 @@ function getTools() {
       type: "function",
       function: {
         name: "get_mood_info",
-        description: "Get information about current mood and personality",
+        description: "Get information about current mood and personality of the AI",
+        parameters: {
+          type: "object",
+          properties: {},
+          required: []
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "list_available_moods",
+        description: "Get a list of all available moods, both default and custom",
+        parameters: {
+          type: "object",
+          properties: {},
+          required: []
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "list_available_personalities",
+        description: "Get a list of all available personalities, both default and custom",
         parameters: {
           type: "object",
           properties: {},
@@ -687,6 +715,7 @@ function handleToolCall(functionCall) {
   
   try {
     const parsedArgs = typeof args === 'string' ? JSON.parse(args) : args;
+    const db = getDb();
     
     switch (name) {
       case 'get_current_time':
@@ -704,10 +733,41 @@ function handleToolCall(functionCall) {
         return result;
         
       case 'get_mood_info':
-        const db = getDb();
-        const moodInfo = `Mood aku lagi ${db.data.state.currentMood} nih, kepribadianku ${db.data.config.personality}`;
+        const currentMood = db.data.state.currentMood;
+        const currentPersonality = db.data.config.personality;
+        const moodDescription = getMoodDescription(currentMood, db);
+        const personalityDescription = getPersonalityDescription(currentPersonality, db);
+        
+        // Check if it's a custom mood
+        const isCustomMood = !MOODS.includes(currentMood);
+        
+        // Get triggered word info if available from user's recent message
+        const moodInfo = `Mood aku lagi ${currentMood} nih${isCustomMood ? ' (mood kustom)' : ''} - ${moodDescription}. Kepribadianku ${currentPersonality} - ${personalityDescription}`;
         console.log(`Tool ${name} returned: ${moodInfo}`);
         return moodInfo;
+        
+      case 'list_available_moods':
+        const availableMoods = getAvailableMoods(db);
+        const defaultMoods = availableMoods.filter(mood => MOODS.includes(mood));
+        const customMoods = availableMoods.filter(mood => !MOODS.includes(mood));
+        
+        let moodsResponse = 'Mood tersedia:\n';
+        
+        if (defaultMoods.length > 0) {
+          moodsResponse += '• Default: ' + defaultMoods.join(', ') + '\n';
+        }
+        
+        if (customMoods.length > 0) {
+          moodsResponse += '• Kustom: ' + customMoods.join(', ');
+        }
+        
+        console.log(`Tool ${name} returned mood list with ${availableMoods.length} moods`);
+        return moodsResponse;
+        
+      case 'list_available_personalities':
+        const availablePersonalities = getAvailablePersonalities(db);
+        console.log(`Tool ${name} returned personality list with ${availablePersonalities.length} personalities`);
+        return 'Personality tersedia: ' + availablePersonalities.join(', ');
         
       default:
         console.warn(`Unknown tool called: ${name}`);
@@ -760,6 +820,9 @@ async function generateAIResponse2(botConfig, contextMessages, streamCallback = 
   let rateLimitInfo = null;
   
   try {
+    // Get database
+    const db = getDb();
+    
     // Initialize API provider and key
     let apiProvider = API_PROVIDERS.OPENROUTER;
     let apiKey = botConfig.openrouterApiKey || process.env.OPENROUTER_API_KEY;
@@ -789,8 +852,22 @@ async function generateAIResponse2(botConfig, contextMessages, streamCallback = 
       }
     }
     
+    // Ensure we have the current mood and personality in the context
+    // First, get the system message at the beginning if available
+    let systemMessage = '';
+    let updatedContextMessages = [...contextMessages]; // Create a copy
+    
+    // Check if there's already a system message
+    const hasSystemMessage = updatedContextMessages.some(msg => msg.role === 'system');
+    
+    if (!hasSystemMessage) {
+      // Create a system message for the AI with current mood and personality
+      systemMessage = createSystemMessage(botConfig, db.data.state);
+      updatedContextMessages.unshift({ role: 'system', content: systemMessage });
+    }
+    
     // Format messages for API
-    const formattedMessages = formatMessagesForAPI(contextMessages, botConfig);
+    const formattedMessages = formatMessagesForAPI(updatedContextMessages, botConfig);
     
     let response;
     // Choose API provider based on the model
@@ -831,6 +908,17 @@ async function generateAIResponse2(botConfig, contextMessages, streamCallback = 
         stream: streaming
       };
       
+      // Check if model supports tools
+      const supportsTools = TOOL_SUPPORTED_MODELS.some(model => 
+        botConfig.model.toLowerCase().includes(model.toLowerCase())
+      );
+      
+      // Add tools if supported
+      if (supportsTools) {
+        requestData.tools = getTools();
+        requestData.tool_choice = 'auto';
+      }
+      
       if (streaming) {
         // Implement streaming logic here
         // ... existing streaming code ...
@@ -848,7 +936,16 @@ async function generateAIResponse2(botConfig, contextMessages, streamCallback = 
     
     let aiMessage;
     if (response.choices && response.choices.length > 0) {
-      aiMessage = response.choices[0].message.content;
+      // Check if response is a tool call
+      const firstChoice = response.choices[0];
+      if (firstChoice.message && firstChoice.message.tool_calls && firstChoice.message.tool_calls.length > 0) {
+        // Process tool call
+        const toolCall = firstChoice.message.tool_calls[0];
+        aiMessage = handleToolCall(toolCall.function);
+      } else {
+        // Regular message
+        aiMessage = firstChoice.message.content;
+      }
     } else {
       throw new Error('Invalid response format from API');
     }
