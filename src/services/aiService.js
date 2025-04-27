@@ -1422,7 +1422,9 @@ async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult)
       analysis: analysisResult,
       entities,
       topics,
-      relatedMessages: [] // Will store IDs of follow-up messages about this image
+      relatedMessages: [], // Will store IDs of follow-up messages about this image
+      hasBeenShown: false, // Track if this analysis has been shown to the user
+      lastAccessTime: timestamp // Track when this analysis was last accessed
     };
     
     // Store the analysis
@@ -1431,6 +1433,7 @@ async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult)
     // Also add a reference to the chat context
     if (db.data.conversations[chatId]) {
       // Create a special message to represent the image analysis with enhanced metadata
+      // This message will be stored in context but not sent to the user unless requested
       const imageContextMessage = {
         id: analysisId,
         sender: process.env.BOT_ID,
@@ -1445,7 +1448,10 @@ async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult)
           isImageAnalysis: true,
           entities,
           topics: ['image', ...topics],
-          fullAnalysisId: analysisId
+          fullAnalysisId: analysisId,
+          silentAnalysis: true, // Mark that this analysis was not shown to the user
+          originalSender: sender, // Track who sent the original image
+          originalTimestamp: timestamp // When the image was originally sent
         }
       };
       
@@ -1462,7 +1468,7 @@ async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult)
     
     // Save to database
     await db.write();
-    logger.success(`Stored enhanced image analysis with ID: ${analysisId}`);
+    logger.success(`Stored enhanced image analysis with ID: ${analysisId} (silent mode)`);
     
     return analysisId;
   } catch (error) {
@@ -1507,28 +1513,42 @@ function extractEntitiesFromAnalysis(analysisText) {
 function extractTopicsFromAnalysis(analysisText) {
   const topics = [];
   
-  // Check for common topics
-  if (/\b(?:pemandangan|landscape|alam|nature|outdoor)\b/i.test(analysisText)) {
-    topics.push('nature');
+  // Common topic categories to extract
+  const topicPatterns = {
+    'landscape': /\b(?:pemandangan|landscape|alam|nature|gunung|mountain|pantai|beach|laut|sea|danau|lake|outdoor)\b/gi,
+    'portrait': /\b(?:potret|portrait|selfie|wajah|face|foto diri|profile picture)\b/gi,
+    'food': /\b(?:makanan|food|minuman|drink|masakan|cuisine|hidangan|dish|menu|restaurant)\b/gi,
+    'document': /\b(?:dokumen|document|teks|text|tulisan|writing|kertas|paper|surat|letter|note)\b/gi,
+    'screenshot': /\b(?:screenshot|tangkapan layar|layar|screen|aplikasi|application|website|situs|web|app|capture)\b/gi,
+    'meme': /\b(?:meme|lucu|funny|humor|komik|comic|lelucon|joke)\b/gi,
+    'art': /\b(?:seni|art|lukisan|painting|gambar|drawing|sketsa|sketch|karya)\b/gi,
+    'animal': /\b(?:hewan|animal|binatang|kucing|cat|anjing|dog|burung|bird)\b/gi,
+    'vehicle': /\b(?:kendaraan|vehicle|mobil|car|motor|motorcycle|sepeda|bicycle|transportasi|transportation)\b/gi,
+    'building': /\b(?:bangunan|building|gedung|rumah|house|arsitektur|architecture|konstruksi|construction)\b/gi,
+    'group': /\b(?:grup|group|kumpulan|gathering|kerumunan|crowd|orang-orang|people)\b/gi,
+    'chart': /\b(?:grafik|chart|diagram|bagan|plot|statistik|statistics|data|angka|numbers)\b/gi
+  };
+  
+  // Extract topics based on patterns
+  Object.entries(topicPatterns).forEach(([topic, pattern]) => {
+    if (pattern.test(analysisText)) {
+      topics.push(topic);
+    }
+  });
+  
+  // Also extract any hashtag-like terms
+  const hashtagPattern = /#(\w+)/g;
+  const hashtagMatches = analysisText.match(hashtagPattern);
+  if (hashtagMatches) {
+    hashtagMatches.forEach(tag => {
+      topics.push(tag.substring(1).toLowerCase());
+    });
   }
   
-  if (/\b(?:makanan|minuman|food|drink|meal|restaurant)\b/i.test(analysisText)) {
-    topics.push('food');
-  }
+  // Add general image category
+  topics.push('image');
   
-  if (/\b(?:orang|seseorang|pria|wanita|person|people|group|crowd)\b/i.test(analysisText)) {
-    topics.push('people');
-  }
-  
-  if (/\b(?:dokumen|text|tulisan|document|writing|note)\b/i.test(analysisText)) {
-    topics.push('document');
-  }
-  
-  if (/\b(?:screenshot|layar|screen|capture|aplikasi|app)\b/i.test(analysisText)) {
-    topics.push('screenshot');
-  }
-  
-  return topics;
+  return [...new Set(topics)];
 }
 
 // Export functions

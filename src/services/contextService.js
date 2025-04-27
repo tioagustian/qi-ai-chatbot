@@ -253,9 +253,9 @@ async function getRelevantContext(db, chatId, message) {
     
     console.log(`[CONTEXT] Taking ${combinedMessages.length} combined relevant messages`);
 
-    // Enhanced image context handling
+    // Enhanced image context handling with support for silent analysis
     const imageFollowupKeywords = [
-      'gambar', 'foto', 'isi gambar', 'isi fotonya', 'apa ini', 'apa yang ada di gambar', 'apa yang ada di foto', 'analisa gambar', 'analisis gambar', 'jelaskan gambar', 'jelasin gambar', 'gambar apa', 'foto apa', 'apa isi', 'apa yang terlihat', 'apa yang terjadi di gambar', 'apa yang terjadi di foto', 'maksud', 'arti', 'artinya', 'maksudnya', 'jelaskan lagi', 'detail', 'lebih jelas'
+      'gambar', 'foto', 'isi gambar', 'isi fotonya', 'apa ini', 'apa yang ada di gambar', 'apa yang ada di foto', 'analisa gambar', 'analisis gambar', 'jelaskan gambar', 'jelasin gambar', 'gambar apa', 'foto apa', 'apa isi', 'apa yang terlihat', 'apa yang terjadi di gambar', 'apa yang terjadi di foto', 'maksud', 'arti', 'artinya', 'maksudnya', 'jelaskan lagi', 'detail', 'lebih jelas', 'tadi', 'sebelumnya', 'yang tadi', 'yang sebelumnya', 'yang barusan'
     ];
     const lowerMsg = (message || '').toLowerCase();
     const isImageFollowup = imageFollowupKeywords.some(k => lowerMsg.includes(k));
@@ -268,17 +268,62 @@ async function getRelevantContext(db, chatId, message) {
         .filter(msg => 
           msg.role === 'assistant' && 
           typeof msg.content === 'string' && 
-          (msg.content.startsWith('[IMAGE ANALYSIS:') || msg.metadata?.hasImage)
+          (msg.content.startsWith('[IMAGE ANALYSIS:') || msg.metadata?.hasImage || msg.metadata?.isImageAnalysis)
         )
         .slice(0, MAX_IMAGE_ANALYSIS_MESSAGES);
       
       if (imageAnalysisMessages.length > 0) {
-        // Add the most recent image analysis first
-        recentMessages.unshift({
-          role: 'system',
-          content: `Sebelumnya, user mengirim gambar dan aku sudah menganalisa: ${imageAnalysisMessages[0].content.replace('[IMAGE ANALYSIS:', '').replace(']', '').trim()}`,
-          name: 'system'
-        });
+        // Check if we have any image analysis in the database
+        if (db.data.imageAnalysis) {
+          // Find the most recent image analysis
+          const recentAnalysisMsg = imageAnalysisMessages[0];
+          const analysisId = recentAnalysisMsg.imageAnalysisId || recentAnalysisMsg.metadata?.fullAnalysisId;
+          
+          if (analysisId && db.data.imageAnalysis[analysisId]) {
+            // Get the full analysis from the database
+            const fullAnalysis = db.data.imageAnalysis[analysisId];
+            
+            // Update the last access time for this analysis
+            fullAnalysis.lastAccessTime = new Date().toISOString();
+            fullAnalysis.hasBeenShown = true; // Mark that this analysis has been shown to the user
+            
+            // Add the full analysis to the context
+            recentMessages.unshift({
+              role: 'system',
+              content: `Sebelumnya, user mengirim gambar dan aku sudah menganalisa: ${fullAnalysis.analysis}`,
+              name: 'system'
+            });
+            
+            // Add information about who sent the image and when
+            if (fullAnalysis.sender && fullAnalysis.sender !== process.env.BOT_ID) {
+              const senderName = db.data.conversations[chatId]?.participants[fullAnalysis.sender]?.name || 'User';
+              recentMessages.unshift({
+                role: 'system',
+                content: `Gambar tersebut dikirim oleh ${senderName} pada ${new Date(fullAnalysis.timestamp).toLocaleString('id-ID')}.`,
+                name: 'system'
+              });
+            }
+            
+            // Track this as a related message
+            if (!fullAnalysis.relatedMessages.includes(message?.key?.id)) {
+              fullAnalysis.relatedMessages.push(message?.key?.id);
+            }
+          } else {
+            // Fallback to the old method if we can't find the full analysis
+            recentMessages.unshift({
+              role: 'system',
+              content: `Sebelumnya, user mengirim gambar dan aku sudah menganalisa: ${recentAnalysisMsg.content.replace('[IMAGE ANALYSIS:', '').replace(']', '').trim()}`,
+              name: 'system'
+            });
+          }
+        } else {
+          // Fallback to the old method if we don't have the imageAnalysis structure
+          recentMessages.unshift({
+            role: 'system',
+            content: `Sebelumnya, user mengirim gambar dan aku sudah menganalisa: ${imageAnalysisMessages[0].content.replace('[IMAGE ANALYSIS:', '').replace(']', '').trim()}`,
+            name: 'system'
+          });
+        }
         
         // Add additional context from older image analyses if available
         if (imageAnalysisMessages.length > 1) {
@@ -297,6 +342,13 @@ async function getRelevantContext(db, chatId, message) {
             content: `Percakapan sebelumnya tentang gambar ini: ${formatConversationSnippet(imageFollowupMessages)}`,
             name: 'system'
           });
+        }
+        
+        // Save the updated analysis data
+        try {
+          await db.write();
+        } catch (dbError) {
+          console.error('Error updating image analysis data:', dbError);
         }
       }
     }

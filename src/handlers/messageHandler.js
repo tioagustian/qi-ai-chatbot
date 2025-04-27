@@ -69,13 +69,13 @@ async function processMessage(sock, message) {
       containsImage
     });
     
-    // Process image if present
+    // Process image if present - always analyze and store, but don't automatically respond
     let imageAnalysis = null;
     let imageAnalysisId = null;
     
     if (containsImage) {
       try {
-        logger.info('Message contains image, processing...');
+        logger.info('Message contains image, processing silently...');
         
         // Ensure temp directory exists
         try {
@@ -96,16 +96,24 @@ async function processMessage(sock, message) {
           `Analisis gambar ini. Caption gambar: "${imageData.caption}"` : 
           'Analisis gambar ini secara detail. Jelaskan apa yang kamu lihat, termasuk objek, orang, aksi, tempat, teks, dan detail lainnya yang penting.';
         
-        // Send typing indicator while processing image
-        await sock.sendPresenceUpdate('composing', chatId);
+        // Only show typing indicator if we're going to respond (in private chat or explicit request)
+        const isExplicitImageAnalysisRequest = imageData.caption && [
+          'analisis', 'analyze', 'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat', 'cek'
+        ].some(keyword => imageData.caption.toLowerCase().includes(keyword));
+        
+        const shouldShowTypingForImage = !isGroup || isExplicitImageAnalysisRequest;
+        
+        if (shouldShowTypingForImage) {
+          await sock.sendPresenceUpdate('composing', chatId);
+        }
         
         // Analyze image with Together.AI model
         imageAnalysis = await analyzeImage(tempFilePath, analysisPrompt);
         
-        // Store analysis in database
+        // Store analysis in database - this will be silent unless explicitly requested
         imageAnalysisId = await storeImageAnalysis(db, chatId, sender, imageData, imageAnalysis);
         
-        logger.success(`Image analyzed and stored with ID: ${imageAnalysisId}`);
+        logger.success(`Image analyzed and stored with ID: ${imageAnalysisId} (silent mode)`);
         
         // Clean up temporary file
         try {
@@ -200,13 +208,20 @@ async function processMessage(sock, message) {
       // 1. Always respond in private chats
       // 2. Respond if explicitly tagged
       // 3. If the message contains the bot's number in any form, consider it a tag
-      // 4. Always respond to images
+      // 4. Only respond to images if there's a caption asking for analysis or if it's in a private chat
       // 5. Otherwise use the AI to decide if it should respond
       const botPhoneNumber = process.env.BOT_ID?.split('@')[0]?.split(':')[0];
       const containsBotNumber = botPhoneNumber && content && content.includes(botPhoneNumber);
       
-      // Direct addressing conditions (always respond)
-      const isDirectlyAddressed = !isGroup || isTagged || containsBotNumber || containsImage;
+      // Check if the image has a caption that explicitly asks for analysis
+      const imageAnalysisKeywords = ['analisis', 'analyze', 'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat', 'cek'];
+      const isExplicitImageAnalysisRequest = containsImage && content && 
+        imageAnalysisKeywords.some(keyword => content.toLowerCase().includes(keyword));
+      
+      // Direct addressing conditions (respond only when directly addressed)
+      // For images, only respond if explicitly requested or in private chat
+      const isDirectlyAddressed = !isGroup || isTagged || containsBotNumber || 
+        (containsImage && (!isGroup || isExplicitImageAnalysisRequest));
       
       let shouldBotRespond = isDirectlyAddressed;
       
@@ -257,7 +272,15 @@ async function processMessage(sock, message) {
           
           logger.info('Generating AI response');
           // Enhanced message content for AI to include image context
-          const enhancedContent = containsImage ? 
+          // For new images, only include analysis in the prompt if we're supposed to respond
+          // For image-related queries about past images, the context will already include the analysis
+          const imageAnalysisKeywords = ['analisis', 'analyze', 'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat', 'cek'];
+          const isExplicitImageRequest = content && imageAnalysisKeywords.some(keyword => content.toLowerCase().includes(keyword));
+          
+          // Only include image analysis in the prompt if it's a direct request or private chat
+          const shouldIncludeImageAnalysis = containsImage && (!isGroup || isExplicitImageRequest);
+          
+          const enhancedContent = shouldIncludeImageAnalysis ? 
             (content ? `${content} [Image: ${(imageAnalysis ? imageAnalysis.substring(0, 200) : 'Image received, but analysis failed')}...]` : `[Image: ${(imageAnalysis ? imageAnalysis.substring(0, 200) : 'Image received, but analysis failed')}...]`) : 
             content;
           
@@ -441,4 +464,4 @@ async function processMessage(sock, message) {
   }
 }
 
-export { processMessage }; 
+export { processMessage };
