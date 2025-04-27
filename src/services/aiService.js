@@ -1460,7 +1460,7 @@ async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult)
         id: analysisId,
         sender: process.env.BOT_ID,
         name: db.data.config.botName,
-        content: `[IMAGE ANALYSIS: ${imageSummary}]`,
+        content: `[IMAGE ANALYSIS: ${analysisResult}]`,
         timestamp,
         role: 'assistant',
         chatType: chatId.endsWith('@g.us') ? 'group' : 'private',

@@ -512,10 +512,10 @@ async function processMessage(sock, message) {
           // Send the response with or without quoting, and with mentions if needed
           if (shouldQuote) {
             await sock.sendMessage(chatId, { text: aiResponse, mentions: responseMentions.length > 0 ? responseMentions : undefined }, { quoted: message });
-            logger.debug('Sent response with quote format');
+            logger.debug('Sent response with quote format:', { text: aiResponse, mentions: responseMentions.length > 0 ? responseMentions : undefined });
           } else {
             await sock.sendMessage(chatId, { text: aiResponse, mentions: responseMentions.length > 0 ? responseMentions : undefined });
-            logger.debug('Sent response without quote format');
+            logger.debug('Sent response without quote format:', { text: aiResponse, mentions: responseMentions.length > 0 ? responseMentions : undefined });
           }
           
           await sock.sendPresenceUpdate('paused', chatId);
