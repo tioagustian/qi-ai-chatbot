@@ -93,8 +93,8 @@ async function processMessage(sock, message) {
         
         // Set prompt based on caption or default
         const analysisPrompt = imageData.caption ? 
-          `Analisis gambar ini. Caption gambar: "${imageData.caption}"` : 
-          'Analisis gambar ini secara detail. Jelaskan apa yang kamu lihat, termasuk objek, orang, aksi, tempat, teks, dan detail lainnya yang penting.';
+          `Analisis gambar ini. Ekstrak semua informasi yang terdapat pada gambar. Caption gambar: "${imageData.caption}"` : 
+          'Analisis gambar ini secara detail. Jelaskan apa yang kamu lihat, termasuk objek, orang, aksi, tempat, teks, dan detail lainnya yang penting. Ekstrak semua informasi yang terdapat pada gambar.';
         
         // Only show typing indicator if we're going to respond (in private chat or explicit request)
         const isExplicitImageAnalysisRequest = imageData.caption && [
