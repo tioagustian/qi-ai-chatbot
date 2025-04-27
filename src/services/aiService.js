@@ -25,6 +25,9 @@ const API_PROVIDERS = {
   TOGETHER: 'together'
 };
 
+// Model for image analysis
+const IMAGE_ANALYSIS_MODEL = 'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo';
+
 // Models supported by tools
 const TOOL_SUPPORTED_MODELS = [
   'anthropic/claude-3-opus',
@@ -46,7 +49,8 @@ const TOOL_SUPPORTED_MODELS = [
 // Together.AI available models
 const TOGETHER_MODELS = [
   'meta-llama/Llama-3.3-70B-Instruct-Turbo-Free',
-  'deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free'
+  'deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free',
+  'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo' // Vision model for image analysis
 ];
 
 // Rate limit error messages to detect
@@ -1263,6 +1267,148 @@ async function requestTogetherChat(model, apiKey, messages, params) {
   }
 }
 
+/**
+ * Analyze an image using Together.AI vision model
+ * @param {string} imagePath - Path to the image file
+ * @param {string} prompt - Text prompt to guide image analysis
+ * @param {Object} options - Optional configuration
+ * @returns {Promise<string>} - The analysis result
+ */
+async function analyzeImage(imagePath, prompt = '', options = {}) {
+  try {
+    logger.info(`Analyzing image with Together.AI: ${imagePath}`);
+    
+    const apiKey = options.apiKey || process.env.TOGETHER_API_KEY;
+    
+    if (!apiKey) {
+      throw new Error('No Together.AI API key found for image analysis');
+    }
+    
+    // Get image as base64
+    let imageBase64;
+    if (imagePath.startsWith('data:image')) {
+      // Already base64
+      imageBase64 = imagePath;
+    } else {
+      // Read from file
+      const { promises: fs } = await import('fs');
+      const imageBuffer = await fs.readFile(imagePath);
+      imageBase64 = `data:image/jpeg;base64,${imageBuffer.toString('base64')}`;
+    }
+    
+    // Default description prompt if none provided
+    const analysisPrompt = prompt || 'Analisis gambar ini secara detail. Jelaskan apa yang kamu lihat, termasuk objek, orang, aksi, tempat, teks, dan detail lainnya yang penting.';
+    
+    // Prepare request for Together API
+    const headers = {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    };
+    
+    // Prepare message format for vision model
+    const messages = [
+      {
+        "role": "user",
+        "content": [
+          { "type": "text", "text": analysisPrompt },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": imageBase64
+            }
+          }
+        ]
+      }
+    ];
+    
+    // Prepare request body
+    const body = {
+      model: IMAGE_ANALYSIS_MODEL,
+      messages: messages,
+      temperature: options.temperature || 0.7,
+      max_tokens: options.max_tokens || 1024
+    };
+    
+    logger.debug('Sending image analysis request to Together.AI', { model: IMAGE_ANALYSIS_MODEL });
+    
+    // Make the API request
+    const response = await axios.post(TOGETHER_API_URL, body, { headers });
+    
+    if (!response.data || !response.data.choices || response.data.choices.length === 0) {
+      throw new Error('Empty or invalid response from Together.AI image analysis');
+    }
+    
+    const analysisResult = response.data.choices[0].message.content;
+    logger.success(`Image analysis complete: ${analysisResult.substring(0, 100)}...`);
+    
+    return analysisResult;
+  } catch (error) {
+    logger.error('Error analyzing image:', error);
+    throw new Error(`Failed to analyze image: ${error.message}`);
+  }
+}
+
+// Store image analysis in database
+async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult) {
+  try {
+    // Ensure image analysis structure exists
+    if (!db.data.imageAnalysis) {
+      db.data.imageAnalysis = {};
+    }
+    
+    const timestamp = new Date().toISOString();
+    const analysisId = `img_${Date.now()}`;
+    
+    // Create analysis entry
+    const analysis = {
+      id: analysisId,
+      chatId,
+      sender,
+      timestamp,
+      caption: imageData.caption || '',
+      mimetype: imageData.mimetype,
+      analysis: analysisResult
+    };
+    
+    // Store the analysis
+    db.data.imageAnalysis[analysisId] = analysis;
+    
+    // Also add a reference to the chat context
+    if (db.data.conversations[chatId]) {
+      // Create a special message to represent the image analysis
+      const imageContextMessage = {
+        id: analysisId,
+        sender: process.env.BOT_ID,
+        name: db.data.config.botName,
+        content: `[IMAGE ANALYSIS: ${analysisResult.substring(0, 100)}...]`,
+        timestamp,
+        role: 'assistant',
+        chatType: chatId.endsWith('@g.us') ? 'group' : 'private',
+        imageAnalysisId: analysisId // Reference to the full analysis
+      };
+      
+      // Add to conversation history
+      db.data.conversations[chatId].messages.push(imageContextMessage);
+      
+      // Limit history if needed
+      const MAX_MESSAGES = 50;
+      if (db.data.conversations[chatId].messages.length > MAX_MESSAGES) {
+        db.data.conversations[chatId].messages = db.data.conversations[chatId]
+          .messages.slice(-MAX_MESSAGES);
+      }
+    }
+    
+    // Save to database
+    await db.write();
+    logger.success(`Stored image analysis with ID: ${analysisId}`);
+    
+    return analysisId;
+  } catch (error) {
+    logger.error('Error storing image analysis:', error);
+    throw new Error('Failed to store image analysis in database');
+  }
+}
+
 // Export functions
 export {
   generateAIResponse2,
@@ -1272,5 +1418,8 @@ export {
   requestGeminiChat,
   requestTogetherChat,
   formatMessagesForAPI,
-  TOGETHER_MODELS
+  TOGETHER_MODELS,
+  analyzeImage,
+  storeImageAnalysis,
+  IMAGE_ANALYSIS_MODEL
 };

@@ -1,11 +1,19 @@
 import { getDb } from '../database/index.js';
-import { generateAIResponseLegacy } from '../services/aiService.js';
+import { generateAIResponseLegacy, analyzeImage, storeImageAnalysis } from '../services/aiService.js';
 import { updateMoodAndPersonality } from '../services/personalityService.js';
 import { detectCommand, executeCommand } from '../services/commandService.js';
 import { shouldRespond, QUESTION_INDICATORS } from '../utils/decisionMaker.js';
-import { extractMessageContent, isGroupMessage, isTaggedMessage, calculateResponseDelay } from '../utils/messageUtils.js';
+import { extractMessageContent, isGroupMessage, isTaggedMessage, calculateResponseDelay, hasImage, extractImageData } from '../utils/messageUtils.js';
 import { updateContext, getRelevantContext, shouldIntroduceInGroup, generateGroupIntroduction } from '../services/contextService.js';
 import chalk from 'chalk';
+import { promises as fs } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Get current directory for temporary file storage
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const TEMP_DIR = path.join(__dirname, '../../temp');
 
 // Console logging helper
 const logger = {
@@ -38,22 +46,76 @@ async function processMessage(sock, message) {
     const isGroup = isGroupMessage(message);
     const chatId = message.key.remoteJid;
     
-    // Skip empty or system messages
-    if (!content || content.trim() === '') {
-      logger.debug('Skipping empty message');
+    // Check if the message contains an image
+    const imageData = extractImageData(message);
+    const containsImage = !!imageData;
+    
+    // Skip empty messages that don't have images
+    if ((!content || content.trim() === '') && !containsImage) {
+      logger.debug('Skipping empty message without image');
       return;
     }
     
     const chatType = isGroup ? 'group' : 'private';
     const senderName = message.pushName || sender.split('@')[0];
     
-    logger.info(`Received message from ${senderName} in ${chatType}: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"`);
+    logger.info(`Received message from ${senderName} in ${chatType}: "${content?.substring(0, 50)}${content?.length > 50 ? '...' : ''}"${containsImage ? ' (contains image)' : ''}`);
     logger.debug('Message details', { 
       sender, 
       chatId, 
       isGroup, 
-      messageId: message.key.id 
+      messageId: message.key.id,
+      containsImage
     });
+    
+    // Process image if present
+    let imageAnalysis = null;
+    let imageAnalysisId = null;
+    
+    if (containsImage) {
+      try {
+        logger.info('Message contains image, processing...');
+        
+        // Ensure temp directory exists
+        try {
+          await fs.mkdir(TEMP_DIR, { recursive: true });
+        } catch (mkdirError) {
+          logger.error('Error creating temp directory', mkdirError);
+        }
+        
+        // Download image
+        const buffer = await sock.downloadMediaMessage(message);
+        const tempFilePath = path.join(TEMP_DIR, `image_${Date.now()}.jpg`);
+        await fs.writeFile(tempFilePath, buffer);
+        
+        logger.info(`Image saved to ${tempFilePath}`);
+        
+        // Set prompt based on caption or default
+        const analysisPrompt = imageData.caption ? 
+          `Analisis gambar ini. Caption gambar: "${imageData.caption}"` : 
+          'Analisis gambar ini secara detail. Jelaskan apa yang kamu lihat, termasuk objek, orang, aksi, tempat, teks, dan detail lainnya yang penting.';
+        
+        // Send typing indicator while processing image
+        await sock.sendPresenceUpdate('composing', chatId);
+        
+        // Analyze image with Together.AI model
+        imageAnalysis = await analyzeImage(tempFilePath, analysisPrompt);
+        
+        // Store analysis in database
+        imageAnalysisId = await storeImageAnalysis(db, chatId, sender, imageData, imageAnalysis);
+        
+        logger.success(`Image analyzed and stored with ID: ${imageAnalysisId}`);
+        
+        // Clean up temporary file
+        try {
+          await fs.unlink(tempFilePath);
+        } catch (unlinkError) {
+          logger.error('Error deleting temp image file', unlinkError);
+        }
+      } catch (imageError) {
+        logger.error('Error processing image', imageError);
+      }
+    }
     
     // Check if the bot is mentioned in the message
     const isTagged = isTaggedMessage(message, db.data.config.botName);
@@ -62,12 +124,12 @@ async function processMessage(sock, message) {
       isTagged,
       botId: process.env.BOT_ID,
       botName: db.data.config.botName,
-      content: content.substring(0, 50),
+      content: content?.substring(0, 50),
       mentionPattern: `@${process.env.BOT_ID?.split('@')[0]?.split(':')[0] || 'not-set'}`
     });
     
     // Check if it's a command (starts with ! or /)
-    const commandData = detectCommand(content);
+    const commandData = content ? detectCommand(content) : null;
     if (commandData) {
       logger.info(`Command detected: ${commandData.command} with ${commandData.args.length} argument(s)`);
       try {
@@ -87,7 +149,7 @@ async function processMessage(sock, message) {
     // Update conversation context
     try {
       logger.debug('Updating conversation context');
-      await updateContext(db, chatId, sender, content, message);
+      await updateContext(db, chatId, sender, content || (containsImage ? `[Image with analysis: ${imageAnalysisId}]` : "[Empty message]"), message);
     } catch (contextError) {
       logger.error('Error updating context', contextError);
     }
@@ -123,25 +185,27 @@ async function processMessage(sock, message) {
       }
     }
     
-    // Decide whether to respond (always respond in private chats or if tagged)
+    // Decide whether to respond (always respond in private chats, if tagged, or if image is present)
     try {
       // Log tagging information to help with debugging
       logger.debug('Message response decision factors', { 
         isPrivateChat: !isGroup, 
-        isTagged, 
-        content: content.substring(0, 30)
+        isTagged,
+        containsImage,
+        content: content?.substring(0, 30)
       });
       
       // Improved response logic:
       // 1. Always respond in private chats
       // 2. Respond if explicitly tagged
       // 3. If the message contains the bot's number in any form, consider it a tag
-      // 4. Otherwise use the AI to decide if it should respond
+      // 4. Always respond to images
+      // 5. Otherwise use the AI to decide if it should respond
       const botPhoneNumber = process.env.BOT_ID?.split('@')[0]?.split(':')[0];
-      const containsBotNumber = botPhoneNumber && content.includes(botPhoneNumber);
+      const containsBotNumber = botPhoneNumber && content && content.includes(botPhoneNumber);
       
       // Direct addressing conditions (always respond)
-      const isDirectlyAddressed = !isGroup || isTagged || containsBotNumber;
+      const isDirectlyAddressed = !isGroup || isTagged || containsBotNumber || containsImage;
       
       let shouldBotRespond = isDirectlyAddressed;
       
@@ -153,7 +217,7 @@ async function processMessage(sock, message) {
       
       if (shouldBotRespond) {
         if (isDirectlyAddressed) {
-          logger.info(`Bot will respond to message in ${chatType}${isTagged ? ' (tagged)' : ''}${containsBotNumber ? ' (number mentioned)' : ''}`);
+          logger.info(`Bot will respond to message in ${chatType}${isTagged ? ' (tagged)' : ''}${containsBotNumber ? ' (number mentioned)' : ''}${containsImage ? ' (contains image)' : ''}`);
         } else {
           logger.info(`Bot will respond to message in ${chatType} (AI decision)`);
         }
@@ -171,6 +235,16 @@ async function processMessage(sock, message) {
           logger.debug('Retrieving context for response');
           context = await getRelevantContext(db, chatId, content);
           logger.debug(`Retrieved ${context.length} context messages`);
+          
+          // If we have image analysis, add it to the context
+          if (imageAnalysis) {
+            // Add image analysis as a system message in the context
+            context.unshift({
+              role: 'system',
+              content: `The user has shared an image. Here is my analysis of it: ${imageAnalysis}`,
+              name: 'system'
+            });
+          }
         } catch (contextError) {
           logger.error('Error getting relevant context', contextError);
         }
@@ -181,7 +255,12 @@ async function processMessage(sock, message) {
           await sock.sendPresenceUpdate('composing', chatId);
           
           logger.info('Generating AI response');
-          const aiResponse = await generateAIResponseLegacy(content, context, db.data);
+          // Enhanced message content for AI to include image context
+          const enhancedContent = containsImage ? 
+            (content ? `${content} [Image: ${imageAnalysis.substring(0, 200)}...]` : `[Image: ${imageAnalysis.substring(0, 200)}...]`) : 
+            content;
+          
+          const aiResponse = await generateAIResponseLegacy(enhancedContent, context, db.data);
           
           logger.success(`AI response generated (${aiResponse.length} chars)`);
           logger.debug('AI response preview', { 
@@ -199,8 +278,14 @@ async function processMessage(sock, message) {
             wordCount: true // Use word count for more natural timing
           };
           
+          // Reduce delay if the message contained an image (since we already spent time analyzing it)
+          if (containsImage) {
+            delayOptions.minDelay = Math.max(500, delayOptions.minDelay / 2);
+            delayOptions.maxDelay = Math.max(1500, delayOptions.maxDelay / 2);
+          }
+          
           // Get delay time in milliseconds
-          const delayTime = calculateResponseDelay(content, aiResponse, delayOptions);
+          const delayTime = calculateResponseDelay(content || '', aiResponse, delayOptions);
           logger.info(`Waiting ${delayTime}ms before responding (simulating reading time)`);
           
           // Turn on typing indicator again after part of the delay has passed

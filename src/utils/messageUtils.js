@@ -47,6 +47,61 @@ function extractMessageContent(message) {
   return content;
 }
 
+/**
+ * Check if message contains an image
+ * @param {Object} message - The message object
+ * @returns {Boolean} - Whether the message contains an image
+ */
+function hasImage(message) {
+  if (!message || !message.message) {
+    return false;
+  }
+  
+  return !!message.message.imageMessage || 
+         (message.message.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage);
+}
+
+/**
+ * Extract image data from message
+ * @param {Object} message - The message object
+ * @returns {Object|null} - Image data object or null if no image
+ */
+function extractImageData(message) {
+  if (!hasImage(message)) {
+    return null;
+  }
+  
+  try {
+    // Check if the message directly contains an image
+    if (message.message.imageMessage) {
+      return {
+        mimetype: message.message.imageMessage.mimetype,
+        caption: message.message.imageMessage.caption || '',
+        url: null, // Will be filled by the download function
+        messageType: 'direct',
+        messageData: message.message.imageMessage
+      };
+    }
+    
+    // Check if it's a quoted message containing an image
+    if (message.message.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage) {
+      const quotedImage = message.message.extendedTextMessage.contextInfo.quotedMessage.imageMessage;
+      return {
+        mimetype: quotedImage.mimetype,
+        caption: quotedImage.caption || '',
+        url: null, // Will be filled by the download function
+        messageType: 'quoted',
+        messageData: quotedImage
+      };
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('[IMAGE EXTRACTION ERROR]', error);
+    return null;
+  }
+}
+
 // Check if message is from a group
 function isGroupMessage(message) {
   if (!message || !message.key) {
@@ -235,5 +290,7 @@ export {
   isTaggedMessage,
   getSenderInfo,
   getChatInfo,
-  calculateResponseDelay
+  calculateResponseDelay,
+  hasImage,
+  extractImageData
 }; 
