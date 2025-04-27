@@ -550,6 +550,27 @@ function getPersonalityDescription(personalityName, db) {
   return PERSONALITY_DESCRIPTIONS[personalityName] || `Personality: ${personalityName}`;
 }
 
+// Set character knowledge
+async function setCharacterKnowledge(db, knowledge) {
+  try {
+    db.data.config.characterKnowledge = knowledge;
+    await db.write();
+    
+    return { 
+      success: true, 
+      message: 'Pengetahuan karakter berhasil diubah' 
+    };
+  } catch (error) {
+    console.error('Error setting character knowledge:', error);
+    return { success: false, message: 'Terjadi kesalahan saat mengubah pengetahuan karakter' };
+  }
+}
+
+// Get character knowledge
+function getCharacterKnowledge(db) {
+  return db.data.config.characterKnowledge || '';
+}
+
 export {
   updateMoodAndPersonality,
   setMood,
@@ -564,6 +585,8 @@ export {
   getMoodDescription,
   getPersonalityDescription,
   getAllMoodTriggers,
+  setCharacterKnowledge,
+  getCharacterKnowledge,
   MOODS,
   PERSONALITIES
 }; 

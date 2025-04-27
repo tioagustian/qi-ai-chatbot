@@ -698,6 +698,12 @@ function createSystemMessage(config, state) {
   const moodDescription = getMoodDescription(currentMood, db);
   systemMessage += `Suasana hatimu saat ini: ${currentMood} - ${moodDescription}. `;
   
+  // Add character knowledge if exists
+  const characterKnowledge = getCharacterKnowledge(db);
+  if (characterKnowledge) {
+    systemMessage += `Kamu memiliki pengetahuan dan karakteristik berikut: ${characterKnowledge}. `;
+  }
+  
   // Add language style instruction
   systemMessage += 'Kamu HARUS selalu menjawab dalam Bahasa Indonesia. ';
   systemMessage += 'Kamu berbicara dengan gaya bahasa anak muda Indonesia yang santai, menggunakan singkatan dan slang. ';
@@ -1123,29 +1129,34 @@ async function generateAIResponse2(botConfig, contextMessages, streamCallback = 
 
 // Helper function to format messages based on API provider
 function formatMessagesForAPI(messages, botConfig) {
-  // Format messages based on the API provider and model
+  // Format messages berdasarkan provider dan model
   const isGeminiModel = botConfig.defaultProvider === 'gemini' ||
                        (botConfig.model && (
                          botConfig.model.startsWith('google/') || 
                          botConfig.model.startsWith('gemini')
                        ));
-  
-  if (isGeminiModel) {
-    // Format for Gemini API
-    return messages.map(msg => {
-      // Handle system messages for Gemini (convert to user)
-      if (msg.role === 'system') {
-        return {
-          role: 'user',
-          content: msg.content
-        };
-      }
+  // Format semua pesan agar memasukkan name dan timestamp ke dalam content
+  return messages.map(msg => {
+    if (msg.role === 'user') {
+      // Ambil nama dan timestamp jika ada, fallback jika tidak ada
+      const name = msg.name || '-';
+      const timestamp = msg.timestamp || new Date().toISOString();
+      const content = typeof msg.content === 'string' ? msg.content : '';
+      return {
+        role: 'user',
+        content: `name: ${name} \n time: ${timestamp} \n content: ${content}`
+      };
+    } else if (msg.role === 'system') {
+      // Untuk system, tetap seperti sebelumnya (atau bisa juga diformat jika perlu)
+      return {
+        role: isGeminiModel ? 'user' : 'system',
+        content: msg.content
+      };
+    } else {
+      // Untuk role lain (misal assistant), tetap seperti sebelumnya
       return msg;
-    });
-  }
-  
-  // Default format for OpenRouter
-  return messages;
+    }
+  });
 }
 
 /**

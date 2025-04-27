@@ -19,6 +19,7 @@ const defaultData = {
     moodChangeProbability: parseFloat(process.env.MOOD_CHANGE_PROBABILITY || 0.15),
     personality: process.env.DEFAULT_PERSONALITY || 'friendly',
     geminiApiKey: process.env.GEMINI_API_KEY || '',
+    characterKnowledge: '',
     // Enhanced context settings
     maxContextMessages: parseInt(process.env.MAX_CONTEXT_MESSAGES || 100),
     maxRelevantMessages: parseInt(process.env.MAX_RELEVANT_MESSAGES || 20),

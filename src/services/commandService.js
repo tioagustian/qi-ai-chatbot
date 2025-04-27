@@ -1,4 +1,4 @@
-import { setMood, setPersonality, getAvailableMoods, getAvailablePersonalities, addCustomMood, addCustomPersonality, addMoodTriggers, removeCustomMood, removeCustomPersonality, getMoodDescription, getPersonalityDescription, getAllMoodTriggers, MOODS, PERSONALITIES } from './personalityService.js';
+import { setMood, setPersonality, getAvailableMoods, getAvailablePersonalities, addCustomMood, addCustomPersonality, addMoodTriggers, removeCustomMood, removeCustomPersonality, getMoodDescription, getPersonalityDescription, getAllMoodTriggers, setCharacterKnowledge, getCharacterKnowledge, MOODS, PERSONALITIES } from './personalityService.js';
 import { clearContext } from './contextService.js';
 import { getAvailableModels, TOGETHER_MODELS } from './aiService.js';
 import fs from 'fs';
@@ -198,6 +198,14 @@ async function executeCommand(sock, message, commandData, db) {
         
       case 'debug':
         return getDebugInfo(db, chatId, sender);
+        
+      case 'setcharacter':
+        if (args.length === 0) {
+          const currentKnowledge = getCharacterKnowledge(db);
+          return `Pengetahuan karakter saat ini: ${currentKnowledge || 'Belum ada'}\nGunakan: !setcharacter [deskripsi_karakter]`;
+        }
+        const knowledgeResult = await setCharacterKnowledge(db, args.join(' '));
+        return knowledgeResult.message;
         
       default:
         return `Perintah tidak dikenal: ${command}. Gunakan !help untuk bantuan.`;
