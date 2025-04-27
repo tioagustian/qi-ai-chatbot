@@ -43,6 +43,7 @@ async function shouldRespond(db, chatId, message) {
     // Always respond in private chats
     const isPrivateChat = !chatId.endsWith('@g.us');
     if (isPrivateChat) {
+      console.log(chalk.blue(`[DECISION] Private chat detected. Will respond.`));
       return true;
     }
     
@@ -50,7 +51,15 @@ async function shouldRespond(db, chatId, message) {
     const conversation = db.data.conversations[chatId];
     if (!conversation) {
       // No context yet, fall back to basic checks
-      return isDirectlyAddressed(db, message);
+      const shouldRespond = isDirectlyAddressed(db, message);
+      console.log(chalk.blue(`[DECISION] No conversation context. Direct addressing check: ${shouldRespond}`));
+      return shouldRespond;
+    }
+
+    // Check if bot is directly addressed (always respond in this case)
+    if (isDirectlyAddressed(db, message)) {
+      console.log(chalk.blue(`[DECISION] Bot is directly addressed or question asked. Will respond.`));
+      return true;
     }
 
     // Get the last few messages for context
@@ -59,27 +68,27 @@ async function shouldRespond(db, chatId, message) {
       content: msg.content,
       name: msg.name
     }));
-
-    // Check if bot is directly addressed (always respond in this case)
-    if (isDirectlyAddressed(db, message)) {
-      console.log(chalk.blue(`[DECISION] Bot is directly addressed or question asked. Will respond.`));
-      return true;
-    }
     
     // Create system message for decision making
     const botName = db.data.config.botName;
     const systemMessage = {
       role: 'system',
-      content: `Kamu adalah ${botName}, AI dalam grup WhatsApp. Ini 10 pesan terakhir dari percakapan grup. 
+      content: `Kamu adalah ${botName}, AI dalam grup WhatsApp. Ini adalah beberapa pesan terakhir dari percakapan grup. 
 Pesan terakhir adalah dari pengguna yang bukan kamu. TUGASMU: Tentukan apakah pesan terakhir:
 1. Secara langsung ditujukan kepada kamu meskipun tidak menyebut namamu
 2. Relevan untuk kamu tanggapi sebagai bagian dari percakapan
 3. Merupakan konteks dimana pendapatmu atau informasi darimu akan berguna
-4. Adalah topik umum yang tidak memerlukan responsmu
+
+ATURAN PENTING:
+- Jangan merespons obrolan umum yang tidak ditujukan kepadamu
+- Jika ragu, lebih baik tidak merespons
+- Jangan merespons percakapan antar pengguna lain kecuali kamu diajak bicara
+- Percakapan pribadi antara dua orang tidak perlu direspons
+- Pertanyaan umum yang bukan ditujukan padamu tidak perlu direspons
 
 RESPONSLAH HANYA DENGAN:
-"YES" - jika kamu merasa perlu merespon pesan terakhir ini
-"NO" - jika kamu merasa pesan ini bukan untukmu atau tidak perlu responsmu
+"YES" - jika kamu yakin harus merespon pesan terakhir ini
+"NO" - jika pesan ini bukan untukmu atau tidak perlu responsmu
 
 SANGAT PENTING: Jangan memberikan respon selain "YES" atau "NO". Jangan jelaskan alasanmu.`
     };
@@ -98,12 +107,12 @@ SANGAT PENTING: Jangan memberikan respon selain "YES" atau "NO". Jangan jelaskan
     
     // Get AI's decision
     const decision = await generateAIResponseLegacy(
-      "Haruskah aku merespon pesan ini?", 
+      "Apakah aku perlu merespon pesan ini?", 
       decisionContext, 
       db.data
     );
 
-    const shouldBotRespond = decision.trim().toUpperCase().includes("YES");
+    const shouldBotRespond = decision.trim().toUpperCase() === "YES";
     
     console.log(chalk.blue(`[DECISION] AI decision: ${decision.trim()}, Will respond: ${shouldBotRespond}`));
     
@@ -111,7 +120,9 @@ SANGAT PENTING: Jangan memberikan respon selain "YES" atau "NO". Jangan jelaskan
   } catch (error) {
     console.error(chalk.red('Error in AI-based decision making:'), error);
     // In case of errors, fall back to basic check
-    return isDirectlyAddressed(db, message);
+    const shouldRespond = isDirectlyAddressed(db, message);
+    console.log(chalk.blue(`[DECISION] Error occurred, falling back to direct addressing check: ${shouldRespond}`));
+    return shouldRespond;
   }
 }
 
@@ -128,11 +139,24 @@ function isDirectlyAddressed(db, message) {
       return true;
     }
     
-    // Check if it's a direct question
-    if (QUESTION_INDICATORS.some(indicator => lowerMessage.includes(indicator))) {
-      return true;
+    // Check if it's a direct question with a question mark - be more strict
+    if (lowerMessage.includes('?')) {
+      // For questions, only consider it directed if they contain the bot's name
+      // or common indicators like 'menurutmu', 'bisakah kamu', etc.
+      const directQuestionIndicators = [
+        'menurutmu', 'menurut kamu', 'bisakah kamu', 'bisa kamu', 'tolong kamu',
+        'kamu bisa', 'kamu tau', 'kamu tahu', 'kamu punya'
+      ];
+      
+      if (directQuestionIndicators.some(indicator => lowerMessage.includes(indicator))) {
+        return true;
+      }
+      
+      // If it just has a question mark but none of the above, don't consider it directed
+      return false;
     }
     
+    // Less aggressive on other question indicators
     return false;
   } catch (error) {
     console.error('Error checking if directly addressed:', error);
