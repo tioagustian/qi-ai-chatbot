@@ -74,6 +74,14 @@ async function processMessage(sock, message) {
       containsImage
     });
     
+    // Mark message as read before processing
+    try {
+      await sock.readMessages([message.key]);
+      logger.debug('Message marked as read');
+    } catch (readError) {
+      logger.error('Error marking message as read', readError);
+    }
+    
     // Process image if present - always analyze and store, but don't automatically respond
     let imageAnalysis = null;
     let imageAnalysisId = null;
