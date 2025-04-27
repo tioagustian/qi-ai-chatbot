@@ -25,7 +25,10 @@ const TOOL_SUPPORTED_MODELS = [
   'openai/gpt-4',
   'openai/gpt-3.5-turbo',
   'google/gemini-1.5-pro',
-  'google/gemini-1.5-flash'
+  'google/gemini-1.5-flash',
+  'gemini-2.0-flash-lite',
+  'gemini-2.0-flash',
+  'gemini-2.5-flash-preview-04-17'
 ];
 
 // Rate limit error messages to detect

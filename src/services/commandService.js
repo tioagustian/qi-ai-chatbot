@@ -235,7 +235,9 @@ async function setModel(db, modelId) {
       'gemini15pro': 'gemini-1.5-pro',
       'gemini15flash': 'gemini-1.5-flash',
       'gemini10pro': 'gemini-1.0-pro',
-      'gemini20flashlite': 'gemini-2.0-flash-lite'
+      'gemini20flashlite': 'gemini-2.0-flash-lite',
+      'gemini20flash': 'gemini-2.0-flash',
+      'gemini25flash': 'gemini-2.5-flash-preview-04-17'
     };
     
     // Check if a short name was used and map it to the full model name
@@ -269,7 +271,7 @@ async function setModel(db, modelId) {
       }
       
       // Verify Gemini model is supported
-      const supportedGeminiModels = ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-1.0-pro'];
+      const supportedGeminiModels = ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-1.0-pro', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.5-flash-preview-04-17'];
       if (!supportedGeminiModels.includes(normalizedModelId) && 
           !supportedGeminiModels.includes(normalizedModelId.replace('google/', ''))) {
         return {
@@ -316,7 +318,9 @@ async function setModel(db, modelId) {
       'openai/gpt-3.5-turbo',
       'gemini-1.5-pro',
       'gemini-1.5-flash',
-      'gemini-2.0-flash-lite'
+      'gemini-2.0-flash-lite',
+      'gemini-2.0-flash',
+      'gemini-2.5-flash-preview-04-17'
     ];
     
     // Check if model supports tools
@@ -416,11 +420,13 @@ function getModelSelectionText(models) {
     { id: 'deepseek/deepseek-chat-v3-0324:free', shortname: 'deepseek', supportsTools: false, provider: 'OpenRouter' },
     { id: 'mistralai/mistral-7b-instruct', shortname: 'mistral', supportsTools: false, provider: 'OpenRouter' },
     { id: 'meta-llama/llama-3-8b-instruct', shortname: 'llama3', supportsTools: false, provider: 'OpenRouter' },
-    
     // Google Gemini models
     { id: 'google/gemini-1.5-pro', shortname: 'gemini15pro', supportsTools: true, provider: 'Google' },
     { id: 'google/gemini-1.5-flash', shortname: 'gemini15flash', supportsTools: true, provider: 'Google' },
-    { id: 'google/gemini-1.0-pro', shortname: 'gemini10pro', supportsTools: false, provider: 'Google' }
+    { id: 'google/gemini-1.0-pro', shortname: 'gemini10pro', supportsTools: false, provider: 'Google' },
+    { id: 'google/gemini-2.0-flash', shortname: 'gemini20flash', supportsTools: true, provider: 'Google' },
+    { id: 'google/gemini-2.0-flash-lite', shortname: 'gemini20flashlite', supportsTools: true, provider: 'Google' },
+    { id: 'google/gemini-2.5-flash-preview-04-17', shortname: 'gemini25flash', supportsTools: true, provider: 'Google' },
   ];
   
   // If we have models from OpenRouter API, format and display them
