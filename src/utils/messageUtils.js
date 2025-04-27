@@ -146,10 +146,94 @@ function getChatInfo(message) {
   };
 }
 
+/**
+ * Calculate a human-like response delay based on message length and complexity
+ * @param {string} message - The message content
+ * @param {string} response - The AI-generated response
+ * @param {Object} options - Configuration options
+ * @returns {number} - Delay in milliseconds
+ */
+function calculateResponseDelay(message, response, options = {}) {
+  try {
+    // Default options
+    const config = {
+      minDelay: options.minDelay || 1000, // Minimum delay in ms (1 second)
+      maxDelay: options.maxDelay || 5000, // Maximum delay in ms (5 seconds)
+      readingSpeed: options.readingSpeed || 30, // Characters per second for reading
+      typingSpeed: options.typingSpeed || 15, // Characters per second for typing
+      thinkingTime: options.thinkingTime || 1.5, // Multiplier for thinking time
+      privateChat: options.privateChat || false, // Whether this is a private chat
+      wordCount: options.wordCount || false // Calculate based on words instead of chars
+    };
+    
+    // Calculate reading time (how long it would take a human to read the message)
+    const messageLength = message?.length || 0;
+    const messageParts = message?.split(/\s+/) || [];
+    const wordCount = messageParts.length;
+    
+    // Reading time calculation (using either character or word count)
+    let readingTime;
+    if (config.wordCount) {
+      // Average person reads about 200-250 words per minute (3-4 words per second)
+      readingTime = (wordCount / 3.5) * 1000; // Convert to milliseconds
+    } else {
+      // Character-based calculation
+      readingTime = (messageLength / config.readingSpeed) * 1000; // Convert to milliseconds
+    }
+    
+    // Cap reading time at a reasonable value
+    readingTime = Math.min(readingTime, 3000); // Cap at 3 seconds
+    
+    // Calculate typing time (how long it would take to type the response)
+    const responseLength = response?.length || 0;
+    const typingTime = (responseLength / config.typingSpeed) * 1000; // Convert to milliseconds
+    
+    // Cap typing time
+    const cappedTypingTime = Math.min(typingTime, 5000); // Cap at 5 seconds
+    
+    // Add thinking time - simulates human thinking before responding
+    // More complex/longer messages need more thinking time
+    const complexityFactor = Math.min(
+      wordCount > 0 ? wordCount / 10 : messageLength / 50, 
+      2.0
+    ); 
+    const thinkingTime = config.thinkingTime * 1000 * complexityFactor;
+    
+    // Combine all times
+    let totalDelay = readingTime + thinkingTime + (cappedTypingTime / 3); 
+    // We only consider part of typing time since we show typing indicator
+    
+    // Reduce delay for private chats to be more responsive
+    if (config.privateChat) {
+      totalDelay = totalDelay * 0.7;
+    }
+    
+    // Add a small random factor to make it more human-like
+    const randomFactor = Math.random() * 0.3 + 0.85; // 0.85 to 1.15
+    totalDelay = totalDelay * randomFactor;
+    
+    // Add logging to help debug
+    console.log(`[DELAY] Message length: ${messageLength} chars, ${wordCount} words`);
+    console.log(`[DELAY] Response length: ${responseLength} chars`);
+    console.log(`[DELAY] Reading time: ${Math.round(readingTime)}ms, Thinking time: ${Math.round(thinkingTime)}ms, Typing time (partial): ${Math.round(cappedTypingTime/3)}ms`);
+    console.log(`[DELAY] Total delay (before min/max): ${Math.round(totalDelay)}ms`);
+    
+    // Ensure delay is within min and max bounds
+    const finalDelay = Math.max(config.minDelay, Math.min(config.maxDelay, Math.round(totalDelay)));
+    console.log(`[DELAY] Final delay: ${finalDelay}ms`);
+    
+    return finalDelay;
+  } catch (error) {
+    console.error('Error calculating response delay:', error);
+    return 2000; // Default to 2 seconds in case of error
+  }
+}
+
 export {
   extractMessageContent,
   isGroupMessage,
   isTaggedMessage,
   getSenderInfo,
-  getChatInfo
+  getChatInfo,
+  calculateResponseDelay
 }; 

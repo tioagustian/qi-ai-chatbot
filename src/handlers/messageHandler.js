@@ -3,7 +3,7 @@ import { generateAIResponseLegacy } from '../services/aiService.js';
 import { updateMoodAndPersonality } from '../services/personalityService.js';
 import { detectCommand, executeCommand } from '../services/commandService.js';
 import { shouldRespond, QUESTION_INDICATORS } from '../utils/decisionMaker.js';
-import { extractMessageContent, isGroupMessage, isTaggedMessage } from '../utils/messageUtils.js';
+import { extractMessageContent, isGroupMessage, isTaggedMessage, calculateResponseDelay } from '../utils/messageUtils.js';
 import { updateContext, getRelevantContext, shouldIntroduceInGroup, generateGroupIntroduction } from '../services/contextService.js';
 import chalk from 'chalk';
 
@@ -187,6 +187,34 @@ async function processMessage(sock, message) {
           logger.debug('AI response preview', { 
             preview: aiResponse 
           });
+          
+          // Calculate a human-like response delay
+          const delayOptions = {
+            privateChat: !isGroup,
+            minDelay: isGroup ? 1200 : 800,  // Longer minimum delay in groups
+            maxDelay: isGroup ? 5000 : 3500, // Longer maximum delay in groups
+            readingSpeed: 35, // Characters per second for reading
+            typingSpeed: 12, // Characters per second for typing
+            thinkingTime: isGroup ? 1.8 : 1.2, // More thinking time in groups
+            wordCount: true // Use word count for more natural timing
+          };
+          
+          // Get delay time in milliseconds
+          const delayTime = calculateResponseDelay(content, aiResponse, delayOptions);
+          logger.info(`Waiting ${delayTime}ms before responding (simulating reading time)`);
+          
+          // Turn on typing indicator again after part of the delay has passed
+          setTimeout(async () => {
+            try {
+              // Show typing indicator during the last part of the delay
+              await sock.sendPresenceUpdate('composing', chatId);
+            } catch (err) {
+              logger.error('Error showing typing indicator during delay', err);
+            }
+          }, Math.floor(delayTime * 0.6)); // Show typing indicator for the last 40% of the delay
+          
+          // Wait for the calculated delay time
+          await new Promise(resolve => setTimeout(resolve, delayTime));
           
           // Determine if we should use quoted reply format
           // Only use quoted reply in these cases:
