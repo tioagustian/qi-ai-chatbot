@@ -136,17 +136,27 @@ async function processMessage(sock, message) {
       // 1. Always respond in private chats
       // 2. Respond if explicitly tagged
       // 3. If the message contains the bot's number in any form, consider it a tag
-      // 4. Otherwise check the custom shouldRespond logic
+      // 4. Otherwise use the AI to decide if it should respond
       const botPhoneNumber = process.env.BOT_ID?.split('@')[0]?.split(':')[0];
       const containsBotNumber = botPhoneNumber && content.includes(botPhoneNumber);
       
-      const shouldBotRespond = !isGroup || 
-                              isTagged || 
-                              containsBotNumber ||
-                              await shouldRespond(db, chatId, content);
+      // Direct addressing conditions (always respond)
+      const isDirectlyAddressed = !isGroup || isTagged || containsBotNumber;
+      
+      let shouldBotRespond = isDirectlyAddressed;
+      
+      // If not directly addressed, use AI to decide
+      if (!isDirectlyAddressed) {
+        logger.info('Using AI to decide whether to respond to message...');
+        shouldBotRespond = await shouldRespond(db, chatId, content);
+      }
       
       if (shouldBotRespond) {
-        logger.info(`Bot will respond to message in ${chatType}${isTagged ? ' (tagged)' : ''}${containsBotNumber ? ' (number mentioned)' : ''}`);
+        if (isDirectlyAddressed) {
+          logger.info(`Bot will respond to message in ${chatType}${isTagged ? ' (tagged)' : ''}${containsBotNumber ? ' (number mentioned)' : ''}`);
+        } else {
+          logger.info(`Bot will respond to message in ${chatType} (AI decision)`);
+        }
         
         // Update bot's mood and personality
         try {

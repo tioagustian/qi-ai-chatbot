@@ -30,172 +30,117 @@ const EMOTION_EXPRESSIONS = [
   'haha', 'wkwk', 'lol', '😂', '😁', '😄', '😅', '🤣', 
   'sedih', '😢', '😭', '😔', '😞', 
   'kesel', 'marah', '😠', '😡', '😤',
-  'wow', 'gila', 'anjir', 'asik', '😮', '😲', '🔥', '⚡'
+  'wow', 'gila', 'anjir', 'asik', '😮', '��', '🔥', '⚡'
 ];
 
-// Decide whether the bot should respond to a message
+// Imported for AI-based decision making
+import { generateAIResponseLegacy } from '../services/aiService.js';
+import chalk from 'chalk';
+
+// Enhanced decision maker that uses AI to determine if the bot should respond
 async function shouldRespond(db, chatId, message) {
   try {
-    const lowerMessage = message.toLowerCase();
-    const botName = db.data.config.botName.toLowerCase();
-    
-    // Check if this is a private chat (higher response probability)
+    // Always respond in private chats
     const isPrivateChat = !chatId.endsWith('@g.us');
+    if (isPrivateChat) {
+      return true;
+    }
     
-    // Check if inactive chat (no messages in the last 30 minutes)
-    const isInactiveChat = checkIfInactiveChat(db, chatId);
-    
-    // Check if message contains bot name (but isn't a direct tag/mention)
-    const containsBotName = lowerMessage.includes(botName);
-    
-    // Check if message is a direct question
-    const isQuestion = QUESTION_INDICATORS.some(indicator => 
-      lowerMessage.includes(indicator)
-    );
-    
-    // Check if message contains interesting keywords
-    const containsInterestingKeyword = INTERESTING_KEYWORDS.some(keyword => 
-      lowerMessage.includes(keyword)
-    );
-    
-    // Check if message contains emotion expressions
-    const containsEmotions = EMOTION_EXPRESSIONS.some(emotion =>
-      lowerMessage.includes(emotion)
-    );
-    
-    // Check if message appears to be continuing a conversation
-    const isContinuingConversation = CONTINUATION_MARKERS.some(marker =>
-      lowerMessage.includes(marker)
-    );
-    
-    // Get the conversation and check conversation flow
+    // Get conversation context for the AI to make a decision
     const conversation = db.data.conversations[chatId];
     if (!conversation) {
-      // No previous conversation, fall back to standard probability
-      return isPrivateChat ? PRIVATE_CHAT_BASE_PROBABILITY > Math.random() : BASE_RESPONSE_PROBABILITY > Math.random();
+      // No context yet, fall back to basic checks
+      return isDirectlyAddressed(db, message);
+    }
+
+    // Get the last few messages for context
+    const recentMessages = conversation.messages.slice(-10).map(msg => ({
+      role: msg.sender === process.env.BOT_ID ? 'assistant' : 'user',
+      content: msg.content,
+      name: msg.name
+    }));
+
+    // Check if bot is directly addressed (always respond in this case)
+    if (isDirectlyAddressed(db, message)) {
+      console.log(chalk.blue(`[DECISION] Bot is directly addressed or question asked. Will respond.`));
+      return true;
     }
     
-    const messages = conversation.messages || [];
-    const messageCount = messages.length;
-    const isNewConversation = messageCount < 5;
+    // Create system message for decision making
+    const botName = db.data.config.botName;
+    const systemMessage = {
+      role: 'system',
+      content: `Kamu adalah ${botName}, AI dalam grup WhatsApp. Ini 10 pesan terakhir dari percakapan grup. 
+Pesan terakhir adalah dari pengguna yang bukan kamu. TUGASMU: Tentukan apakah pesan terakhir:
+1. Secara langsung ditujukan kepada kamu meskipun tidak menyebut namamu
+2. Relevan untuk kamu tanggapi sebagai bagian dari percakapan
+3. Merupakan konteks dimana pendapatmu atau informasi darimu akan berguna
+4. Adalah topik umum yang tidak memerlukan responsmu
+
+RESPONSLAH HANYA DENGAN:
+"YES" - jika kamu merasa perlu merespon pesan terakhir ini
+"NO" - jika kamu merasa pesan ini bukan untukmu atau tidak perlu responsmu
+
+SANGAT PENTING: Jangan memberikan respon selain "YES" atau "NO". Jangan jelaskan alasanmu.`
+    };
+
+    // Add user's current message to make a decision about
+    const decisionContext = [
+      systemMessage,
+      ...recentMessages,
+      {
+        role: 'user',
+        content: `Pesan terakhir grup: "${message}"`
+      }
+    ];
+
+    console.log(chalk.blue(`[DECISION] Asking AI if bot should respond to: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`));
     
-    // Check if the bot recently responded (last 2-3 messages)
-    let recentMessages = messages.slice(-3);
-    const botRecentlyResponded = recentMessages.some(msg => 
-      msg.sender === process.env.BOT_ID
+    // Get AI's decision
+    const decision = await generateAIResponseLegacy(
+      "Haruskah aku merespon pesan ini?", 
+      decisionContext, 
+      db.data
     );
+
+    const shouldBotRespond = decision.trim().toUpperCase().includes("YES");
     
-    // Get recent conversation participants (excluding the bot)
-    const recentParticipants = new Set();
-    recentMessages.forEach(msg => {
-      if (msg.sender !== process.env.BOT_ID) {
-        recentParticipants.add(msg.sender);
-      }
-    });
-    
-    // Check if this is an active multi-person conversation
-    const isActiveGroupChat = recentParticipants.size >= 2;
-    
-    // Check if the bot was mentioned in recent conversation
-    const botMentionedRecently = recentMessages.some(msg => 
-      msg.content && msg.content.toLowerCase().includes(botName) && msg.sender !== process.env.BOT_ID
-    );
-    
-    // Calculate base probability depending on chat type
-    let responseProbability = isPrivateChat ? PRIVATE_CHAT_BASE_PROBABILITY : BASE_RESPONSE_PROBABILITY;
-    
-    // Adjust probability based on message content
-    if (containsBotName) {
-      responseProbability = BOT_NAME_MENTION_PROBABILITY;
-    } else if (isQuestion) {
-      responseProbability = DIRECT_QUESTION_PROBABILITY;
-    } else if (containsInterestingKeyword) {
-      responseProbability = INTERESTING_KEYWORD_PROBABILITY;
-    } else if (isInactiveChat) {
-      responseProbability = INACTIVE_CHAT_PROBABILITY;
-    } else if (isContinuingConversation && botRecentlyResponded) {
-      // If the conversation is continuing and bot recently replied
-      responseProbability = CONVERSATION_CONTINUATION_PROBABILITY;
-    } else if (containsEmotions && !botRecentlyResponded) {
-      // If someone expressed emotion and bot hasn't responded recently
-      responseProbability = 0.6;
-    } else if (isActiveGroupChat && !botRecentlyResponded) {
-      // If it's an active group chat and the bot hasn't recently responded
-      responseProbability = 0.4; // Occasionally join in
-    }
-    
-    // Boost probability for new conversations
-    if (isNewConversation) {
-      responseProbability += 0.2;
-    }
-    
-    // Reduce probability if bot already responded recently and wasn't mentioned again
-    if (botRecentlyResponded && !botMentionedRecently && !isQuestion) {
-      responseProbability -= 0.3;
-    }
-    
-    // Get sender information and check their interaction history
-    const sender = messages.length > 0 ? messages[messages.length - 1].sender : null;
-    
-    if (sender && conversation.participants[sender]) {
-      const participant = conversation.participants[sender];
-      
-      // Increase probability for participants with few messages (new users)
-      if (participant.messageCount < 5) {
-        responseProbability += 0.1;
-      }
-      
-      // Increase probability for frequent participants (engaged users)
-      if (participant.messageCount > 20) {
-        responseProbability += 0.05;
-      }
-    }
-    
-    // Add some randomness based on bot's mood
-    const { currentMood } = db.data.state;
-    switch (currentMood) {
-      case 'excited':
-      case 'curious':
-      case 'energetic':
-        // More likely to respond when excited, curious, or energetic
-        responseProbability += 0.15;
-        break;
-      case 'bored':
-      case 'sleepy':
-        // Less likely to respond when bored or sleepy
-        responseProbability -= 0.15;
-        break;
-      case 'annoyed':
-        // When annoyed, more likely to respond to emotions or questions
-        if (containsEmotions || isQuestion) {
-          responseProbability += 0.1;
-        } else {
-          responseProbability -= 0.1;
-        }
-        break;
-    }
-    
-    // Ensure probability is between 0 and 1
-    responseProbability = Math.max(0, Math.min(1, responseProbability));
-    
-    // Make the decision
-    const shouldBotRespond = Math.random() < responseProbability;
-    
-    // Log decision factors for debugging
-    if (process.env.DEBUG === 'true') {
-      console.log(`[DECISION][${chatId}] Response probability: ${responseProbability.toFixed(2)}`);
-      console.log(`[DECISION] Factors: isPrivate=${isPrivateChat}, isQuestion=${isQuestion}, containsName=${containsBotName}, isActive=${!isInactiveChat}, botRecentlyResponded=${botRecentlyResponded}`);
-      console.log(`[DECISION] Result: ${shouldBotRespond ? 'Will respond' : 'Will not respond'}`);
-    }
+    console.log(chalk.blue(`[DECISION] AI decision: ${decision.trim()}, Will respond: ${shouldBotRespond}`));
     
     return shouldBotRespond;
   } catch (error) {
-    console.error('Error deciding whether to respond:', error);
-    return false; // Default to not responding in case of error
+    console.error(chalk.red('Error in AI-based decision making:'), error);
+    // In case of errors, fall back to basic check
+    return isDirectlyAddressed(db, message);
   }
 }
 
-// Check if chat has been inactive for a while (30 minutes)
+// Check if the message is directly addressed to the bot
+function isDirectlyAddressed(db, message) {
+  try {
+    if (!message) return false;
+    
+    const lowerMessage = message.toLowerCase();
+    const botName = db.data.config.botName.toLowerCase();
+    
+    // Check for direct mentions of the bot's name
+    if (lowerMessage.includes(botName)) {
+      return true;
+    }
+    
+    // Check if it's a direct question
+    if (QUESTION_INDICATORS.some(indicator => lowerMessage.includes(indicator))) {
+      return true;
+    }
+    
+    return false;
+  } catch (error) {
+    console.error('Error checking if directly addressed:', error);
+    return false;
+  }
+}
+
+// Check if chat has been inactive for a while (for backward compatibility)
 function checkIfInactiveChat(db, chatId) {
   try {
     const chat = db.data.conversations[chatId];
