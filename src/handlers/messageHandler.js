@@ -9,6 +9,7 @@ import chalk from 'chalk';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { downloadMediaMessage } from '@whiskeysockets/baileys';
 
 // Get current directory for temporary file storage
 const __filename = fileURLToPath(import.meta.url);
@@ -84,7 +85,7 @@ async function processMessage(sock, message) {
         }
         
         // Download image
-        const buffer = await sock.downloadMediaMessage(message);
+        const buffer = await downloadMediaMessage(message, 'buffer');
         const tempFilePath = path.join(TEMP_DIR, `image_${Date.now()}.jpg`);
         await fs.writeFile(tempFilePath, buffer);
         
@@ -257,7 +258,7 @@ async function processMessage(sock, message) {
           logger.info('Generating AI response');
           // Enhanced message content for AI to include image context
           const enhancedContent = containsImage ? 
-            (content ? `${content} [Image: ${imageAnalysis.substring(0, 200)}...]` : `[Image: ${imageAnalysis.substring(0, 200)}...]`) : 
+            (content ? `${content} [Image: ${(imageAnalysis ? imageAnalysis.substring(0, 200) : 'Image received, but analysis failed')}...]` : `[Image: ${(imageAnalysis ? imageAnalysis.substring(0, 200) : 'Image received, but analysis failed')}...]`) : 
             content;
           
           const aiResponse = await generateAIResponseLegacy(enhancedContent, context, db.data);

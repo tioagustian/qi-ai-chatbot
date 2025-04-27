@@ -50,7 +50,7 @@ const TOOL_SUPPORTED_MODELS = [
 const TOGETHER_MODELS = [
   'meta-llama/Llama-3.3-70B-Instruct-Turbo-Free',
   'deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free',
-  'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo' // Vision model for image analysis
+  'meta-llama/Llama-Vision-Free' // Vision model for image analysis
 ];
 
 // Rate limit error messages to detect
