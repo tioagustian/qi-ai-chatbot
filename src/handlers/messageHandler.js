@@ -207,6 +207,29 @@ async function processMessage(sock, message) {
       }
     }
     
+    // Extract mentioned JIDs and build @name mapping
+    let mentionMap = {};
+    let mentionedJids = [];
+    if (message.message?.extendedTextMessage?.contextInfo?.mentionedJid) {
+      mentionedJids = message.message.extendedTextMessage.contextInfo.mentionedJid;
+      // Try to get participant names from group context if available
+      if (isGroup && db.data.conversations[chatId]) {
+        mentionedJids.forEach(jid => {
+          const participant = db.data.conversations[chatId].participants[jid];
+          if (participant && participant.name) {
+            mentionMap[`@${participant.name}`] = jid;
+          } else {
+            // fallback to number
+            mentionMap[`@${jid.split('@')[0]}`] = jid;
+          }
+        });
+      } else {
+        mentionedJids.forEach(jid => {
+          mentionMap[`@${jid.split('@')[0]}`] = jid;
+        });
+      }
+    }
+    
     // Decide whether to respond (always respond in private chats, if tagged, or if image is present)
     try {
       // Log tagging information to help with debugging
@@ -374,6 +397,20 @@ async function processMessage(sock, message) {
           
           let aiResponse = await generateAIResponseLegacy(enhancedContent, context, db.data);
 
+          // --- Mention handling ---
+          // Find all @name in the response and build mentions array
+          const mentionRegex = /@([\w\d_]+)/g;
+          let match;
+          let responseMentions = [];
+          let usedNames = new Set();
+          while ((match = mentionRegex.exec(aiResponse)) !== null) {
+            const atName = `@${match[1]}`;
+            if (mentionMap[atName] && !usedNames.has(mentionMap[atName])) {
+              responseMentions.push(mentionMap[atName]);
+              usedNames.add(mentionMap[atName]);
+            }
+          }
+
           // Detect if the response is an error indicating provider failure (rate limit, API error, etc.)
           const isProviderError = typeof aiResponse === 'string' && (
             aiResponse.includes('Gagal terhubung') ||
@@ -469,12 +506,12 @@ async function processMessage(sock, message) {
             }
           }
           
-          // Send the response with or without quoting
+          // Send the response with or without quoting, and with mentions if needed
           if (shouldQuote) {
-            await sock.sendMessage(chatId, { text: aiResponse }, { quoted: message });
+            await sock.sendMessage(chatId, { text: aiResponse, mentions: responseMentions.length > 0 ? responseMentions : undefined }, { quoted: message });
             logger.debug('Sent response with quote format');
           } else {
-            await sock.sendMessage(chatId, { text: aiResponse });
+            await sock.sendMessage(chatId, { text: aiResponse, mentions: responseMentions.length > 0 ? responseMentions : undefined });
             logger.debug('Sent response without quote format');
           }
           
