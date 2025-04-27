@@ -182,6 +182,29 @@ async function getRelevantContext(db, chatId, message) {
     // Get recent messages from this chat
     let recentMessages = chatMessages.slice(-MAX_RELEVANT_MESSAGES);
     console.log(`[CONTEXT] Taking ${recentMessages.length} recent messages`);
+
+    // If the current message is a follow-up about an image, add the last image analysis as a system message
+    const imageFollowupKeywords = [
+      'gambar', 'foto', 'isi gambar', 'isi fotonya', 'apa ini', 'apa yang ada di gambar', 'apa yang ada di foto', 'analisa gambar', 'analisis gambar', 'jelaskan gambar', 'jelasin gambar', 'gambar apa', 'foto apa', 'apa isi', 'apa yang terlihat', 'apa yang terjadi di gambar', 'apa yang terjadi di foto'
+    ];
+    const lowerMsg = (message || '').toLowerCase();
+    const isImageFollowup = imageFollowupKeywords.some(k => lowerMsg.includes(k));
+    if (isImageFollowup) {
+      // Find the last image analysis message in the chat
+      const lastImageAnalysis = [...chatMessages].reverse().find(msg =>
+        msg.role === 'assistant' &&
+        typeof msg.content === 'string' &&
+        msg.content.startsWith('[IMAGE ANALYSIS:')
+      );
+      if (lastImageAnalysis) {
+        // Prepend a system message with the last image analysis
+        recentMessages.unshift({
+          role: 'system',
+          content: `Sebelumnya, user mengirim gambar dan aku sudah menganalisa: ${lastImageAnalysis.content.replace('[IMAGE ANALYSIS:', '').replace(']', '').trim()}`,
+          name: 'system'
+        });
+      }
+    }
     
     // Check if we should include cross-chat context from private chats in group chat
     if (isGroup && message) {

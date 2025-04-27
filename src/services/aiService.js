@@ -26,7 +26,7 @@ const API_PROVIDERS = {
 };
 
 // Model for image analysis
-const IMAGE_ANALYSIS_MODEL = 'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo';
+const IMAGE_ANALYSIS_MODEL = 'meta-llama/Llama-Vision-Free';
 
 // Models supported by tools
 const TOOL_SUPPORTED_MODELS = [
