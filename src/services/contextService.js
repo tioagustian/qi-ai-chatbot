@@ -16,6 +16,9 @@ const MAX_IMAGE_ANALYSIS_MESSAGES = 3;
 // Maximum number of topic-specific messages to include
 const MAX_TOPIC_SPECIFIC_MESSAGES = 10;
 
+// Import from memoryService
+import { findImagesByDescription } from './memoryService.js';
+
 // Update context with new message
 async function updateContext(db, chatId, sender, content, message) {
   try {
@@ -325,145 +328,106 @@ async function getRelevantContext(db, chatId, message) {
       if (imageAnalysisMessages.length > 0) {
         // Check if we have any image analysis in the database
         if (db.data.imageAnalysis) {
-          // Try to find the most relevant image analysis based on the query
-          // Start with the most recent one as default
+          // Try to find the most relevant image analysis using embeddings if available
           let relevantAnalysisMsg = imageAnalysisMessages[0];
           let relevantAnalysisId = relevantAnalysisMsg.imageAnalysisId || relevantAnalysisMsg.metadata?.fullAnalysisId;
           
-          // If the message contains temporal references like "tadi" (earlier), "sebelumnya" (previously),
-          // we should try to find the image that best matches the query
-          if (message && typeof message === 'string') {
-            const lowerMsg = message.toLowerCase();
-            const hasTemporalReference = [
-              'tadi', 'sebelumnya', 'sebelum ini', 'yang tadi', 'yang sebelumnya', 'yang barusan',
-              'earlier', 'before', 'previous', 'just now', 'just shared', 'just sent'
-            ].some(ref => lowerMsg.includes(ref));
-            
-            if (hasTemporalReference && imageAnalysisMessages.length > 1) {
-              console.log(`[CONTEXT] Message contains temporal reference, searching for most relevant image`);  
+          // Use embedding search if the message seems like a description-based query
+          // Check for descriptive terms in the message
+          const isDescriptiveQuery = typeof message === 'string' && (
+            message.includes('gambar') || 
+            message.includes('foto') || 
+            message.includes('image') || 
+            message.includes('picture') ||
+            message.includes('yang ada') ||
+            message.includes('yang menunjukkan') ||
+            message.includes('yang berisi') ||
+            message.includes('yang menampilkan')
+          );
+          
+          if (isDescriptiveQuery && db.data.config.dynamicFactExtractionEnabled) {
+            try {
+              // Look for images similar to the description using embedding search
+              // Use a 7-day timeframe for recency
+              const oneWeekMs = 7 * 24 * 60 * 60 * 1000;
+              const similarImages = await findImagesByDescription(message, {
+                chatId,
+                timeframe: oneWeekMs,
+                limit: 2, // Get the top 2 matches
+                threshold: 0.65 // Higher threshold for more relevance
+              });
               
-              // Look through all available image analyses to find the best match
-              // For now, we'll use a simple approach - if the message mentions specific entities or topics
-              // that are in an image analysis, prioritize that one
-              for (const analysisMsg of imageAnalysisMessages) {
-                const analysisId = analysisMsg.imageAnalysisId || analysisMsg.metadata?.fullAnalysisId;
-                if (analysisId && db.data.imageAnalysis[analysisId]) {
-                  const analysis = db.data.imageAnalysis[analysisId];
-                  
-                  // Check if any entities or topics from this image match the query
-                  const matchesQuery = [...(analysis.entities || []), ...(analysis.topics || [])]
-                    .some(item => lowerMsg.includes(item.toLowerCase()));
-                  
-                  if (matchesQuery) {
-                    console.log(`[CONTEXT] Found better matching image analysis: ${analysisId}`);  
-                    relevantAnalysisMsg = analysisMsg;
-                    relevantAnalysisId = analysisId;
-                    break;
-                  }
-                }
+              if (similarImages.length > 0) {
+                console.log(`[CONTEXT] Found ${similarImages.length} similar images by description`);
+                
+                // Use the most similar image as context
+                const mostSimilarImage = similarImages[0];
+                relevantAnalysisId = mostSimilarImage.id;
+                
+                // Add both the similarity score and a note about the search method
+                recentMessages.unshift({
+                  role: 'system',
+                  content: `User is asking about an image previously shared in this chat. Found a similar image with ${Math.round(mostSimilarImage.similarity * 100)}% match to their description.`,
+                  name: 'image_search_info'
+                });
               }
+            } catch (embeddingError) {
+              console.error('[CONTEXT] Error in image embedding search:', embeddingError);
             }
           }
           
-          // Now use the most relevant analysis (either most recent or best match)
           if (relevantAnalysisId && db.data.imageAnalysis[relevantAnalysisId]) {
-            // Get the full analysis from the database
-            const fullAnalysis = db.data.imageAnalysis[relevantAnalysisId];
+            // We found a relevant image analysis
+            const imageAnalysis = db.data.imageAnalysis[relevantAnalysisId];
+            console.log(`[CONTEXT] Found relevant image analysis: ${imageAnalysis.id}`);
             
-            // Update the last access time for this analysis
-            fullAnalysis.lastAccessTime = new Date().toISOString();
-            fullAnalysis.hasBeenShown = true; // Mark that this analysis has been shown to the user
+            // Include the image analysis in the context
+            recentMessages.unshift({
+              role: 'system',
+              content: `User juga pernah mengirim gambar. Berikut analisis gambar: ${imageAnalysis.analysis}`,
+              name: 'image_context'
+            });
             
-            // Format the timestamp in a human-readable format
-            const imageTimestamp = new Date(fullAnalysis.timestamp);
-            const now = new Date();
-            const timeDiffMinutes = Math.floor((now - imageTimestamp) / (1000 * 60));
-            const timeDiffHours = Math.floor(timeDiffMinutes / 60);
-            const timeDiffDays = Math.floor(timeDiffHours / 24);
-            
-            let timeDescription;
-            if (timeDiffMinutes < 1) {
-              timeDescription = 'baru saja';
-            } else if (timeDiffMinutes < 60) {
-              timeDescription = `${timeDiffMinutes} menit yang lalu`;
-            } else if (timeDiffHours < 24) {
-              timeDescription = `${timeDiffHours} jam yang lalu`;
-            } else {
-              timeDescription = `${timeDiffDays} hari yang lalu`;
+            // Get any follow-up messages about this image if available
+            if (imageAnalysis.relatedMessages && imageAnalysis.relatedMessages.length > 0) {
+              console.log(`[CONTEXT] Including ${imageAnalysis.relatedMessages.length} related messages for this image`);
+              
+              // Also include relevant previous messages about this image
+              // These could be follow-up questions or clarifications
+              const relatedMessageIds = new Set(imageAnalysis.relatedMessages);
+              const relatedMessages = chatMessages
+                .filter(msg => relatedMessageIds.has(msg.id))
+                .slice(0, 5); // Limit to 5 related messages
+                
+              if (relatedMessages.length > 0) {
+                recentMessages = recentMessages.concat(relatedMessages);
+              }
             }
             
-            // Add the full analysis to the context
-            recentMessages.unshift({
-              role: 'system',
-              content: `Sebelumnya, user mengirim gambar dan aku sudah menganalisa: ${fullAnalysis.analysis}`,
-              name: 'system'
-            });
+            // Mark that we've accessed this image analysis
+            imageAnalysis.lastAccessTime = new Date().toISOString();
+            await db.write();
+          } else {
+            console.log(`[CONTEXT] No specific relevant image analysis found, using most recent`);
             
-            // Add information about who sent the image and when
-            const senderName = fullAnalysis.senderName || 
-                              db.data.conversations[chatId]?.participants[fullAnalysis.sender]?.name || 
-                              fullAnalysis.sender.split('@')[0];
-            
-            recentMessages.unshift({
-              role: 'system',
-              content: `Gambar tersebut dikirim oleh ${senderName} ${timeDescription} (${new Date(fullAnalysis.timestamp).toLocaleString('id-ID')}).`,
-              name: 'system'
-            });
-            
-            // If the image had a caption, include it
-            if (fullAnalysis.caption && fullAnalysis.caption.trim() !== '') {
+            // No specific relevant images found, include the most recent one
+            const recentAnalysisId = imageAnalysisMessages[0].imageAnalysisId || 
+                                 imageAnalysisMessages[0].metadata?.fullAnalysisId;
+                                    
+            if (recentAnalysisId && db.data.imageAnalysis[recentAnalysisId]) {
+              const imageAnalysis = db.data.imageAnalysis[recentAnalysisId];
+              
               recentMessages.unshift({
                 role: 'system',
-                content: `Caption gambar tersebut: "${fullAnalysis.caption}"`,
-                name: 'system'
+                content: `User juga pernah mengirim gambar. Berikut analisis gambar terbaru: ${imageAnalysis.analysis}`,
+                name: 'image_context'
               });
+              
+              // Mark that we've accessed this image analysis
+              imageAnalysis.lastAccessTime = new Date().toISOString();
+              await db.write();
             }
-            
-            // Track this as a related message
-            if (message?.key?.id && !fullAnalysis.relatedMessages.includes(message.key.id)) {
-              fullAnalysis.relatedMessages.push(message.key.id);
-            }
-          } else {
-            // Fallback to the old method if we can't find the full analysis
-            recentMessages.unshift({
-              role: 'system',
-              content: `Sebelumnya, user mengirim gambar dan aku sudah menganalisa: ${relevantAnalysisMsg.content.replace('[IMAGE ANALYSIS:', '').replace(']', '').trim()}`,
-              name: 'system'
-            });
           }
-        } else {
-          // Fallback to the old method if we don't have the imageAnalysis structure
-          recentMessages.unshift({
-            role: 'system',
-            content: `Sebelumnya, user mengirim gambar dan aku sudah menganalisa: ${imageAnalysisMessages[0].content.replace('[IMAGE ANALYSIS:', '').replace(']', '').trim()}`,
-            name: 'system'
-          });
-        }
-        
-        // Add additional context from older image analyses if available
-        if (imageAnalysisMessages.length > 1) {
-          recentMessages.unshift({
-            role: 'system',
-            content: `User juga pernah mengirim gambar lain sebelumnya: ${imageAnalysisMessages.slice(1).map(msg => msg.content.replace('[IMAGE ANALYSIS:', '').replace(']', '').trim()).join(' | ')}`,
-            name: 'system'
-          });
-        }
-        
-        // Find any follow-up conversations about the images
-        const imageFollowupMessages = findRelatedMessages(chatMessages, imageAnalysisMessages[0].id, 5);
-        if (imageFollowupMessages.length > 0) {
-          recentMessages.push({
-            role: 'system',
-            content: `Percakapan sebelumnya tentang gambar ini: ${formatConversationSnippet(imageFollowupMessages)}`,
-            name: 'system'
-          });
-        }
-        
-        // Save the updated analysis data
-        try {
-          await db.write();
-        } catch (dbError) {
-          console.error('Error updating image analysis data:', dbError);
         }
       }
     }
@@ -548,7 +512,52 @@ async function getRelevantContext(db, chatId, message) {
     ];
     
     console.log(`[CONTEXT] Final context size: ${finalContext.length} messages`);
-    return finalContext;
+
+    // Add relevant user facts if available
+    if (db.data.config.dynamicFactExtractionEnabled && db.data.conversations[chatId]) {
+      // Find the most active user in the conversation
+      const participants = Object.values(db.data.conversations[chatId].participants)
+        .filter(p => p.id !== process.env.BOT_ID)
+        .sort((a, b) => b.messageCount - a.messageCount);
+      
+      if (participants.length > 0) {
+        const mainUser = participants[0];
+        
+        // Check if we have facts for this user
+        if (db.data.userFacts && db.data.userFacts[mainUser.id]) {
+          const userFacts = db.data.userFacts[mainUser.id].facts;
+          
+          // If we have at least some facts, add them to context
+          if (Object.keys(userFacts).length > 0) {
+            // Format facts for inclusion in the context
+            const factList = Object.entries(userFacts)
+              .filter(([key, fact]) => {
+                // Only include reasonably confident facts
+                return fact.confidence >= 0.75;
+              })
+              .map(([key, fact]) => `${key}: ${fact.value}`)
+              .join(', ');
+            
+            if (factList.length > 0) {
+              console.log(`[CONTEXT] Adding ${Object.keys(userFacts).length} user facts to context`);
+              
+              // Add user facts as a system message with low priority
+              finalContext.push({
+                role: 'system',
+                content: `Known facts about ${mainUser.name}: ${factList}`,
+                name: 'user_facts',
+                priority: 2  // Lower priority than core context
+              });
+            }
+          }
+        }
+      }
+    }
+    
+    // Sort final context by priority
+    const relevantContext = finalContext.sort((a, b) => (b.priority || 5) - (a.priority || 5));
+    
+    return relevantContext;
   } catch (error) {
     console.error('Error getting relevant context:', error);
     return [];

@@ -19,11 +19,14 @@ const defaultData = {
     moodChangeProbability: parseFloat(process.env.MOOD_CHANGE_PROBABILITY || 0.15),
     personality: process.env.DEFAULT_PERSONALITY || 'friendly',
     geminiApiKey: process.env.GEMINI_API_KEY || '',
+    togetherApiKey: process.env.TOGETHER_API_KEY || '',
+    openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
     characterKnowledge: '',
     // Enhanced context settings
     maxContextMessages: parseInt(process.env.MAX_CONTEXT_MESSAGES || 100),
     maxRelevantMessages: parseInt(process.env.MAX_RELEVANT_MESSAGES || 20),
-    enhancedMemoryEnabled: process.env.ENHANCED_MEMORY_ENABLED !== 'false'
+    enhancedMemoryEnabled: process.env.ENHANCED_MEMORY_ENABLED !== 'false',
+    dynamicFactExtractionEnabled: process.env.DYNAMIC_FACT_EXTRACTION_ENABLED !== 'false'
   },
   state: {
     currentMood: process.env.DEFAULT_MOOD || 'happy',
@@ -35,7 +38,13 @@ const defaultData = {
   contextMemory: [],
   participantsRegistry: {},
   imageAnalysis: {},
-  topicMemory: {}
+  imageEmbeddings: {},
+  topicMemory: {},
+  userFacts: {},
+  globalFacts: {
+    facts: {},
+    factHistory: []
+  }
 };
 
 // Initialize database
@@ -89,10 +98,40 @@ function ensureDataStructure() {
   if (!db.data.participantsRegistry) db.data.participantsRegistry = {};
   if (!db.data.imageAnalysis) db.data.imageAnalysis = {};
   if (!db.data.topicMemory) db.data.topicMemory = {};
+  if (!db.data.imageEmbeddings) db.data.imageEmbeddings = {};
+  
+  // Ensure new memory structures exist
+  if (!db.data.userFacts) db.data.userFacts = {};
+  if (!db.data.globalFacts) {
+    db.data.globalFacts = {
+      facts: {},
+      factHistory: []
+    };
+  }
+  
+  // Manual memory structure verification
+  // Verify userFacts structure
+  Object.entries(db.data.userFacts || {}).forEach(([userId, userFact]) => {
+    if (!userFact.facts) userFact.facts = {};
+    if (!userFact.factHistory) userFact.factHistory = [];
+  });
+  
+  // Verify imageEmbeddings structure
+  if (!db.data.imageEmbeddings) {
+    db.data.imageEmbeddings = {};
+  }
   
   // Ensure config fields are present
   if (db.data.config.geminiApiKey === undefined) {
     db.data.config.geminiApiKey = process.env.GEMINI_API_KEY || '';
+  }
+  
+  if (db.data.config.togetherApiKey === undefined) {
+    db.data.config.togetherApiKey = process.env.TOGETHER_API_KEY || '';
+  }
+  
+  if (db.data.config.openrouterApiKey === undefined) {
+    db.data.config.openrouterApiKey = process.env.OPENROUTER_API_KEY || '';
   }
   
   // Ensure enhanced context settings are present
@@ -106,6 +145,11 @@ function ensureDataStructure() {
   
   if (db.data.config.enhancedMemoryEnabled === undefined) {
     db.data.config.enhancedMemoryEnabled = process.env.ENHANCED_MEMORY_ENABLED !== 'false';
+  }
+  
+  // Add new dynamic fact extraction setting
+  if (db.data.config.dynamicFactExtractionEnabled === undefined) {
+    db.data.config.dynamicFactExtractionEnabled = process.env.DYNAMIC_FACT_EXTRACTION_ENABLED !== 'false';
   }
   
   // Ensure existing conversations have the updated structure
@@ -131,15 +175,17 @@ function ensureDataStructure() {
     }
     
     // Update participants structure if needed
-    Object.entries(chat.participants).forEach(([participantId, participant]) => {
-      if (!participant.lastActive) {
-        participant.lastActive = participant.firstSeen || new Date().toISOString();
-      }
-      
-      if (!participant.lastMessage) {
-        participant.lastMessage = '';
-      }
-    });
+    if (chat.participants) {
+      Object.entries(chat.participants).forEach(([participantId, participant]) => {
+        if (!participant.lastActive) {
+          participant.lastActive = participant.firstSeen || new Date().toISOString();
+        }
+        
+        if (!participant.lastMessage) {
+          participant.lastMessage = '';
+        }
+      });
+    }
   });
 }
 

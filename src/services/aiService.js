@@ -1346,7 +1346,7 @@ async function requestTogetherChat(model, apiKey, messages, params) {
  * @param {string} imagePath - Path to the image file
  * @param {string} prompt - Text prompt to guide image analysis
  * @param {Object} options - Optional configuration
- * @returns {Promise<string>} - The analysis result
+ * @returns {Promise<Object>} - The analysis result including embeddings
  */
 async function analyzeImage(imagePath, prompt = '', options = {}) {
   try {
@@ -1373,6 +1373,22 @@ async function analyzeImage(imagePath, prompt = '', options = {}) {
     // Default description prompt if none provided
     const analysisPrompt = prompt || 'Analisis gambar ini secara detail. Jelaskan apa yang kamu lihat, termasuk objek, orang, aksi, tempat, teks, dan detail lainnya yang penting.';
     
+    // For face detection, add specific instructions
+    const faceDetectionPrompt = analysisPrompt + ' Jika ada wajah manusia dalam gambar, harap sebutkan berapa banyak wajah yang terlihat dan jelaskan karakteristik wajah tersebut (gender, perkiraan umur, ekspresi, dll). Jika tidak ada wajah, nyatakan secara eksplisit.';
+    
+    // Enhanced prompt for better embedding generation
+    const enhancedEmbeddingPrompt = faceDetectionPrompt + ' Berikan juga kategori utama dari gambar ini (misalnya: portrait, landscape, food, document, meme, screenshot, dll).';
+    
+    // Enhanced detail prompt for more precise analysis
+    const enhancedDetailPrompt = options.enhancedPrompt ? 
+      enhancedEmbeddingPrompt + ' Detail gambar ini dengan sangat spesifik, termasuk warna utama, komposisi, pencahayaan, dan elemen khusus yang terlihat dalam gambar. Jika ada teks yang terlihat, tuliskan teks tersebut secara tepat. Jika ada identitas orang atau objek yang bisa dikenali, sebutkan dengan jelas.' : 
+      faceDetectionPrompt;
+    
+    // Final prompt based on options
+    const finalPrompt = options.extractEmbeddings ? 
+      enhancedEmbeddingPrompt : 
+      (options.enhancedPrompt ? enhancedDetailPrompt : faceDetectionPrompt);
+    
     // Prepare request for Together API
     const headers = {
       'Authorization': `Bearer ${apiKey}`,
@@ -1384,7 +1400,7 @@ async function analyzeImage(imagePath, prompt = '', options = {}) {
       {
         "role": "user",
         "content": [
-          { "type": "text", "text": analysisPrompt },
+          { "type": "text", "text": finalPrompt },
           {
             "type": "image_url",
             "image_url": {
@@ -1415,7 +1431,80 @@ async function analyzeImage(imagePath, prompt = '', options = {}) {
     const analysisResult = response.data.choices[0].message.content;
     logger.success(`Image analysis complete: ${analysisResult.substring(0, 100)}...`);
     
-    return analysisResult;
+    // Extract additional information
+    let imageType = 'unknown';
+    let faceCount = 0;
+    let faceDescriptions = [];
+    
+    // Detect image type
+    if (analysisResult.toLowerCase().includes('screenshot') || 
+        analysisResult.toLowerCase().includes('tangkapan layar')) {
+      imageType = 'screenshot';
+    } else if (analysisResult.toLowerCase().includes('landscape') || 
+              analysisResult.toLowerCase().includes('pemandangan')) {
+      imageType = 'landscape';
+    } else if (analysisResult.toLowerCase().includes('portrait') || 
+              analysisResult.toLowerCase().includes('potret') ||
+              analysisResult.toLowerCase().includes('selfie')) {
+      imageType = 'portrait';
+    } else if (analysisResult.toLowerCase().includes('food') || 
+              analysisResult.toLowerCase().includes('makanan') ||
+              analysisResult.toLowerCase().includes('minuman')) {
+      imageType = 'food';
+    } else if (analysisResult.toLowerCase().includes('document') || 
+              analysisResult.toLowerCase().includes('dokumen') ||
+              analysisResult.toLowerCase().includes('teks')) {
+      imageType = 'document';
+    } else if (analysisResult.toLowerCase().includes('meme') || 
+              analysisResult.toLowerCase().includes('lucu') ||
+              analysisResult.toLowerCase().includes('humor')) {
+      imageType = 'meme';
+    }
+    
+    // Detect faces
+    const faceRegex = /(\d+)\s+(?:wajah|face|orang|person|people)/i;
+    const faceMatch = analysisResult.match(faceRegex);
+    if (faceMatch) {
+      faceCount = parseInt(faceMatch[1]);
+      
+      // Try to extract face descriptions
+      const faceSections = analysisResult.split(/(?:wajah|face|orang|person|people)/i).slice(1);
+      faceDescriptions = faceSections.map(section => section.trim()).filter(s => s.length > 0);
+    } else if (analysisResult.toLowerCase().includes('wajah') || 
+               analysisResult.toLowerCase().includes('face')) {
+      faceCount = 1;
+    }
+    
+    // Generate a simple embedding from the analysis text if requested
+    let embedding = null;
+    let faceEmbeddings = [];
+    
+    if (options.extractEmbeddings) {
+      // Generate placeholder embeddings
+      // (In a production system, you would use a proper embedding model)
+      const { generateTextEmbedding } = await import('./memoryService.js');
+      embedding = generateTextEmbedding(analysisResult, 512);
+      
+      // Generate face embeddings if faces were detected
+      if (faceCount > 0) {
+        for (let i = 0; i < faceCount; i++) {
+          const faceDescription = faceDescriptions[i] || `Face ${i+1}`;
+          // Generate a unique embedding for each face based on its description
+          faceEmbeddings.push(generateTextEmbedding(`face${i+1}_${faceDescription}`, 512));
+        }
+      }
+    }
+    
+    // Return enhanced result with additional data
+    return {
+      analysis: analysisResult,
+      imageType,
+      faceCount,
+      faceDescriptions,
+      embedding,
+      faceEmbeddings,
+      detectedFaces: faceCount > 0
+    };
   } catch (error) {
     logger.error('Error analyzing image:', error);
     throw new Error(`Failed to analyze image: ${error.message}`);
@@ -1433,15 +1522,35 @@ async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult)
     const timestamp = new Date().toISOString();
     const analysisId = `img_${Date.now()}`;
     
+    // Check if analysisResult is string or object
+    let analysisText = '';
+    let embedding = null;
+    let faceEmbeddings = [];
+    let imageType = null;
+    let faceCount = 0;
+    let faceDescriptions = [];
+    
+    if (typeof analysisResult === 'string') {
+      analysisText = analysisResult;
+    } else {
+      // It's an enhanced analysis object
+      analysisText = analysisResult.analysis;
+      embedding = analysisResult.embedding;
+      faceEmbeddings = analysisResult.faceEmbeddings || [];
+      imageType = analysisResult.imageType;
+      faceCount = analysisResult.faceCount || 0;
+      faceDescriptions = analysisResult.faceDescriptions || [];
+    }
+    
     // Extract key entities and topics from the analysis result
-    const entities = extractEntitiesFromAnalysis(analysisResult);
-    const topics = extractTopicsFromAnalysis(analysisResult);
+    const entities = extractEntitiesFromAnalysis(analysisText);
+    const topics = extractTopicsFromAnalysis(analysisText);
     
     // Create a summary of the image for easier reference
     const summaryLength = 100;
-    const imageSummary = analysisResult.length > summaryLength ? 
-      analysisResult.substring(0, summaryLength).trim() + '...' : 
-      analysisResult;
+    const imageSummary = analysisText.length > summaryLength ? 
+      analysisText.substring(0, summaryLength).trim() + '...' : 
+      analysisText;
     
     // Create enhanced analysis entry with more metadata
     const analysis = {
@@ -1451,10 +1560,13 @@ async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult)
       timestamp,
       caption: imageData.caption || '',
       mimetype: imageData.mimetype,
-      analysis: analysisResult,
+      analysis: analysisText,
       summary: imageSummary,
       entities,
       topics,
+      imageType,
+      faceCount,
+      faceDescriptions,
       relatedMessages: [], // Will store IDs of follow-up messages about this image
       hasBeenShown: false, // Track if this analysis has been shown to the user
       lastAccessTime: timestamp, // Track when this analysis was last accessed
@@ -1473,7 +1585,7 @@ async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult)
         id: analysisId,
         sender: process.env.BOT_ID,
         name: db.data.config.botName,
-        content: `[IMAGE ANALYSIS: ${analysisResult}]`,
+        content: `[IMAGE ANALYSIS: ${analysisText}]`,
         timestamp,
         role: 'assistant',
         chatType: chatId.endsWith('@g.us') ? 'group' : 'private',
@@ -1488,7 +1600,10 @@ async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult)
           originalSender: sender, // Track who sent the original image
           originalSenderName: imageData.senderName || sender.split('@')[0], // Store sender's name
           originalTimestamp: timestamp, // When the image was originally sent
-          originalMessageId: imageData.messageId || null // Store original message ID for reference
+          originalMessageId: imageData.messageId || null, // Store original message ID for reference
+          imageType,
+          faceCount,
+          hasEmbedding: !!embedding
         }
       };
       
@@ -1500,6 +1615,35 @@ async function storeImageAnalysis(db, chatId, sender, imageData, analysisResult)
       if (db.data.conversations[chatId].messages.length > MAX_MESSAGES) {
         db.data.conversations[chatId].messages = db.data.conversations[chatId]
           .messages.slice(-MAX_MESSAGES);
+      }
+    }
+    
+    // Store embedding data if available
+    if (embedding || (faceEmbeddings && faceEmbeddings.length > 0)) {
+      try {
+        const { storeImageEmbedding, addImageRecognitionFacts } = await import('./memoryService.js');
+        
+        // Store the embedding
+        await storeImageEmbedding(analysisId, embedding, faceEmbeddings, {
+          chatId,
+          sender,
+          timestamp,
+          caption: imageData.caption || '',
+          imageType,
+          faceCount,
+          analysisId
+        });
+        
+        // Add image recognition facts for the user
+        await addImageRecognitionFacts(sender, {
+          faces: faceEmbeddings,
+          imageType,
+          description: imageSummary
+        });
+        
+        logger.success(`Stored embeddings for image ${analysisId}`);
+      } catch (embeddingError) {
+        logger.error('Error storing image embedding:', embeddingError);
       }
     }
     

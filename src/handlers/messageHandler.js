@@ -10,6 +10,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
+import { extractAndProcessFacts, formatRelevantFacts } from '../services/memoryService.js';
 
 // Get current directory for temporary file storage
 const __filename = fileURLToPath(import.meta.url);
@@ -120,13 +121,31 @@ async function processMessage(sock, message) {
           await sock.sendPresenceUpdate('composing', chatId);
         }
         
-        // Analyze image with Together.AI model
-        imageAnalysis = await analyzeImage(tempFilePath, analysisPrompt);
+        // Analyze image with Together.AI model with embedding extraction enabled
+        imageAnalysis = await analyzeImage(tempFilePath, analysisPrompt, {
+          extractEmbeddings: true, // Enable embedding extraction
+          enhancedPrompt: true // Use enhanced prompt for better detail extraction
+        });
         
         // Store analysis in database - this will be silent unless explicitly requested
         imageAnalysisId = await storeImageAnalysis(db, chatId, sender, imageData, imageAnalysis);
         
         logger.success(`Image analyzed and stored with ID: ${imageAnalysisId} (silent mode)`);
+        
+        // Add image information to facts
+        if (db.data.config.dynamicFactExtractionEnabled && imageAnalysis.detectedFaces) {
+          try {
+            const { addImageRecognitionFacts } = await import('../services/memoryService.js');
+            await addImageRecognitionFacts(sender, {
+              faces: imageAnalysis.faceEmbeddings || [],
+              imageType: imageAnalysis.imageType,
+              description: imageAnalysis.analysis.substring(0, 100)
+            });
+            logger.info('Added image recognition facts for user');
+          } catch (factError) {
+            logger.error('Error adding image recognition facts', factError);
+          }
+        }
         
         // Clean up temporary file
         try {
@@ -176,420 +195,281 @@ async function processMessage(sock, message) {
       logger.error('Error updating context', contextError);
     }
     
-    // For groups, check if the bot should introduce itself
-    // Only do this once per group or after extended inactivity
-    if (isGroup) {
-      try {
-        const shouldIntroduce = await shouldIntroduceInGroup(db, chatId);
-        if (shouldIntroduce) {
-          logger.info('Bot should introduce itself in this group');
-          const introMessage = await generateGroupIntroduction(db, chatId);
-          
-          try {
-            // Send introduction and mark that we've introduced ourselves
-            await sock.sendMessage(chatId, { text: introMessage });
-            
-            // Update the database to remember we've introduced ourselves
-            // This prevents multiple introduction attempts
-            if (!db.data.conversations[chatId].hasIntroduced) {
-              db.data.conversations[chatId].hasIntroduced = true;
-              db.data.conversations[chatId].lastIntroduction = new Date().toISOString();
-              await db.write();
-            }
-            
-            logger.success('Introduction message sent successfully');
-          } catch (sendError) {
-            logger.error('Error sending introduction message', sendError);
-          }
-        }
-      } catch (introduceError) {
-        logger.error('Error checking if bot should introduce itself', introduceError);
-      }
-    }
-    
-    // Extract mentioned JIDs and build @name and @number mapping
-    let mentionMap = {};
-    let mentionedJids = [];
-    if (message.message?.extendedTextMessage?.contextInfo?.mentionedJid) {
-      mentionedJids = message.message.extendedTextMessage.contextInfo.mentionedJid;
-      // Try to get participant names from group context if available
-      if (isGroup && db.data.conversations[chatId]) {
-        mentionedJids.forEach(jid => {
-          const participant = db.data.conversations[chatId].participants[jid];
-          const number = jid.split('@')[0];
-          if (participant && participant.name) {
-            mentionMap[`@${participant.name}`] = jid;
-            mentionMap[`@${number}`] = jid;
-          } else {
-            // fallback to number
-            mentionMap[`@${number}`] = jid;
-          }
-        });
-      } else {
-        mentionedJids.forEach(jid => {
-          const number = jid.split('@')[0];
-          mentionMap[`@${number}`] = jid;
-        });
-      }
-    }
-    
-    // Decide whether to respond (always respond in private chats, if tagged, or if image is present)
+    // NEW: Extract and process facts after message is stored
+    let relevantFacts = [];
     try {
-      // Log tagging information to help with debugging
-      logger.debug('Message response decision factors', { 
-        isPrivateChat: !isGroup, 
-        isTagged,
-        containsImage,
-        content: content?.substring(0, 30)
-      });
-      
-      // Improved response logic:
-      // 1. Always respond in private chats
-      // 2. Respond if explicitly tagged
-      // 3. If the message contains the bot's number in any form, consider it a tag
-      // 4. Only respond to images if there's a caption asking for analysis or if it's in a private chat
-      // 5. Respond to messages that appear to be asking about previously shared images
-      // 6. Otherwise use the AI to decide if it should respond
-      const botPhoneNumber = process.env.BOT_ID?.split('@')[0]?.split(':')[0];
-      const containsBotNumber = botPhoneNumber && content && content.includes(botPhoneNumber);
-      
-      // Enhanced image analysis detection - more flexible than just keywords
-      // Check if this message is likely referring to a previously shared image
-      let isPreviousImageQuery = false;
-      
-      if (content && !containsImage) {
-        const lowerContent = content.toLowerCase();
+      // Only run fact extraction if enabled in config and this is an actual text message
+      if (db.data.config.dynamicFactExtractionEnabled && content && content.trim().length > 0) {
+        logger.info('Extracting facts from message');
         
-        // Check for temporal references combined with demonstrative pronouns
-        const hasTemporalReference = [
-          'tadi', 'sebelumnya', 'sebelum ini', 'yang tadi', 'yang sebelumnya', 'yang barusan',
-          'earlier', 'before', 'previous', 'just now', 'just sent'
-        ].some(ref => lowerContent.includes(ref));
+        // Extract facts using Gemini
+        const factExtractionResult = await extractAndProcessFacts(sender, chatId, content);
         
-        const hasDemonstrativeReference = [
-          'ini', 'itu', 'tersebut', 'this', 'that', 'those', 'these'
-        ].some(ref => lowerContent.includes(ref));
-        
-        // Check for image-related terms
-        const hasImageTerms = [
-          'gambar', 'foto', 'image', 'picture', 'photo', 'lihat', 'cek', 'check', 'analisis', 'analyze',
-          'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat'
-        ].some(term => lowerContent.includes(term));
-        
-        // If the message has temporal references and demonstrative pronouns, or explicitly mentions images
-        // it's likely referring to a previously shared image
-        isPreviousImageQuery = (hasTemporalReference && hasDemonstrativeReference) || hasImageTerms;
-        
-        // Additional check: if it's a question and has demonstrative pronouns, it might be about a previous image
-        const isQuestion = content.endsWith('?') || 
-          ['apa', 'siapa', 'kapan', 'dimana', 'gimana', 'bagaimana', 'kenapa', 'mengapa', 'tolong'].some(q => lowerContent.includes(q));
+        if (factExtractionResult.success) {
+          // Format relevant facts for context
+          relevantFacts = formatRelevantFacts(sender, factExtractionResult.relevantFacts);
           
-        if (isQuestion && hasDemonstrativeReference) {
-          isPreviousImageQuery = true;
-        }
-        
-        logger.debug('Image query detection', { 
-          isPreviousImageQuery, 
-          hasTemporalReference, 
-          hasDemonstrativeReference,
-          hasImageTerms,
-          isQuestion
-        });
-      }
-      
-      // Check if the current image has a caption that explicitly asks for analysis
-      const imageAnalysisKeywords = ['analisis', 'analyze', 'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat', 'cek'];
-      const isExplicitImageAnalysisRequest = containsImage && content && 
-        imageAnalysisKeywords.some(keyword => content.toLowerCase().includes(keyword));
-      
-      // Direct addressing conditions (respond when directly addressed or asking about images)
-      // For new images, only respond if explicitly requested or in private chat
-      // For queries about previous images, respond regardless of group/private
-      const isDirectlyAddressed = !isGroup || isTagged || containsBotNumber || 
-        (containsImage && (!isGroup || isExplicitImageAnalysisRequest)) ||
-        isPreviousImageQuery;
-      
-      let shouldBotRespond = isDirectlyAddressed;
-      
-      // If not directly addressed, use AI to decide
-      if (!isDirectlyAddressed) {
-        logger.info('Using AI to decide whether to respond to message...');
-        shouldBotRespond = await shouldRespond(db, chatId, content);
-      }
-      
-      if (shouldBotRespond) {
-        if (isDirectlyAddressed) {
-          logger.info(`Bot will respond to message in ${chatType}${isTagged ? ' (tagged)' : ''}${containsBotNumber ? ' (number mentioned)' : ''}${containsImage ? ' (contains image)' : ''}`);
+          logger.success(`Extracted ${Object.keys(factExtractionResult.relevantFacts).length} relevant facts`);
+          logger.debug('Relevant facts', { facts: relevantFacts });
+          
+          // Log new and updated facts
+          if (factExtractionResult.newFacts && factExtractionResult.newFacts.length > 0) {
+            logger.info(`Added ${factExtractionResult.newFacts.length} new facts`);
+          }
+          
+          if (factExtractionResult.updatedFacts && factExtractionResult.updatedFacts.length > 0) {
+            logger.info(`Updated ${factExtractionResult.updatedFacts.length} facts`);
+          }
         } else {
-          logger.info(`Bot will respond to message in ${chatType} (AI decision)`);
+          logger.warning(`Fact extraction failed: ${factExtractionResult.error}`);
         }
+      }
+    } catch (factError) {
+      logger.error('Error extracting facts from message', factError);
+    }
+    
+    // Check if we need to respond to the message
+    const shouldRespond = shouldRespondToMessage(message, content, isTagged, isGroup, db.data.config.botName);
+    
+    // Check if this is a query about a previous image
+    let isPreviousImageQuery = false;
+    
+    if (content && !containsImage) {
+      const lowerContent = content.toLowerCase();
+      
+      // Check for temporal references combined with demonstrative pronouns
+      const hasTemporalReference = [
+        'tadi', 'sebelumnya', 'sebelum ini', 'yang tadi', 'yang sebelumnya', 'yang barusan',
+        'earlier', 'before', 'previous', 'just now', 'just sent'
+      ].some(ref => lowerContent.includes(ref));
+      
+      const hasDemonstrativeReference = [
+        'ini', 'itu', 'tersebut', 'this', 'that', 'those', 'these'
+      ].some(ref => lowerContent.includes(ref));
+      
+      // Check for image-related terms
+      const hasImageTerms = [
+        'gambar', 'foto', 'image', 'picture', 'photo', 'lihat', 'cek', 'check', 'analisis', 'analyze',
+        'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat'
+      ].some(term => lowerContent.includes(term));
+      
+      // If the message has temporal references and demonstrative pronouns, or explicitly mentions images
+      // it's likely referring to a previously shared image
+      isPreviousImageQuery = (hasTemporalReference && hasDemonstrativeReference) || hasImageTerms;
+      
+      // Additional check: if it's a question and has demonstrative pronouns, it might be about a previous image
+      const isQuestion = content.endsWith('?') || 
+        ['apa', 'siapa', 'kapan', 'dimana', 'gimana', 'bagaimana', 'kenapa', 'mengapa', 'tolong'].some(q => lowerContent.includes(q));
         
-        // Update bot's mood and personality
-        try {
-          await updateMoodAndPersonality(db, content);
-        } catch (moodError) {
-          logger.error('Error updating mood and personality', moodError);
-        }
+      if (isQuestion && hasDemonstrativeReference) {
+        isPreviousImageQuery = true;
+      }
+      
+      logger.debug('Image query detection', { 
+        isPreviousImageQuery, 
+        hasTemporalReference, 
+        hasDemonstrativeReference,
+        hasImageTerms,
+        isQuestion
+      });
+    }
+    
+    // Check if the current image has a caption that explicitly asks for analysis
+    const imageAnalysisKeywords = ['analisis', 'analyze', 'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat', 'cek'];
+    const isExplicitImageAnalysisRequest = containsImage && 
+      imageData.caption && 
+      imageAnalysisKeywords.some(keyword => imageData.caption.toLowerCase().includes(keyword));
+    
+    // If we have an explicit image analysis request, we should respond with the analysis
+    if (isExplicitImageAnalysisRequest) {
+      shouldRespond = true;
+    }
+    
+    logger.debug('Response determination', { 
+      shouldRespond, 
+      isTagged, 
+      isPreviousImageQuery,
+      isExplicitImageAnalysisRequest,
+      isGroup,
+      userMessage: content?.substring(0, 50)
+    });
+    
+    // If we should respond, generate and send a response
+    if (shouldRespond) {
+      try {
+        // Show typing indicator
+        await sock.sendPresenceUpdate('composing', chatId);
         
         // Get relevant context
-        let context = [];
-        try {
-          logger.debug('Retrieving context for response');
-          context = await getRelevantContext(db, chatId, content);
-          logger.debug(`Retrieved ${context.length} context messages`);
+        let contextMessages = await getRelevantContext(db, chatId, content || "[Image without text]");
+        
+        // Add the image analysis to the context if this is an image-related query
+        if (isPreviousImageQuery || (containsImage && isExplicitImageAnalysisRequest)) {
+          logger.info('Adding image context to message');
           
-          // If we have image analysis, add it to the context
-          if (imageAnalysis) {
-            // Add image analysis as a system message in the context
-            context.unshift({
-              role: 'system',
-              content: `The user has shared an image. Here is my analysis of it: ${imageAnalysis}`,
-              name: 'system'
-            });
+          // If we've just analyzed an image, make sure to include the analysis
+          if (containsImage && imageAnalysisId) {
+            const imageAnalysisObj = db.data.imageAnalysis[imageAnalysisId];
+            if (imageAnalysisObj) {
+              contextMessages.push({
+                role: 'system',
+                content: `User baru saja mengirim gambar. Berikut analisis gambar: ${imageAnalysisObj.analysis}`,
+                name: 'image_context'
+              });
+            }
           }
-        } catch (contextError) {
-          logger.error('Error getting relevant context', contextError);
+        }
+        
+        // NEW: Add relevant facts to context if available
+        if (relevantFacts.length > 0) {
+          logger.info(`Adding ${relevantFacts.length} relevant facts to context`);
+          
+          const factsString = relevantFacts.join(', ');
+          contextMessages.push({
+            role: 'system',
+            content: `IMPORTANT FACTS ABOUT THE USER: ${factsString}`,
+            name: 'user_facts'
+          });
         }
         
         // Generate AI response
-        logger.info('Sending typing indicator');
-        try {
-          await sock.sendPresenceUpdate('composing', chatId);
-          
-          logger.info('Generating AI response');
-          // Enhanced message content for AI to include image context
-          // For new images, only include analysis in the prompt if we're supposed to respond
-          // For image-related queries about past images, the context will already include the analysis
-          
-          // Check if this is a query about a previously shared image
-          const isPreviousImageQuery = !containsImage && content && (
-            // Check for temporal references combined with demonstrative pronouns
-            ([
-              'tadi', 'sebelumnya', 'sebelum ini', 'yang tadi', 'yang sebelumnya', 'yang barusan',
-              'earlier', 'before', 'previous', 'just now', 'just sent'
-            ].some(ref => content.toLowerCase().includes(ref)) && 
-            [
-              'ini', 'itu', 'tersebut', 'this', 'that', 'those', 'these'
-            ].some(ref => content.toLowerCase().includes(ref))) ||
-            // Or explicit image-related terms
-            [
-              'gambar', 'foto', 'image', 'picture', 'photo', 'lihat', 'cek', 'check', 'analisis', 'analyze',
-              'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat'
-            ].some(term => content.toLowerCase().includes(term))
-          );
-          
-          // For current image, check if it's an explicit request for analysis
-          const imageAnalysisKeywords = ['analisis', 'analyze', 'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat', 'cek'];
-          const isExplicitImageRequest = content && imageAnalysisKeywords.some(keyword => content.toLowerCase().includes(keyword));
-          
-          // Only include current image analysis in the prompt if it's a direct request or private chat
-          const shouldIncludeImageAnalysis = containsImage && (!isGroup || isExplicitImageRequest);
-          
-          // For current images, include the analysis in the prompt
-          // For queries about past images, the context service will have already added the analysis to the context
-          const enhancedContent = shouldIncludeImageAnalysis ? 
-            (content ? `${content} [Image: ${(imageAnalysis ? imageAnalysis.substring(0, 200) : 'Image received, but analysis failed')}...]` : `[Image: ${(imageAnalysis ? imageAnalysis.substring(0, 200) : 'Image received, but analysis failed')}...]`) : 
-            content;
-            
-          logger.debug('AI prompt preparation', { 
-            isPreviousImageQuery, 
-            shouldIncludeImageAnalysis,
-            containsImage,
-            contextSize: context.length
-          });
-          
-          let aiResponse = await generateAIResponseLegacy(enhancedContent, context, db.data);
-
-          // --- Mention handling ---
-          // Find all @name in the response and build mentions array
-          const mentionRegex = /@([\w\d_]+)/g;
-          let match;
-          let responseMentions = [];
-          let usedNames = new Set();
-          while ((match = mentionRegex.exec(aiResponse)) !== null) {
-            const atName = `@${match[1]}`;
-            if (mentionMap[atName] && !usedNames.has(mentionMap[atName])) {
-              responseMentions.push(mentionMap[atName]);
-              usedNames.add(mentionMap[atName]);
-            }
-          }
-
-          // Detect if the response is an error indicating provider failure (rate limit, API error, etc.)
-          const isProviderError = typeof aiResponse === 'string' && (
-            aiResponse.includes('Gagal terhubung') ||
-            aiResponse.includes('API error') ||
-            aiResponse.includes('Together.AI API error') ||
-            aiResponse.includes('rate limit') ||
-            aiResponse.includes('429')
-          );
-
-          // Store original provider/model
-          const originalProvider = db.data.config.defaultProvider;
-          const originalModel = db.data.config.model;
-          let switchedToGemini = false;
-
-          if (isProviderError && originalProvider !== 'gemini') {
-            logger.warning('Provider error detected, switching to Gemini temporarily...');
-            db.data.config.defaultProvider = 'gemini';
-            db.data.config.model = process.env.GEMINI_MODEL
-            await db.write();
-            // Retry with Gemini
-            aiResponse = await generateAIResponseLegacy(enhancedContent, context, db.data);
-            switchedToGemini = true;
-          }
-
-          logger.success(`AI response generated (${aiResponse.length} chars)`);
-          logger.debug('AI response preview', { 
-            preview: aiResponse 
-          });
-          
-          // Calculate a human-like response delay
-          const delayOptions = {
-            privateChat: !isGroup,
-            minDelay: isGroup ? 1200 : 800,  // Longer minimum delay in groups
-            maxDelay: isGroup ? 5000 : 3500, // Longer maximum delay in groups
-            readingSpeed: 35, // Characters per second for reading
-            typingSpeed: 12, // Characters per second for typing
-            thinkingTime: isGroup ? 1.8 : 1.2, // More thinking time in groups
-            wordCount: true // Use word count for more natural timing
-          };
-          
-          // Reduce delay if the message contained an image (since we already spent time analyzing it)
-          if (containsImage) {
-            delayOptions.minDelay = Math.max(500, delayOptions.minDelay / 2);
-            delayOptions.maxDelay = Math.max(1500, delayOptions.maxDelay / 2);
-          }
-          
-          // Get delay time in milliseconds
-          const delayTime = calculateResponseDelay(content || '', aiResponse, delayOptions);
-          logger.info(`Waiting ${delayTime}ms before responding (simulating reading time)`);
-          
-          // Turn on typing indicator again after part of the delay has passed
-          setTimeout(async () => {
-            try {
-              // Show typing indicator during the last part of the delay
-              await sock.sendPresenceUpdate('composing', chatId);
-            } catch (err) {
-              logger.error('Error showing typing indicator during delay', err);
-            }
-          }, Math.floor(delayTime * 0.6)); // Show typing indicator for the last 40% of the delay
-          
-          // Wait for the calculated delay time
-          await new Promise(resolve => setTimeout(resolve, delayTime));
-          
-          // Determine if we should use quoted reply format
-          // Only use quoted reply in these cases:
-          // 1. It's a direct reply to a specific question
-          // 2. It's a tagged message 
-          // 3. It's a direct command
-          // 4. It's the only message in the chat in the last minute
-          let shouldQuote = false;
-          
-          if (isTagged) {
-            // Always quote if explicitly tagged
-            shouldQuote = true;
-            logger.debug('Using quote format: Message was tagged');
-          } else if (QUESTION_INDICATORS.some(q => content.toLowerCase().includes(q))) {
-            // Quote if it's a question
-            shouldQuote = true;
-            logger.debug('Using quote format: Message contains question indicator');
-          } else if (db.data.conversations[chatId] && db.data.conversations[chatId].messages) {
-            // Check if this is the only active message in the last minute
-            const recentMessages = db.data.conversations[chatId].messages
-              .filter(msg => {
-                const msgTime = new Date(msg.timestamp);
-                const now = new Date();
-                const diffSeconds = (now - msgTime) / 1000;
-                return diffSeconds < 60; // Within last minute
-              });
-            
-            if (recentMessages.length <= 1) {
-              shouldQuote = false;
-              logger.debug('Using quote format: Only message in last minute');
-            }
-          }
-          
-          // Send the response with or without quoting, and with mentions if needed
-          if (shouldQuote) {
-            await sock.sendMessage(chatId, { text: aiResponse, mentions: responseMentions.length > 0 ? responseMentions : undefined }, { quoted: message });
-            logger.debug('Sent response with quote format:', { text: aiResponse, mentions: responseMentions.length > 0 ? responseMentions : undefined });
-          } else {
-            await sock.sendMessage(chatId, { text: aiResponse, mentions: responseMentions.length > 0 ? responseMentions : undefined });
-            logger.debug('Sent response without quote format:', { text: aiResponse, mentions: responseMentions.length > 0 ? responseMentions : undefined });
-          }
-          
-          await sock.sendPresenceUpdate('paused', chatId);
-          logger.success('Response sent successfully');
-          
-          // Add the bot's response to the conversation history 
+        logger.info('Generating AI response');
+        const aiResponse = await generateAIResponseLegacy(content || (containsImage ? `[User sent an image: ${imageData.caption || 'no caption'}]` : "[Empty message]"), contextMessages, db.data);
+        
+        // Debug the AI response
+        logger.debug('AI response generated', { 
+          responseLength: aiResponse.length,
+          responsePreview: aiResponse.substring(0, 50) + (aiResponse.length > 50 ? '...' : '')
+        });
+        
+        // Send the response
+        await sock.sendMessage(chatId, { text: aiResponse }, { quoted: message });
+        
+        // If this was a response to an image, mark the image analysis as shown
+        if ((containsImage && isExplicitImageAnalysisRequest) || isPreviousImageQuery) {
           try {
-            await updateContext(
-              db, 
-              chatId, 
-              process.env.BOT_ID, 
-              aiResponse, 
-              { 
-                key: { 
-                  id: Date.now().toString(), 
-                  remoteJid: chatId,
-                  fromMe: true 
-                },
-                message: { conversation: aiResponse },
-                pushName: db.data.config.botName
-              }
-            );
-            logger.debug('Added bot response to conversation history');
-          } catch (contextError) {
-            logger.error('Error adding bot response to context', contextError);
-          }
-          
-          // Update message count
-          db.data.state.messageCount++;
-          db.data.state.lastInteraction = new Date().toISOString();
-          
-          // Track user interaction
-          if (!db.data.state.userInteractions[sender]) {
-            db.data.state.userInteractions[sender] = {
-              messageCount: 0,
-              lastInteraction: null
-            };
-          }
-          
-          db.data.state.userInteractions[sender].messageCount++;
-          db.data.state.userInteractions[sender].lastInteraction = new Date().toISOString();
-          
-          // Save changes to db
-          await db.write();
-
-          // If we switched to Gemini, switch back to the original provider/model
-          if (switchedToGemini) {
-            db.data.config.defaultProvider = originalProvider;
-            db.data.config.model = originalModel;
-            await db.write();
-            logger.info('Switched provider/model back to original after successful message send.');
-          }
-        } catch (responseError) {
-          logger.error('Error during response generation or sending', responseError);
-          
-          // Try to send error message to user
-          try {
-            await sock.sendPresenceUpdate('paused', chatId);
-            await sock.sendMessage(chatId, { 
-              text: `Maaf, terjadi kesalahan saat memproses pesan. Detail error: ${responseError.message}` 
-            }, { quoted: message });
-          } catch (secondaryError) {
-            logger.error('Failed to send error message to user', secondaryError);
+            const analysisId = imageAnalysisId || getLastImageAnalysisId(db, chatId);
+            if (analysisId && db.data.imageAnalysis[analysisId]) {
+              db.data.imageAnalysis[analysisId].hasBeenShown = true;
+              db.data.imageAnalysis[analysisId].lastAccessTime = new Date().toISOString();
+              await db.write();
+            }
+          } catch (markError) {
+            logger.error('Error marking image analysis as shown', markError);
           }
         }
-      } else {
-        logger.info('Bot decided not to respond to this message');
+        
+        // Update context with AI's response
+        try {
+          await updateContext(db, chatId, process.env.BOT_ID, aiResponse, {
+            key: {
+              id: `ai_${Date.now()}`,
+              remoteJid: chatId
+            },
+            pushName: db.data.config.botName
+          });
+        } catch (updateError) {
+          logger.error('Error updating context with AI response', updateError);
+        }
+      } catch (responseError) {
+        logger.error('Error generating or sending response', responseError);
+        try {
+          await sock.sendMessage(chatId, { 
+            text: `Maaf, terjadi kesalahan saat memproses pesan: ${responseError.message}. Coba lagi nanti ya~` 
+          }, { quoted: message });
+        } catch (sendError) {
+          logger.error('Error sending error message', sendError);
+        }
       }
-    } catch (decisionError) {
-      logger.error('Error in response decision process', decisionError);
+    } else {
+      logger.info('Not responding to this message based on response criteria');
     }
   } catch (error) {
-    logger.error('Unhandled error in message processing', error);
+    logger.error('Error processing message', error);
   }
 }
 
-export { processMessage };
+/**
+ * Get the ID of the most recent image analysis in a chat
+ * @param {Object} db - Database object
+ * @param {string} chatId - Chat ID
+ * @returns {string|null} - Image analysis ID or null if not found
+ */
+function getLastImageAnalysisId(db, chatId) {
+  try {
+    // Check if we have conversation data for this chat
+    if (!db.data.conversations[chatId] || !db.data.conversations[chatId].messages) {
+      return null;
+    }
+    
+    // Find the most recent image analysis message
+    const imageMessages = db.data.conversations[chatId].messages
+      .filter(msg => 
+        (msg.role === 'assistant' && 
+         msg.content && 
+         typeof msg.content === 'string' && 
+         msg.content.startsWith('[IMAGE ANALYSIS:')) ||
+        (msg.metadata && msg.metadata.hasImage) ||
+        (msg.imageAnalysisId)
+      )
+      .reverse(); // Most recent first
+    
+    if (imageMessages.length === 0) {
+      return null;
+    }
+    
+    // Get the analysis ID
+    const latestImageMessage = imageMessages[0];
+    return latestImageMessage.imageAnalysisId || 
+           latestImageMessage.metadata?.fullAnalysisId;
+  } catch (error) {
+    logger.error('Error getting last image analysis ID', error);
+    return null;
+  }
+}
+
+/**
+ * Determine if the bot should respond to a message
+ * @param {Object} message - Message object
+ * @param {string} content - Message content
+ * @param {boolean} isTagged - Whether the bot is tagged in the message
+ * @param {boolean} isGroup - Whether the message is in a group
+ * @param {string} botName - Bot name
+ * @returns {boolean} - Whether the bot should respond
+ */
+function shouldRespondToMessage(message, content, isTagged, isGroup, botName) {
+  // Always respond in private chats
+  if (!isGroup) {
+    return true;
+  }
+  
+  // In groups, always respond if tagged
+  if (isTagged) {
+    return true;
+  }
+  
+  // Check if message contains bot name
+  if (content && botName && content.toLowerCase().includes(botName.toLowerCase())) {
+    return true;
+  }
+  
+  // Check if message contains common triggers
+  const commonTriggers = [
+    'siapa', 'who', 'gimana', 'bagaimana', 'how', 'kenapa', 'mengapa', 'why',
+    'apa', 'what', 'kapan', 'when', 'dimana', 'where', 'tolong', 'help',
+    'bisa', 'can', 'minta', 'request', 'coba', 'try'
+  ];
+  
+  if (content && commonTriggers.some(trigger => {
+    // Look for whole word matches, not just substrings
+    const regex = new RegExp(`\\b${trigger}\\b`, 'i');
+    return regex.test(content);
+  })) {
+    return true;
+  }
+  
+  // For groups, default to false unless explicitly addressed
+  return false;
+}
+
+export { processMessage, shouldRespondToMessage, getLastImageAnalysisId };
