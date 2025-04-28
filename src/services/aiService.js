@@ -1143,10 +1143,23 @@ function formatMessagesForAPI(messages, botConfig) {
       // Ambil nama dan timestamp jika ada, fallback jika tidak ada
       const name = msg.name || '-';
       const timestamp = msg.timestamp || new Date().toISOString();
+      
+      // Convert to Asia/Jakarta timezone and format
+      const jakartaTime = new Date(timestamp).toLocaleString('id-ID', {
+        timeZone: 'Asia/Jakarta',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      });
+      
       const content = typeof msg.content === 'string' ? msg.content : '';
       return {
         role: 'user',
-        content: `name: ${name} \n time: ${timestamp} \n content: ${content}`
+        content: `name: ${name} \n time: ${jakartaTime} \n content: ${content}`
       };
     } else if (msg.role === 'system') {
       // Untuk system, tetap seperti sebelumnya (atau bisa juga diformat jika perlu)
