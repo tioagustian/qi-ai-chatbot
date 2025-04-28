@@ -653,18 +653,18 @@ async function setProvider(db, provider) {
     db.data.config.defaultProvider = normalizedProvider;
     
     // Set default model for the provider if not set
-    if (!db.data.config.model || db.data.config.model.startsWith('gemini') || db.data.config.model.startsWith('google/')) {
-      if (normalizedProvider === 'gemini') {
-        // Default Gemini model
-        db.data.config.model = 'google/gemini-1.5-pro';
-      } else if (normalizedProvider === 'together') {
-        // Default Together model
-        db.data.config.model = 'meta-llama/Llama-3.3-70B-Instruct-Turbo-Free';
-      } else {
-        // Default OpenRouter model
-        db.data.config.model = 'anthropic/claude-3-haiku';
-      }
-    }
+    // if (!db.data.config.model || db.data.config.model.startsWith('gemini') || db.data.config.model.startsWith('google/')) {
+    //   if (normalizedProvider === 'gemini') {
+    //     // Default Gemini model
+    //     db.data.config.model = 'google/gemini-1.5-pro';
+    //   } else if (normalizedProvider === 'together') {
+    //     // Default Together model
+    //     db.data.config.model = 'meta-llama/Llama-3.3-70B-Instruct-Turbo-Free';
+    //   } else {
+    //     // Default OpenRouter model
+    //     db.data.config.model = 'anthropic/claude-3-haiku';
+    //   }
+    // }
     
     await db.write();
     
