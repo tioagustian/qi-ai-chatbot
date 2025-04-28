@@ -460,7 +460,7 @@ async function processMessage(sock, message) {
         
         // Send the response
         await sock.sendMessage(chatId, { text: aiResponse }, { quoted: message });
-        
+        logger.success(`Response sent to ${chatId}`);
         // If this was a response to an image, mark the image analysis as shown
         if ((containsImage && isExplicitImageAnalysisRequest) || isPreviousImageQuery) {
           try {
@@ -476,7 +476,7 @@ async function processMessage(sock, message) {
         }
         
         // Update context with AI's response
-          try {
+        try {
           await updateContext(db, chatId, process.env.BOT_ID, aiResponse, {
                 key: { 
               id: `ai_${Date.now()}`,
