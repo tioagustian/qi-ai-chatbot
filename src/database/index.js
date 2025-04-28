@@ -26,7 +26,9 @@ const defaultData = {
     maxContextMessages: parseInt(process.env.MAX_CONTEXT_MESSAGES || 100),
     maxRelevantMessages: parseInt(process.env.MAX_RELEVANT_MESSAGES || 20),
     enhancedMemoryEnabled: process.env.ENHANCED_MEMORY_ENABLED !== 'false',
-    dynamicFactExtractionEnabled: process.env.DYNAMIC_FACT_EXTRACTION_ENABLED !== 'false'
+    dynamicFactExtractionEnabled: process.env.DYNAMIC_FACT_EXTRACTION_ENABLED !== 'false',
+    apiLoggingEnabled: process.env.API_LOGGING_ENABLED !== 'false',
+    apiLogRetentionDays: parseInt(process.env.API_LOG_RETENTION_DAYS || 7)
   },
   state: {
     currentMood: process.env.DEFAULT_MOOD || 'happy',
@@ -44,7 +46,8 @@ const defaultData = {
   globalFacts: {
     facts: {},
     factHistory: []
-  }
+  },
+  apiLogs: []
 };
 
 // Initialize database
@@ -109,6 +112,11 @@ function ensureDataStructure() {
     };
   }
   
+  // Ensure API logs structure exists
+  if (!db.data.apiLogs) {
+    db.data.apiLogs = [];
+  }
+  
   // Manual memory structure verification
   // Verify userFacts structure
   Object.entries(db.data.userFacts || {}).forEach(([userId, userFact]) => {
@@ -150,6 +158,26 @@ function ensureDataStructure() {
   // Add new dynamic fact extraction setting
   if (db.data.config.dynamicFactExtractionEnabled === undefined) {
     db.data.config.dynamicFactExtractionEnabled = process.env.DYNAMIC_FACT_EXTRACTION_ENABLED !== 'false';
+  }
+  
+  // Add API logging settings
+  if (db.data.config.apiLoggingEnabled === undefined) {
+    db.data.config.apiLoggingEnabled = process.env.API_LOGGING_ENABLED !== 'false';
+  }
+  
+  if (db.data.config.apiLogRetentionDays === undefined) {
+    db.data.config.apiLogRetentionDays = parseInt(process.env.API_LOG_RETENTION_DAYS || 7);
+  }
+  
+  // Clean up old API logs based on retention policy
+  if (db.data.apiLogs && db.data.apiLogs.length > 0) {
+    const retentionDays = db.data.config.apiLogRetentionDays || 7;
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+    
+    db.data.apiLogs = db.data.apiLogs.filter(log => 
+      new Date(log.timestamp) > cutoffDate
+    );
   }
   
   // Ensure existing conversations have the updated structure

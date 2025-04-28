@@ -10,6 +10,8 @@ import { fileURLToPath } from 'url';
 import chalk from 'chalk';
 import { generateGroupIntroduction } from './services/contextService.js';
 import { calculateResponseDelay } from './utils/messageUtils.js';
+// Import API logging service
+import './services/apiLogService.js';
 
 // Get current directory
 const __filename = fileURLToPath(import.meta.url);

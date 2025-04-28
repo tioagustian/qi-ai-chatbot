@@ -10,6 +10,7 @@ import {
   getCharacterKnowledge,
   PERSONALITIES
 } from './personalityService.js';
+import { logApiRequest } from './apiLogService.js';
 
 // Base URL for OpenRouter API
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -1181,6 +1182,11 @@ function formatMessagesForAPI(messages, botConfig) {
  * @returns {Promise<object>} Gemini API response
  */
 async function requestGeminiChat(model, apiKey, messages, params) {
+  const startTime = Date.now();
+  let responseData = null;
+  let errorOccurred = false;
+  let errorDetails = null;
+  
   try {
     console.log(`Making request to Gemini API with model: ${model}`);
     
@@ -1226,22 +1232,27 @@ async function requestGeminiChat(model, apiKey, messages, params) {
       maxTokens: params.max_tokens
     });
     
-    // Make request to Gemini API
-    const response = await axios.post(endpoint, requestData, {
+    // Prepare request options
+    const requestOptions = {
       headers: {
         'Content-Type': 'application/json',
         'x-goog-api-key': apiKey
       }
-    });
+    };
+    
+    // Make request to Gemini API
+    const response = await axios.post(endpoint, requestData, requestOptions);
     
     logger.debug('Gemini API response received', { status: response.status });
     
     // Process response data
-    const responseData = response.data;
+    responseData = response.data;
     
     // Check if response contains candidates
     if (!responseData || !responseData.candidates || responseData.candidates.length === 0) {
       logger.error('[AI Service] Invalid Gemini response format: no candidates');
+      errorOccurred = true;
+      errorDetails = 'Invalid response format: no candidates';
       throw new Error('Invalid response format: no candidates');
     }
     
@@ -1250,13 +1261,15 @@ async function requestGeminiChat(model, apiKey, messages, params) {
     
     if (!text) {
       logger.error('[AI Service] Invalid Gemini response format: no text');
+      errorOccurred = true;
+      errorDetails = 'Invalid response format: no text';
       throw new Error('Invalid response format: no text');
     }
     
     logger.success(`Successfully processed Gemini API response (${text.length} chars)`);
     
     // Transform to match our expected format
-    return {
+    const formattedResponse = {
       choices: [{
         message: {
           content: text,
@@ -1264,6 +1277,33 @@ async function requestGeminiChat(model, apiKey, messages, params) {
         }
       }]
     };
+    
+    // Log API request and response
+    await logApiRequest(
+      endpoint,
+      'gemini',
+      model,
+      {
+        method: 'POST',
+        url: endpoint,
+        headers: requestOptions.headers,
+        data: requestData
+      },
+      {
+        status: response.status,
+        statusText: response.statusText,
+        data: responseData
+      },
+      {
+        executionTime: Date.now() - startTime,
+        messageCount: messages.length,
+        promptTokens: messages.reduce((total, msg) => total + (msg.content.length / 4), 0),
+        completionTokens: text.length / 4,
+        success: true
+      }
+    );
+    
+    return formattedResponse;
   } catch (error) {
     logger.error(`[AI Service] Gemini API error: ${error.message}`);
     
@@ -1273,69 +1313,210 @@ async function requestGeminiChat(model, apiKey, messages, params) {
         statusText: error.response.statusText,
         data: error.response.data ? JSON.stringify(error.response.data).substring(0, 300) + '...' : 'No data'
       });
+      
+      responseData = error.response.data;
+      errorDetails = {
+        status: error.response.status,
+        statusText: error.response.statusText,
+        message: error.message
+      };
+    } else {
+      errorDetails = { message: error.message };
+    }
+    
+    // Log the failed API request
+    if (!errorOccurred) {
+      await logApiRequest(
+        `${GEMINI_API_URL}/${model.startsWith('google/') ? model.substring(7) : model}:generateContent`,
+        'gemini',
+        model,
+        {
+          method: 'POST',
+          url: `${GEMINI_API_URL}/${model.startsWith('google/') ? model.substring(7) : model}:generateContent`,
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': '*** REDACTED ***'
+          },
+          data: {
+            contents: messages.map(msg => ({ role: msg.role, text: msg.content })),
+            generationConfig: {
+              temperature: params.temperature || 0.7,
+              topP: params.top_p || 0.95,
+              maxOutputTokens: params.max_tokens || 1024,
+              stopSequences: params.stop || []
+            }
+          }
+        },
+        responseData || { error: error.message },
+        {
+          executionTime: Date.now() - startTime,
+          messageCount: messages.length,
+          promptTokens: messages.reduce((total, msg) => total + (msg.content.length / 4), 0),
+          success: false,
+          error: errorDetails
+        }
+      );
     }
     
     throw error;
   }
 }
 
-// Request to Together.AI chat API
+/**
+ * Request chat completion from Together.AI API
+ * @param {string} model - Together.AI model name
+ * @param {string} apiKey - Together.AI API key
+ * @param {Array} messages - Formatted messages
+ * @param {object} params - Additional parameters
+ * @returns {Promise<object>} Together.AI API response
+ */
 async function requestTogetherChat(model, apiKey, messages, params) {
+  const startTime = Date.now();
+  let responseData = null;
+  let errorOccurred = false;
+  let errorDetails = null;
+  
   try {
-    logger.info(`Making request to Together.AI API with model: ${model}`);
+    console.log(`Making request to Together.AI API with model: ${model}`);
     
-    // Build API URL
-    const url = TOGETHER_API_URL;
+    // Together.AI API endpoint
+    const endpoint = TOGETHER_API_URL;
     
-    // Prepare headers
-    const headers = {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json'
-    };
+    console.log(`Using Together.AI API endpoint: ${endpoint}`);
     
     // Prepare request body
-    const body = {
+    const requestData = {
       model: model,
       messages: messages,
       temperature: params.temperature || 0.7,
       top_p: params.top_p || 0.95,
       max_tokens: params.max_tokens || 2048,
-      stream: params.stream || false
+      stream: false
     };
     
-    // Add optional parameters if provided
-    if (params.stop) {
-      body.stop = params.stop;
+    if (params.stop && Array.isArray(params.stop) && params.stop.length > 0) {
+      requestData.stop = params.stop;
     }
     
-    logger.debug('Together.AI request body:', JSON.stringify(body));
+    logger.debug('Sending request to Together.AI API', {
+      endpoint,
+      model,
+      messageCount: messages.length,
+      temperature: params.temperature,
+      maxTokens: params.max_tokens
+    });
     
-    // Make the API request
-    const response = await axios.post(url, body, { headers });
-    
-    // Process response
-    if (!response.data) {
-      throw new Error('Empty response from Together.AI API');
-    }
-    
-    // Transform to a unified format similar to OpenRouter
-    return {
-      choices: [
-        {
-          message: {
-            content: response.data.choices[0].message.content,
-            role: 'assistant'
-          },
-          finish_reason: response.data.choices[0].finish_reason
-        }
-      ],
-      model: response.data.model,
-      id: response.data.id,
-      created: response.data.created
+    // Prepare request options
+    const requestOptions = {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      }
     };
+    
+    // Make request to Together.AI API
+    const response = await axios.post(endpoint, requestData, requestOptions);
+    
+    logger.debug('Together.AI API response received', { status: response.status });
+    
+    // Process response data
+    responseData = response.data;
+    
+    if (!responseData || !responseData.choices || responseData.choices.length === 0) {
+      logger.error('[AI Service] Invalid Together.AI response format: no choices');
+      errorOccurred = true;
+      errorDetails = 'Invalid response format: no choices';
+      throw new Error('Invalid response format: no choices');
+    }
+    
+    // Extract text from first choice
+    const messageData = responseData.choices[0].message;
+    
+    if (!messageData || !messageData.content) {
+      logger.error('[AI Service] Invalid Together.AI response format: no message content');
+      errorOccurred = true;
+      errorDetails = 'Invalid response format: no message content';
+      throw new Error('Invalid response format: no message content');
+    }
+    
+    logger.success(`Successfully processed Together.AI API response (${messageData.content.length} chars)`);
+    
+    // Extract token usage if available
+    const promptTokens = responseData.usage?.prompt_tokens || 0;
+    const completionTokens = responseData.usage?.completion_tokens || 0;
+    
+    // Log API request and response
+    await logApiRequest(
+      endpoint,
+      'together',
+      model,
+      {
+        method: 'POST',
+        url: endpoint,
+        headers: requestOptions.headers,
+        data: requestData
+      },
+      {
+        status: response.status,
+        statusText: response.statusText,
+        data: responseData
+      },
+      {
+        executionTime: Date.now() - startTime,
+        messageCount: messages.length,
+        promptTokens: promptTokens,
+        completionTokens: completionTokens,
+        success: true
+      }
+    );
+    
+    return responseData;
   } catch (error) {
-    logger.error('Error making request to Together.AI API:', error);
-    throw new Error(`Together.AI API error: ${error.message}`);
+    logger.error(`[AI Service] Together.AI API error: ${error.message}`);
+    
+    if (error.response) {
+      logger.error('[AI Service] Together.AI API error details', {
+        status: error.response.status,
+        statusText: error.response.statusText,
+        data: error.response.data ? JSON.stringify(error.response.data).substring(0, 300) + '...' : 'No data'
+      });
+      
+      responseData = error.response.data;
+      errorDetails = {
+        status: error.response.status,
+        statusText: error.response.statusText,
+        message: error.message
+      };
+    } else {
+      errorDetails = { message: error.message };
+    }
+    
+    // Log the failed API request
+    if (!errorOccurred) {
+      await logApiRequest(
+        TOGETHER_API_URL,
+        'together',
+        model,
+        {
+          method: 'POST',
+          url: TOGETHER_API_URL,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer *** REDACTED ***'
+          },
+          data: requestData
+        },
+        responseData || { error: error.message },
+        {
+          executionTime: Date.now() - startTime,
+          messageCount: messages.length,
+          success: false,
+          error: errorDetails
+        }
+      );
+    }
+    
+    throw error;
   }
 }
 

@@ -4,6 +4,7 @@ import { getAvailableModels, TOGETHER_MODELS } from './aiService.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { getApiLogs, clearApiLogs } from './apiLogService.js';
 
 // Get current directory
 const __filename = fileURLToPath(import.meta.url);
@@ -210,6 +211,9 @@ async function executeCommand(sock, message, commandData, db) {
       case 'removecharacter':
         const removeResult = await setCharacterKnowledge(db, '');
         return removeResult.message;
+        
+      case 'apilogs':
+        return await handleApiLogsCommand(sock, message, args, db);
         
       default:
         return `Perintah tidak dikenal: ${command}. Gunakan !help untuk bantuan.`;
@@ -440,10 +444,18 @@ function getHelpText() {
 !removepersonality [nama] - Menghapus personality kustom
 
 *Pengaturan Trigger:*
-!listtriggers [mood?] - Menampilkan trigger words
-!addtriggers [mood] [trigger1] [trigger2] ... - Menambah trigger untuk mood
+!addtriggers [mood] [kata1] [kata2] - Menambah kata pemicu mood
+!listtriggers - Menampilkan daftar kata pemicu
 
-Semua perintah hanya dapat dijalankan oleh admin di chat pribadi.`;
+*Fitur Logging:*
+!apilogs - Menampilkan log permintaan API terbaru
+!apilogs limit [jumlah] - Menampilkan lebih banyak log
+!apilogs provider [nama] - Filter log berdasarkan provider
+!apilogs model [nama] - Filter log berdasarkan model
+!apilogs clear - Hapus log lama (simpan 24 jam terakhir)
+!apilogs clear all - Hapus semua log
+
+Gunakan !help [perintah] untuk bantuan lebih detail tentang perintah tertentu.`;
 }
 
 // Get status text
@@ -876,6 +888,96 @@ async function getMoodTriggersMessage(db, moodName) {
   } catch (error) {
     console.error('Error getting mood triggers:', error);
     return 'Terjadi kesalahan saat mengambil trigger words';
+  }
+}
+
+// Add the !apilogs command handler
+async function handleApiLogsCommand(sock, message, args, db) {
+  try {
+    const chatId = message.key.remoteJid;
+    
+    // Check if API logging is enabled
+    if (!db.data.config.apiLoggingEnabled) {
+      return 'API logging is disabled. Enable it with !config apiLoggingEnabled true';
+    }
+    
+    // Parse arguments
+    const options = {};
+    let limit = 5; // Default limit
+    
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i].toLowerCase();
+      
+      if (arg === 'limit' && i + 1 < args.length) {
+        limit = parseInt(args[i + 1]) || 5;
+        i++; // Skip the next argument
+      } else if (arg === 'model' && i + 1 < args.length) {
+        options.model = args[i + 1];
+        i++; // Skip the next argument
+      } else if (arg === 'provider' && i + 1 < args.length) {
+        options.provider = args[i + 1];
+        i++; // Skip the next argument
+      } else if (arg === 'clear') {
+        // Clear logs
+        const keepLastDay = args[i + 1] === 'all' ? false : true;
+        await clearApiLogs(keepLastDay);
+        return `API logs have been cleared${keepLastDay ? ' (logs from the last 24 hours were kept)' : ' completely'}`;
+      } else if (arg === 'today') {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        options.startDate = today;
+      } else if (arg === 'chat') {
+        options.chatId = chatId;
+      }
+    }
+    
+    // Get logs
+    const logs = getApiLogs(options, limit);
+    
+    if (logs.length === 0) {
+      return 'No API logs found matching your criteria';
+    }
+    
+    // Format logs for display
+    let response = `*API Logs (${logs.length})*\n`;
+    
+    logs.forEach((log, index) => {
+      const date = new Date(log.timestamp).toLocaleString();
+      const executionTime = log.metadata.executionTime || 'N/A';
+      const status = log.metadata.status || 'N/A';
+      
+      response += `\n*${index + 1}. ${log.provider} - ${log.model}*\n`;
+      response += `Time: ${date}\n`;
+      response += `Status: ${status}\n`;
+      response += `Execution: ${executionTime}ms\n`;
+      
+      // Add message count if available
+      if (log.metadata.messageCount) {
+        response += `Messages: ${log.metadata.messageCount}\n`;
+      }
+      
+      // Add token counts if available
+      if (log.metadata.promptTokens) {
+        response += `Prompt Tokens: ~${Math.round(log.metadata.promptTokens)}\n`;
+      }
+      
+      if (log.metadata.completionTokens) {
+        response += `Completion Tokens: ~${Math.round(log.metadata.completionTokens)}\n`;
+      }
+      
+      // Add error info if available
+      if (log.metadata.success === false) {
+        response += `Error: ${log.metadata.error?.message || 'Unknown error'}\n`;
+      }
+    });
+    
+    response += '\nUse !apilogs limit [number] to show more logs';
+    response += '\nOptions: provider [name], model [name], clear, today, chat';
+    
+    return response;
+  } catch (error) {
+    console.error('Error handling API logs command:', error);
+    return 'Error retrieving API logs: ' + error.message;
   }
 }
 
