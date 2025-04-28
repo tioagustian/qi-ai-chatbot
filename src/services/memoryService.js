@@ -85,11 +85,14 @@ async function extractAndProcessFacts(userId, chatId, currentMessage) {
     // Get global facts
     const globalFacts = getGlobalFacts();
     
+    // Get facts for other participants in the chat (only for group chats)
+    const otherParticipantsFacts = getOtherParticipantsFacts(db, chatId, userId);
+    
     // Get chat history
     const chatHistory = getChatHistory(chatId, userId, MAX_MESSAGE_HISTORY);
     
     // Create prompt for Gemini
-    const prompt = createFactExtractionPrompt(userFacts, globalFacts, chatHistory, currentMessage);
+    const prompt = createFactExtractionPrompt(userFacts, globalFacts, otherParticipantsFacts, chatHistory, currentMessage);
     
     // Call Gemini API for fact extraction
     logger.debug('Calling Gemini API for fact extraction');
@@ -143,6 +146,7 @@ async function extractAndProcessFacts(userId, chatId, currentMessage) {
       relevantFacts: processResult.relevantFacts,
       newFacts: processResult.newFacts,
       updatedFacts: processResult.updatedFacts,
+      otherParticipantsFacts: otherParticipantsFacts,
       success: true
     };
   } catch (error) {
@@ -208,11 +212,12 @@ function getChatHistory(chatId, userId, limit = 20) {
  * Create prompt for fact extraction
  * @param {Object} userFacts - User facts
  * @param {Object} globalFacts - Global facts
+ * @param {Object} otherParticipantsFacts - Facts about other participants in the chat
  * @param {Array} chatHistory - Chat history
  * @param {string} currentMessage - Current message
  * @returns {string} - Prompt for Gemini
  */
-function createFactExtractionPrompt(userFacts, globalFacts, chatHistory, currentMessage) {
+function createFactExtractionPrompt(userFacts, globalFacts, otherParticipantsFacts, chatHistory, currentMessage) {
   // Format current facts
   const formattedUserFacts = Object.entries(userFacts).map(([key, fact]) => {
     return `"${key}": { "value": "${fact.value}", "confidence": ${fact.confidence} }`;
@@ -221,6 +226,20 @@ function createFactExtractionPrompt(userFacts, globalFacts, chatHistory, current
   const formattedGlobalFacts = Object.entries(globalFacts).map(([key, fact]) => {
     return `"${key}": { "value": "${fact.value}", "confidence": ${fact.confidence} }`;
   }).join(',\n    ');
+  
+  // Format other participants' facts if available
+  let formattedOtherParticipantsFacts = '';
+  if (Object.keys(otherParticipantsFacts).length > 0) {
+    formattedOtherParticipantsFacts = Object.entries(otherParticipantsFacts)
+      .map(([name, facts]) => {
+        const factsList = Object.entries(facts)
+          .map(([key, fact]) => `"${key}": { "value": "${fact.value}", "confidence": ${fact.confidence} }`)
+          .join(',\n      ');
+        
+        return `"${name}": {\n      ${factsList}\n    }`;
+      })
+      .join(',\n    ');
+  }
   
   // Format chat history
   const formattedChatHistory = chatHistory.map(msg => {
@@ -233,29 +252,45 @@ function createFactExtractionPrompt(userFacts, globalFacts, chatHistory, current
   }).join(',\n    ');
   
   // Create the prompt
-  return `You are a fact extraction system for an AI chatbot. Your task is to:
+  let prompt = `You are a fact extraction system for an AI chatbot. Your task is to:
 1. Analyze conversation history and the latest message
 2. Extract new facts about the user
 3. Identify facts that need updating
 4. Determine which facts are relevant to the current message
 
-IMPORTANT: Facts are ONLY about the specific user's personal information, preferences, or experiences.
-* DO NOT include general knowledge facts unrelated to the user
-* DO NOT include hypothetical, future intentions, or temporary states
-* DO NOT include facts about other people the user mentions
-* DO NOT include system information or meta-conversation facts
+IMPORTANT GUIDELINES FOR FACT EXTRACTION:
+* Facts are about the specific user's personal information, preferences, or experiences.
+* DO NOT include hypothetical scenarios, future intentions, or temporary states.
+* DO NOT include facts about other people the user mentions unless it relates to their relationship with the user.
+* DO NOT include system information or meta-conversation facts.
+
+GLOBAL FACTS VS USER FACTS:
+* Global facts - Facts that represent general knowledge, locations, populations, etc.
+* User facts - Facts that are specific to this user's personal information or preferences.
+
+USER FACTS should be included in "new_facts", "update_facts", and "relevant_facts".
+GLOBAL FACTS should be added to "new_facts" and "update_facts" with the "is_global" property set to true.
 
 CURRENT FACTS ABOUT THE USER:
 {
   ${formattedUserFacts || '"no_facts": "No facts available yet"'}
 }
 
-GLOBAL FACTS (for reference, don't modify these):
+GLOBAL FACTS (reference only - add new global facts with is_global=true):
 {
   ${formattedGlobalFacts || '"no_facts": "No global facts available yet"'}
-}
+}`;
 
-CONVERSATION HISTORY:
+  // Add other participants' facts if available
+  if (formattedOtherParticipantsFacts) {
+    prompt += `\n\nFACTS ABOUT OTHER PARTICIPANTS IN THIS CONVERSATION (for reference only, don't modify these):
+{
+  ${formattedOtherParticipantsFacts}
+}`;
+  }
+
+  // Add chat history and current message
+  prompt += `\n\nCONVERSATION HISTORY:
 [
   ${formattedChatHistory || '{"role": "system", "content": "No conversation history available"}'}
 ]
@@ -264,17 +299,19 @@ CURRENT MESSAGE:
 "${currentMessage}"
 
 Respond with a JSON object containing these sections:
-1. "new_facts": Facts to add that weren't known before
+1. "new_facts": Facts to add that weren't known before (user or global)
 2. "update_facts": Facts to modify where the information has changed
-3. "relevant_facts": Facts relevant to the current message (both new and existing)
+3. "relevant_facts": Facts relevant to the current message (only user facts)
 
 Example response format:
 {
   "new_facts": {
-    "favorite_color": { "value": "blue", "confidence": 0.92 }
+    "favorite_color": { "value": "blue", "confidence": 0.92 },
+    "capital of Indonesia": { "value": "Jakarta", "confidence": 0.98, "is_global": true }
   },
   "update_facts": {
-    "location": { "value": "Jakarta", "confidence": 0.85, "previous_value": "Bandung" }
+    "location": { "value": "Jakarta", "confidence": 0.85, "previous_value": "Bandung" },
+    "population of Jakarta": { "value": "10.5 million", "confidence": 0.95, "is_global": true }
   },
   "relevant_facts": {
     "favorite_color": { "value": "blue", "confidence": 0.92 },
@@ -284,7 +321,10 @@ Example response format:
 
 IMPORTANT: Only include facts that are explicitly stated or can be very strongly inferred with high confidence (>0.7).
 For facts that need updating, include the previous value in "previous_value".
+Global facts should be marked with "is_global": true.
 If there are no new facts, updates, or relevant facts, return empty objects for those categories.`;
+
+  return prompt;
 }
 
 /**
@@ -316,11 +356,49 @@ function parseFactExtractionResponse(response) {
       return { success: false, error: 'Invalid JSON structure in response' };
     }
     
+    // Process the response, preserving the is_global flag for global facts
+    const newFacts = {};
+    const updateFacts = {};
+    const relevantFacts = {};
+    
+    // Process new facts, preserving the is_global flag
+    if (parsedJson.new_facts) {
+      Object.entries(parsedJson.new_facts).forEach(([key, fact]) => {
+        newFacts[key] = {
+          value: fact.value,
+          confidence: fact.confidence,
+          is_global: fact.is_global === true
+        };
+      });
+    }
+    
+    // Process updated facts, preserving the is_global flag and previous_value
+    if (parsedJson.update_facts) {
+      Object.entries(parsedJson.update_facts).forEach(([key, fact]) => {
+        updateFacts[key] = {
+          value: fact.value,
+          confidence: fact.confidence,
+          previous_value: fact.previous_value,
+          is_global: fact.is_global === true
+        };
+      });
+    }
+    
+    // Process relevant facts
+    if (parsedJson.relevant_facts) {
+      Object.entries(parsedJson.relevant_facts).forEach(([key, fact]) => {
+        relevantFacts[key] = {
+          value: fact.value,
+          confidence: fact.confidence
+        };
+      });
+    }
+    
     return {
       success: true,
-      newFacts: parsedJson.new_facts || {},
-      updateFacts: parsedJson.update_facts || {},
-      relevantFacts: parsedJson.relevant_facts || {}
+      newFacts,
+      updateFacts,
+      relevantFacts
     };
   } catch (error) {
     logger.error('Error parsing fact extraction response', error);
@@ -349,6 +427,25 @@ async function processExtractedFacts(userId, extractionResult) {
       continue;
     }
     
+    // Check if this is a global fact (either by pattern or explicit flag)
+    const isGlobalFactPattern = /^(capital of|population of|location of|president of|currency of|language of|timezone of)/i;
+    const isGlobalFact = factData.is_global === true || isGlobalFactPattern.test(factKey);
+    
+    if (isGlobalFact) {
+      // Add as global fact
+      await addGlobalFact(factKey, factData.value, factData.confidence);
+      
+      // Add to new facts list for returning to caller
+      newFacts.push({
+        key: factKey,
+        value: factData.value,
+        confidence: factData.confidence,
+        isGlobal: true
+      });
+      
+      continue;
+    }
+    
     // Add new fact
     userFactsObj.facts[factKey] = {
       value: factData.value,
@@ -372,6 +469,26 @@ async function processExtractedFacts(userId, extractionResult) {
     // Skip facts with confidence below threshold
     if (factData.confidence < MIN_CONFIDENCE_THRESHOLD) {
       logger.debug(`Skipping fact update "${factKey}" due to low confidence: ${factData.confidence}`);
+      continue;
+    }
+    
+    // Check if this is a global fact (either by pattern or explicit flag)
+    const isGlobalFactPattern = /^(capital of|population of|location of|president of|currency of|language of|timezone of)/i;
+    const isGlobalFact = factData.is_global === true || isGlobalFactPattern.test(factKey);
+    
+    if (isGlobalFact) {
+      // Update global fact
+      await addGlobalFact(factKey, factData.value, factData.confidence);
+      
+      // Add to updated facts list for returning to caller
+      updatedFacts.push({
+        key: factKey,
+        oldValue: factData.previous_value || "unknown",
+        newValue: factData.value,
+        confidence: factData.confidence,
+        isGlobal: true
+      });
+      
       continue;
     }
     
@@ -466,7 +583,73 @@ async function processExtractedFacts(userId, extractionResult) {
 }
 
 /**
- * Get relevant facts for a message
+ * Get relevant facts for a message from all participants in the conversation
+ * @param {string} userId - Primary user ID
+ * @param {string} chatId - Chat ID
+ * @param {Object} relevantFactsObj - Relevant facts object from Gemini
+ * @returns {Array} - Formatted relevant facts for context
+ */
+function getRelevantFactsForMessage(userId, chatId, relevantFactsObj) {
+  const db = getDb();
+  
+  // Get relevant facts for the primary user
+  const primaryUserFacts = formatRelevantFacts(userId, relevantFactsObj);
+  
+  // For private chats, just return the primary user's facts
+  if (!chatId.endsWith('@g.us')) {
+    return primaryUserFacts;
+  }
+  
+  // For group chats, include relevant facts from other participants
+  const otherParticipantsFacts = [];
+  
+  // Get all participants in this chat
+  if (db.data.conversations[chatId] && db.data.conversations[chatId].participants) {
+    const participants = Object.keys(db.data.conversations[chatId].participants)
+      .filter(id => id !== userId && id !== process.env.BOT_ID);
+    
+    // Get recent speakers (last 5 messages)
+    const recentSpeakers = new Set();
+    if (db.data.conversations[chatId].messages) {
+      db.data.conversations[chatId].messages
+        .slice(-5)
+        .forEach(msg => {
+          if (msg.sender && msg.sender !== userId && msg.sender !== process.env.BOT_ID) {
+            recentSpeakers.add(msg.sender);
+          }
+        });
+    }
+    
+    // Prioritize recent speakers
+    const prioritizedParticipants = [
+      ...Array.from(recentSpeakers),
+      ...participants.filter(id => !recentSpeakers.has(id))
+    ];
+    
+    // Get relevant facts for each participant (limit to 3 participants)
+    prioritizedParticipants.slice(0, 3).forEach(participantId => {
+      if (db.data.userFacts[participantId]) {
+        const participantName = db.data.conversations[chatId]?.participants[participantId]?.name || 
+                             participantId.split('@')[0];
+        
+        // Get high-confidence facts only (limit to 5 facts per participant)
+        const userFacts = db.data.userFacts[participantId].facts;
+        const highConfidenceFacts = Object.entries(userFacts)
+          .filter(([_, fact]) => fact.confidence >= 0.85)
+          .sort((a, b) => b[1].confidence - a[1].confidence)
+          .slice(0, 5)
+          .map(([key, fact]) => `${participantName}: ${key} = ${fact.value}`);
+        
+        otherParticipantsFacts.push(...highConfidenceFacts);
+      }
+    });
+  }
+  
+  return [...primaryUserFacts, ...otherParticipantsFacts];
+}
+
+/**
+ * Format relevant facts for a specific user
  * @param {string} userId - User ID
  * @param {Object} relevantFactsObj - Relevant facts object from Gemini
  * @returns {Array} - Formatted relevant facts for context
@@ -835,15 +1018,138 @@ async function findImagesByDescription(description, options = {}) {
   }
 }
 
+/**
+ * Add or update a global fact
+ * 
+ * Global facts differ from user facts in that they represent general knowledge,
+ * factual information, or information about places/entities rather than personal
+ * user information. They are stored separately from user facts and are available
+ * to all conversations.
+ * 
+ * Global facts can be used for:
+ * - Geographic information (capitals, populations, locations)
+ * - General knowledge (presidents, currencies, languages)
+ * - Factual information relevant to all users
+ * 
+ * @param {string} factKey - The key for the fact
+ * @param {string} factValue - The value of the fact
+ * @param {number} confidence - Confidence score (0-1)
+ * @returns {Promise<boolean>} - Success status
+ */
+async function addGlobalFact(factKey, factValue, confidence = 0.95) {
+  try {
+    const db = getDb();
+    
+    // Ensure structure exists
+    ensureMemoryStructure(db);
+    
+    const timestamp = new Date().toISOString();
+    
+    // Get current value if exists
+    const currentFact = db.data.globalFacts.facts[factKey];
+    
+    // If fact exists and has higher confidence, don't update
+    if (currentFact && currentFact.confidence > confidence) {
+      logger.debug(`Not updating global fact "${factKey}" as existing confidence is higher`);
+      return false;
+    }
+    
+    // If fact exists, add to history
+    if (currentFact) {
+      db.data.globalFacts.factHistory.push({
+        fact: factKey,
+        oldValue: currentFact.value,
+        newValue: factValue,
+        oldConfidence: currentFact.confidence,
+        newConfidence: confidence,
+        timestamp
+      });
+    }
+    
+    // Update or add the fact
+    db.data.globalFacts.facts[factKey] = {
+      value: factValue,
+      confidence,
+      lastUpdated: timestamp,
+      source: 'system',
+      createdAt: currentFact?.createdAt || timestamp
+    };
+    
+    // Save to database
+    await db.write();
+    
+    logger.success(`Added/updated global fact: ${factKey} = ${factValue}`);
+    return true;
+  } catch (error) {
+    logger.error('Error adding global fact', error);
+    return false;
+  }
+}
+
+/**
+ * Get facts for other participants in the same chat
+ * @param {Object} db - Database instance
+ * @param {string} chatId - Chat ID
+ * @param {string} currentUserId - Current user ID (to exclude)
+ * @returns {Object} - Facts for other participants
+ */
+function getOtherParticipantsFacts(db, chatId, currentUserId) {
+  // Check if this is a group chat
+  const isGroup = chatId.endsWith('@g.us');
+  if (!isGroup) {
+    return {}; // No other participants in private chats
+  }
+  
+  // Get all participants in this chat
+  if (!db.data.conversations[chatId] || !db.data.conversations[chatId].participants) {
+    return {};
+  }
+  
+  const participants = Object.keys(db.data.conversations[chatId].participants)
+    .filter(id => id !== currentUserId && id !== process.env.BOT_ID);
+  
+  // Collect facts for each participant
+  const participantsFacts = {};
+  
+  participants.forEach(participantId => {
+    // Skip if no facts for this participant
+    if (!db.data.userFacts[participantId]) {
+      return;
+    }
+    
+    // Get participant name
+    const participantName = db.data.conversations[chatId]?.participants[participantId]?.name || 
+                         participantId.split('@')[0];
+    
+    // Get high-confidence facts only
+    const userFacts = db.data.userFacts[participantId].facts;
+    const highConfidenceFacts = {};
+    
+    Object.entries(userFacts).forEach(([key, fact]) => {
+      if (fact.confidence >= 0.8) { // Only include high confidence facts
+        highConfidenceFacts[key] = fact;
+      }
+    });
+    
+    if (Object.keys(highConfidenceFacts).length > 0) {
+      participantsFacts[participantName] = highConfidenceFacts;
+    }
+  });
+  
+  return participantsFacts;
+}
+
 // Export functions
 export {
   extractAndProcessFacts,
   formatRelevantFacts,
+  getRelevantFactsForMessage,
   addImageRecognitionFacts,
   storeImageEmbedding,
   findSimilarImages,
   findMatchingFaces,
   generateTextEmbedding,
   ensureMemoryStructure,
-  findImagesByDescription
+  findImagesByDescription,
+  addGlobalFact
 }; 

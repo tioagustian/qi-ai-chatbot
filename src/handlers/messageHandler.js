@@ -10,7 +10,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
-import { extractAndProcessFacts, formatRelevantFacts } from '../services/memoryService.js';
+import { extractAndProcessFacts, formatRelevantFacts, getRelevantFactsForMessage } from '../services/memoryService.js';
 
 // Get current directory for temporary file storage
 const __filename = fileURLToPath(import.meta.url);
@@ -231,26 +231,39 @@ async function processMessage(sock, message) {
       if (db.data.config.dynamicFactExtractionEnabled && content && content.trim().length > 0) {
         logger.info('Extracting facts from message');
         
+        // Get the actual user ID correctly - important for groups
+        const actualUserId = sender;
+        const userName = senderName || sender.split('@')[0];
+        
+        logger.debug(`Extracting facts for user: ${userName} (${actualUserId})`);
+        
         // Extract facts using Gemini
-        const factExtractionResult = await extractAndProcessFacts(sender, chatId, content);
+        const factExtractionResult = await extractAndProcessFacts(actualUserId, chatId, content);
         
         if (factExtractionResult.success) {
-          // Format relevant facts for context
-          relevantFacts = formatRelevantFacts(sender, factExtractionResult.relevantFacts);
+          // Use the new function to get relevant facts from all participants
+          relevantFacts = getRelevantFactsForMessage(actualUserId, chatId, factExtractionResult.relevantFacts);
           
-          logger.success(`Extracted ${Object.keys(factExtractionResult.relevantFacts).length} relevant facts`);
-          logger.debug('Relevant facts', { facts: relevantFacts });
+          logger.success(`Extracted ${Object.keys(factExtractionResult.relevantFacts).length} relevant facts for ${userName}`);
+          logger.debug('Relevant facts', { 
+            userId: actualUserId,
+            userName,
+            chatType: isGroup ? 'group' : 'private',
+            facts: relevantFacts,
+            totalParticipantFacts: factExtractionResult.otherParticipantsFacts ? 
+              Object.keys(factExtractionResult.otherParticipantsFacts).length : 0
+          });
           
           // Log new and updated facts
           if (factExtractionResult.newFacts && factExtractionResult.newFacts.length > 0) {
-            logger.info(`Added ${factExtractionResult.newFacts.length} new facts`);
+            logger.info(`Added ${factExtractionResult.newFacts.length} new facts for ${userName}`);
           }
           
           if (factExtractionResult.updatedFacts && factExtractionResult.updatedFacts.length > 0) {
-            logger.info(`Updated ${factExtractionResult.updatedFacts.length} facts`);
+            logger.info(`Updated ${factExtractionResult.updatedFacts.length} facts for ${userName}`);
           }
         } else {
-          logger.warning(`Fact extraction failed: ${factExtractionResult.error}`);
+          logger.warning(`Fact extraction failed for ${userName}: ${factExtractionResult.error}`);
         }
       }
     } catch (factError) {
@@ -261,54 +274,54 @@ async function processMessage(sock, message) {
     const shouldRespond = shouldRespondToMessage(message, content, isTagged, isGroup, db.data.config.botName);
     
     // Check if this is a query about a previous image
-    let isPreviousImageQuery = false;
-    
-    if (content && !containsImage) {
-      const lowerContent = content.toLowerCase();
+      let isPreviousImageQuery = false;
       
-      // Check for temporal references combined with demonstrative pronouns
-      const hasTemporalReference = [
-        'tadi', 'sebelumnya', 'sebelum ini', 'yang tadi', 'yang sebelumnya', 'yang barusan',
-        'earlier', 'before', 'previous', 'just now', 'just sent'
-      ].some(ref => lowerContent.includes(ref));
-      
-      const hasDemonstrativeReference = [
-        'ini', 'itu', 'tersebut', 'this', 'that', 'those', 'these'
-      ].some(ref => lowerContent.includes(ref));
-      
-      // Check for image-related terms
-      const hasImageTerms = [
-        'gambar', 'foto', 'image', 'picture', 'photo', 'lihat', 'cek', 'check', 'analisis', 'analyze',
-        'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat'
-      ].some(term => lowerContent.includes(term));
-      
-      // If the message has temporal references and demonstrative pronouns, or explicitly mentions images
-      // it's likely referring to a previously shared image
-      isPreviousImageQuery = (hasTemporalReference && hasDemonstrativeReference) || hasImageTerms;
-      
-      // Additional check: if it's a question and has demonstrative pronouns, it might be about a previous image
-      const isQuestion = content.endsWith('?') || 
-        ['apa', 'siapa', 'kapan', 'dimana', 'gimana', 'bagaimana', 'kenapa', 'mengapa', 'tolong'].some(q => lowerContent.includes(q));
+      if (content && !containsImage) {
+        const lowerContent = content.toLowerCase();
         
-      if (isQuestion && hasDemonstrativeReference) {
-        isPreviousImageQuery = true;
+        // Check for temporal references combined with demonstrative pronouns
+        const hasTemporalReference = [
+          'tadi', 'sebelumnya', 'sebelum ini', 'yang tadi', 'yang sebelumnya', 'yang barusan',
+          'earlier', 'before', 'previous', 'just now', 'just sent'
+        ].some(ref => lowerContent.includes(ref));
+        
+        const hasDemonstrativeReference = [
+          'ini', 'itu', 'tersebut', 'this', 'that', 'those', 'these'
+        ].some(ref => lowerContent.includes(ref));
+        
+        // Check for image-related terms
+        const hasImageTerms = [
+          'gambar', 'foto', 'image', 'picture', 'photo', 'lihat', 'cek', 'check', 'analisis', 'analyze',
+          'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat'
+        ].some(term => lowerContent.includes(term));
+        
+        // If the message has temporal references and demonstrative pronouns, or explicitly mentions images
+        // it's likely referring to a previously shared image
+        isPreviousImageQuery = (hasTemporalReference && hasDemonstrativeReference) || hasImageTerms;
+        
+        // Additional check: if it's a question and has demonstrative pronouns, it might be about a previous image
+        const isQuestion = content.endsWith('?') || 
+          ['apa', 'siapa', 'kapan', 'dimana', 'gimana', 'bagaimana', 'kenapa', 'mengapa', 'tolong'].some(q => lowerContent.includes(q));
+          
+        if (isQuestion && hasDemonstrativeReference) {
+          isPreviousImageQuery = true;
+        }
+        
+        logger.debug('Image query detection', { 
+          isPreviousImageQuery, 
+          hasTemporalReference, 
+          hasDemonstrativeReference,
+          hasImageTerms,
+          isQuestion
+        });
       }
       
-      logger.debug('Image query detection', { 
-        isPreviousImageQuery, 
-        hasTemporalReference, 
-        hasDemonstrativeReference,
-        hasImageTerms,
-        isQuestion
-      });
-    }
-    
-    // Check if the current image has a caption that explicitly asks for analysis
-    const imageAnalysisKeywords = ['analisis', 'analyze', 'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat', 'cek'];
+      // Check if the current image has a caption that explicitly asks for analysis
+      const imageAnalysisKeywords = ['analisis', 'analyze', 'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat', 'cek'];
     const isExplicitImageAnalysisRequest = containsImage && 
       imageData.caption && 
       imageAnalysisKeywords.some(keyword => imageData.caption.toLowerCase().includes(keyword));
-    
+      
     // If we have an explicit image analysis request, we should respond with the analysis
     if (isExplicitImageAnalysisRequest) {
       shouldRespond = true;
@@ -322,7 +335,7 @@ async function processMessage(sock, message) {
       isGroup,
       userMessage: content?.substring(0, 50)
     });
-    
+      
     // If we should respond, generate and send a response
     if (shouldRespond) {
       try {
@@ -346,11 +359,11 @@ async function processMessage(sock, message) {
             const imageAnalysisObj = db.data.imageAnalysis[imageAnalysisId];
             if (imageAnalysisObj) {
               contextMessages.push({
-                role: 'system',
+              role: 'system',
                 content: `User baru saja mengirim gambar. Berikut analisis gambar: ${imageAnalysisObj.analysis}`,
                 name: 'image_context'
-              });
-            }
+            });
+          }
           }
         }
         
@@ -367,7 +380,7 @@ async function processMessage(sock, message) {
         }
         
         // Generate AI response
-        logger.info('Generating AI response');
+          logger.info('Generating AI response');
         
         // Create a function to keep the typing indicator active during API calls
         let stopTypingInterval = false;
@@ -399,7 +412,7 @@ async function processMessage(sock, message) {
           responseLength: aiResponse.length,
           responsePreview: aiResponse.substring(0, 50) + (aiResponse.length > 50 ? '...' : '')
         });
-        
+
         // Calculate dynamic response delay based on message length and complexity
         const isPrivateChat = !isGroup;
         const responseDelay = calculateResponseDelay(
@@ -419,7 +432,7 @@ async function processMessage(sock, message) {
           logger.info(`Simulating natural typing for ${Math.round(typingDuration)}ms before sending`);
           
           // Show active typing
-          await sock.sendPresenceUpdate('composing', chatId);
+              await sock.sendPresenceUpdate('composing', chatId);
           
           // For very long responses, pause typing briefly in the middle to seem more natural
           if (aiResponse.length > 250) {
@@ -427,7 +440,7 @@ async function processMessage(sock, message) {
             
             // Type for a while
             await new Promise(resolve => setTimeout(resolve, halfwayPoint));
-            
+          
             // Brief pause in typing (thinking about what to say next)
             await sock.sendPresenceUpdate('paused', chatId);
             await new Promise(resolve => setTimeout(resolve, Math.random() * 800 + 700)); // 700-1500ms pause
@@ -463,18 +476,18 @@ async function processMessage(sock, message) {
         }
         
         // Update context with AI's response
-        try {
+          try {
           await updateContext(db, chatId, process.env.BOT_ID, aiResponse, {
-            key: {
+                key: { 
               id: `ai_${Date.now()}`,
               remoteJid: chatId
-            },
-            pushName: db.data.config.botName
+                },
+                pushName: db.data.config.botName
           });
         } catch (updateError) {
           logger.error('Error updating context with AI response', updateError);
-        }
-      } catch (responseError) {
+          }
+        } catch (responseError) {
         logger.error('Error generating or sending response', responseError);
         try {
           // Calculate a short delay for error messages
@@ -482,14 +495,14 @@ async function processMessage(sock, message) {
             `Maaf, terjadi kesalahan saat memproses pesan: ${responseError.message}. Coba lagi nanti ya~`, 
             { minDelay: 500, maxDelay: 1500, privateChat: !isGroup }
           );
-          
+
           // Wait a moment before sending error message
           logger.info(`Waiting ${errorMessageDelay}ms before sending error message`);
           await new Promise(resolve => setTimeout(resolve, errorMessageDelay));
           
-          await sock.sendMessage(chatId, { 
+            await sock.sendMessage(chatId, { 
             text: `Maaf, terjadi kesalahan saat memproses pesan: ${responseError.message}. Coba lagi nanti ya~` 
-          }, { quoted: message });
+            }, { quoted: message });
         } catch (sendError) {
           logger.error('Error sending error message', sendError);
         }

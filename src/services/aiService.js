@@ -44,13 +44,11 @@ const TOOL_SUPPORTED_MODELS = [
   'gemini-2.0-flash-lite',
   'gemini-2.0-flash',
   'gemini-2.5-flash-preview-04-17',
-  'meta-llama/Llama-3.3-70B-Instruct-Turbo-Free',
   'deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free'
 ];
 
 // Together.AI available models
 const TOGETHER_MODELS = [
-  'meta-llama/Llama-3.3-70B-Instruct-Turbo-Free',
   'deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free',
   'meta-llama/Llama-Vision-Free' // Vision model for image analysis
 ];
