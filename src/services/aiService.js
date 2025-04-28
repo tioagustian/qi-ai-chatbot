@@ -93,7 +93,7 @@ const logger = {
 };
 
 // Generate a response using the AI model
-async function generateAIResponseLegacy(message, context, botData) {
+async function generateAIResponseLegacy(message, context, botData, senderName = null) {
   try {
     const startTime = Date.now();
     logger.info(`Generating AI response for message: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`);
@@ -174,7 +174,7 @@ async function generateAIResponseLegacy(message, context, botData) {
     const messages = [
       { role: 'system', content: systemMessage },
       ...formatContextForAPI(context),
-      { role: 'user', content: message }
+      { role: 'user', content: message, name: senderName }
     ];
     
     if (isGeminiModel) {
@@ -1429,11 +1429,24 @@ function formatMessagesForAPI(messages, botConfig) {
                          botConfig.model.startsWith('google/') || 
                          botConfig.model.startsWith('gemini')
                        ));
+  
   // Format semua pesan agar memasukkan name dan timestamp ke dalam content
   return messages.map(msg => {
     if (msg.role === 'user') {
-      // Ambil nama dan timestamp jika ada, fallback jika tidak ada
-      const name = msg.name || '-';
+      // Get sender name from various possible locations in message metadata
+      let senderName = msg.name;
+      if (!senderName && msg.metadata) {
+        senderName = msg.metadata.senderName || msg.metadata.sender_name || msg.metadata.from_name || msg.name;
+      }
+      if (!senderName && msg.sender) {
+        // If it's a phone number/ID, extract just the name part
+        senderName = msg.sender.split('@')[0];
+      }
+      // Final fallback - this should rarely happen
+      if (!senderName) {
+        senderName = 'Unknown User';
+      }
+      
       const timestamp = msg.timestamp || new Date().toISOString();
       
       // Convert to Asia/Jakarta timezone and format
@@ -1451,16 +1464,16 @@ function formatMessagesForAPI(messages, botConfig) {
       const content = typeof msg.content === 'string' ? msg.content : '';
       return {
         role: 'user',
-        content: `name: ${name} \n time: ${jakartaTime} \n content: ${content}`
+        content: `name: ${senderName} \n time: ${jakartaTime} \n content: ${content}`
       };
     } else if (msg.role === 'system') {
-      // Untuk system, tetap seperti sebelumnya (atau bisa juga diformat jika perlu)
+      // For system messages, handle Gemini's special case
       return {
         role: isGeminiModel ? 'user' : 'system',
         content: msg.content
       };
     } else {
-      // Untuk role lain (misal assistant), tetap seperti sebelumnya
+      // For other roles (e.g. assistant), keep as is
       return msg;
     }
   });

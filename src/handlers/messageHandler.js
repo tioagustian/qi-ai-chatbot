@@ -402,7 +402,7 @@ async function processMessage(sock, message) {
         const typingPromise = keepTypingActive();
         
         // Generate response
-        const aiResponse = await generateAIResponseLegacy(content || (containsImage ? `[User sent an image: ${imageData.caption || 'no caption'}]` : "[Empty message]"), contextMessages, db.data);
+        const aiResponse = await generateAIResponseLegacy(content || (containsImage ? `[User sent an image: ${imageData.caption || 'no caption'}]` : "[Empty message]"), contextMessages, db.data, senderName);
         
         // Stop typing indicator interval
         stopTypingInterval = true;

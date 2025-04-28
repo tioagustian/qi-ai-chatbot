@@ -109,7 +109,8 @@ SANGAT PENTING: Jangan memberikan respon selain "YES" atau "NO". Jangan jelaskan
     const decision = await generateAIResponseLegacy(
       "Apakah aku perlu merespon pesan ini?", 
       decisionContext, 
-      db.data
+      db.data,
+      message.name
     );
 
     const shouldBotRespond = decision.trim().toUpperCase() === "YES";
