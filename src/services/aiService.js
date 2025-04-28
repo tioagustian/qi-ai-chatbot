@@ -273,6 +273,71 @@ async function generateAIResponseLegacy(message, context, botData) {
         }
       } catch (togetherError) {
         logger.error('Together.AI API request failed', togetherError);
+        
+        // Check for rate limit error (429) and try Gemini as fallback
+        if (togetherError.response && togetherError.response.status === 429) {
+          logger.warning('Together.AI API rate limited, falling back to Gemini API');
+          
+          // Check if Gemini API key is available
+          const geminiApiKey = config.geminiApiKey || process.env.GEMINI_API_KEY;
+          
+          if (!geminiApiKey) {
+            logger.warning('Gemini API key not configured for fallback');
+            return `Gagal terhubung ke Together.AI API: ${togetherError.message}. Gemini API key tidak tersedia untuk fallback. Coba lagi nanti ya~`;
+          }
+          
+          try {
+            // Convert messages to Gemini format
+            const formattedMessages = formatMessagesForAPI(messages, config);
+            
+            // Use Gemini 2.0 Flash as fallback
+            const fallbackModel = 'gemini-2.0-flash';
+            logger.info(`Falling back to Gemini API with model: ${fallbackModel}`);
+            
+            // Call Gemini API
+            const response = await requestGeminiChat(
+              fallbackModel,
+              geminiApiKey,
+              formattedMessages,
+              {
+                temperature: 0.7,
+                top_p: 0.9,
+                max_tokens: 1000,
+                stop: null,
+                stream: false
+              }
+            );
+            
+            if (!response) {
+              logger.error('Empty response from fallback Gemini API');
+              return 'Maaf, Together.AI API rate limited dan Gemini API tidak memberikan respons. Coba lagi nanti ya~';
+            }
+            
+            logger.success(`Successfully processed fallback Gemini API response`);
+            
+            // Process response in the same format as OpenRouter response for consistency
+            if (response.choices && response.choices.length > 0 && 
+                response.choices[0].message && response.choices[0].message.content) {
+              
+              let processedContent = response.choices[0].message.content;
+              
+              // Trim leading/trailing newlines
+              if (processedContent.match(/^\s*\n+/) || processedContent.match(/\n+\s*$/)) {
+                processedContent = processedContent.replace(/^\s*\n+/, '').replace(/\n+\s*$/, '');
+              }
+              
+              logger.success(`Successfully processed fallback AI response (${processedContent.length} chars)`);
+              return processedContent;
+            } else {
+              logger.error('Invalid response format from fallback Gemini API');
+              return 'Maaf, format respons dari Gemini API fallback tidak valid. Coba lagi nanti ya~';
+            }
+          } catch (fallbackError) {
+            logger.error('Fallback to Gemini API failed', fallbackError);
+            return `Gagal terhubung ke Together.AI API (rate limited) dan Gemini API fallback: ${fallbackError.message}. Coba lagi nanti ya~`;
+          }
+        }
+        
         return `Gagal terhubung ke Together.AI API: ${togetherError.message}. Coba lagi nanti ya~`;
       }
     } else {
@@ -1147,18 +1212,58 @@ async function generateAIResponse2(botConfig, contextMessages, streamCallback = 
         streaming = false;
       }
       
-      response = await requestTogetherChat(
-        botConfig.model,
-        apiKey,
-        formattedMessages,
-        {
-          temperature: botConfig.temperature || 0.7,
-          top_p: botConfig.top_p || 0.95,
-          max_tokens: botConfig.max_tokens || 2048,
-          stop: botConfig.stop || null,
-          stream: false // Streaming not supported yet
+      try {
+        response = await requestTogetherChat(
+          botConfig.model,
+          apiKey,
+          formattedMessages,
+          {
+            temperature: botConfig.temperature || 0.7,
+            top_p: botConfig.top_p || 0.95,
+            max_tokens: botConfig.max_tokens || 2048,
+            stop: botConfig.stop || null,
+            stream: false // Streaming not supported yet
+          }
+        );
+      } catch (togetherError) {
+        logger.error(`[AI Service] Together.AI API error: ${togetherError.message}`);
+        
+        // Check for rate limit error (429) and try Gemini as fallback
+        if (togetherError.response && togetherError.response.status === 429) {
+          logger.warning('Together.AI API rate limited, falling back to Gemini API');
+          
+          // Check if Gemini API key is available
+          const geminiApiKey = botConfig.geminiApiKey || process.env.GEMINI_API_KEY;
+          
+          if (!geminiApiKey) {
+            logger.warning('Gemini API key not configured for fallback');
+            throw new Error(`Together.AI API rate limited and Gemini API key not available for fallback: ${togetherError.message}`);
+          }
+          
+          // Use Gemini 2.0 Flash as fallback
+          const fallbackModel = 'gemini-2.0-flash';
+          logger.info(`Falling back to Gemini API with model: ${fallbackModel}`);
+          
+          // Call Gemini API
+          response = await requestGeminiChat(
+            fallbackModel,
+            geminiApiKey,
+            formattedMessages,
+            {
+              temperature: botConfig.temperature || 0.7,
+              top_p: botConfig.top_p || 0.95,
+              max_tokens: botConfig.max_tokens || 2048,
+              stop: botConfig.stop || null,
+              stream: false
+            }
+          );
+          
+          logger.success(`Successfully processed fallback Gemini API response`);
+        } else {
+          // If not a rate limit error or no Gemini fallback available, rethrow
+          throw togetherError;
         }
-      );
+      }
     } else {
       // OpenRouter implementation
       const endpoint = OPENROUTER_API_URL;
@@ -1564,6 +1669,16 @@ async function requestTogetherChat(model, apiKey, messages, params) {
   let errorOccurred = false;
   let errorDetails = null;
   
+  // Move requestData declaration outside the try block so it's accessible in the catch block
+  let requestData = {
+    model: model,
+    messages: messages,
+    temperature: params.temperature || 0.7,
+    top_p: params.top_p || 0.95,
+    max_tokens: params.max_tokens || 2048,
+    stream: false
+  };
+  
   try {
     console.log(`Making request to Together.AI API with model: ${model}`);
     
@@ -1572,16 +1687,7 @@ async function requestTogetherChat(model, apiKey, messages, params) {
     
     console.log(`Using Together.AI API endpoint: ${endpoint}`);
     
-    // Prepare request body
-    const requestData = {
-      model: model,
-      messages: messages,
-      temperature: params.temperature || 0.7,
-      top_p: params.top_p || 0.95,
-      max_tokens: params.max_tokens || 2048,
-      stream: false
-    };
-    
+    // Add stop sequences if provided
     if (params.stop && Array.isArray(params.stop) && params.stop.length > 0) {
       requestData.stop = params.stop;
     }
