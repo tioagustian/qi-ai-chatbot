@@ -63,7 +63,7 @@ async function logApiRequest(endpoint, provider, model, requestData, responseDat
     // Create a log entry
     const timestamp = new Date().toISOString();
     const date = new Date().toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '-');
-    const logId = `log_${date}}`;
+    const logId = `log_${date}`;
     
     // Sanitize request data by removing API keys
     let sanitizedRequestData = JSON.parse(JSON.stringify(requestData));
