@@ -75,6 +75,13 @@ async function processMessage(sock, message) {
       containsImage
     });
     
+    // Add a small natural delay before marking as read (simulating human reading time)
+    const messageLength = content?.length || 0;
+    const readingDelay = Math.min(Math.max(300, messageLength * 10), 1500); // 300ms to 1500ms based on length
+    
+    logger.debug(`Waiting ${readingDelay}ms before marking as read (simulating reading)`);
+    await new Promise(resolve => setTimeout(resolve, readingDelay));
+    
     // Mark message as read before processing
     try {
       await sock.readMessages([message.key]);
@@ -174,10 +181,32 @@ async function processMessage(sock, message) {
     if (commandData) {
       logger.info(`Command detected: ${commandData.command} with ${commandData.args.length} argument(s)`);
       try {
+        // Add natural thinking delay before processing command
+        const commandThinkingDelay = Math.floor(Math.random() * 300) + 300; // 300-600ms
+        await new Promise(resolve => setTimeout(resolve, commandThinkingDelay));
+        
+        // Show typing indicator for command processing
+        await sock.sendPresenceUpdate('composing', chatId);
+        
         const response = await executeCommand(sock, message, commandData, db);
         if (response) {
           logger.success(`Command ${commandData.command} executed successfully, sending response`);
+          
+          // Calculate dynamic response delay for command response
+          const commandResponseDelay = calculateResponseDelay(
+            content, 
+            response, 
+            { minDelay: 500, maxDelay: 2000, privateChat: !isGroup }
+          );
+          
+          // Wait a moment before sending command response
+          logger.info(`Waiting ${commandResponseDelay}ms before sending command response`);
+          await new Promise(resolve => setTimeout(resolve, commandResponseDelay));
+          
           await sock.sendMessage(chatId, { text: response }, { quoted: message });
+          
+          // Pause typing after sending response
+          await sock.sendPresenceUpdate('paused', chatId);
         } else {
           logger.warning(`Command ${commandData.command} executed but returned no response`);
         }
@@ -297,6 +326,11 @@ async function processMessage(sock, message) {
     // If we should respond, generate and send a response
     if (shouldRespond) {
       try {
+        // Add a small thinking delay before showing typing indicator
+        const thinkingDelay = Math.floor(Math.random() * 800) + 500; // Random delay between 500-1300ms
+        logger.debug(`Waiting ${thinkingDelay}ms before showing typing indicator (simulating thinking)`);
+        await new Promise(resolve => setTimeout(resolve, thinkingDelay));
+        
         // Show typing indicator
         await sock.sendPresenceUpdate('composing', chatId);
         
@@ -334,13 +368,82 @@ async function processMessage(sock, message) {
         
         // Generate AI response
         logger.info('Generating AI response');
+        
+        // Create a function to keep the typing indicator active during API calls
+        let stopTypingInterval = false;
+        const keepTypingActive = async () => {
+          while (!stopTypingInterval) {
+            await sock.sendPresenceUpdate('composing', chatId);
+            await new Promise(resolve => setTimeout(resolve, 3000)); // Refresh typing indicator every 3 seconds
+            
+            // Occasionally pause typing to make it more natural
+            if (Math.random() > 0.7) {
+              await sock.sendPresenceUpdate('paused', chatId);
+              await new Promise(resolve => setTimeout(resolve, 1500)); // Pause for 1.5 seconds
+              await sock.sendPresenceUpdate('composing', chatId);
+            }
+          }
+        };
+        
+        // Start keeping typing indicator active
+        const typingPromise = keepTypingActive();
+        
+        // Generate response
         const aiResponse = await generateAIResponseLegacy(content || (containsImage ? `[User sent an image: ${imageData.caption || 'no caption'}]` : "[Empty message]"), contextMessages, db.data);
+        
+        // Stop typing indicator interval
+        stopTypingInterval = true;
         
         // Debug the AI response
         logger.debug('AI response generated', { 
           responseLength: aiResponse.length,
           responsePreview: aiResponse.substring(0, 50) + (aiResponse.length > 50 ? '...' : '')
         });
+        
+        // Calculate dynamic response delay based on message length and complexity
+        const isPrivateChat = !isGroup;
+        const responseDelay = calculateResponseDelay(
+          content || (containsImage ? `[Image: ${imageData.caption || 'no caption'}]` : "[Empty message]"), 
+          aiResponse, 
+          { privateChat: isPrivateChat }
+        );
+        
+        // For longer responses, simulate natural typing with pauses
+        if (aiResponse.length > 100) {
+          // Calculate realistic typing duration based on response length
+          const typingDuration = Math.min(
+            500 + (aiResponse.length / 10), // Base typing time (10 chars per second)
+            8000 // Cap at 8 seconds max
+          );
+          
+          logger.info(`Simulating natural typing for ${Math.round(typingDuration)}ms before sending`);
+          
+          // Show active typing
+          await sock.sendPresenceUpdate('composing', chatId);
+          
+          // For very long responses, pause typing briefly in the middle to seem more natural
+          if (aiResponse.length > 250) {
+            const halfwayPoint = Math.floor(typingDuration * 0.4); // Pause after 40% of typing time
+            
+            // Type for a while
+            await new Promise(resolve => setTimeout(resolve, halfwayPoint));
+            
+            // Brief pause in typing (thinking about what to say next)
+            await sock.sendPresenceUpdate('paused', chatId);
+            await new Promise(resolve => setTimeout(resolve, Math.random() * 800 + 700)); // 700-1500ms pause
+            
+            // Resume typing to finish the message
+            await sock.sendPresenceUpdate('composing', chatId);
+            await new Promise(resolve => setTimeout(resolve, typingDuration - halfwayPoint));
+          } else {
+            // For medium-length messages, just type continuously
+            await new Promise(resolve => setTimeout(resolve, typingDuration));
+          }
+        } else {
+          // Continue showing typing indicator during the delay for short messages
+          logger.info(`Waiting ${responseDelay}ms before sending response`);
+          await new Promise(resolve => setTimeout(resolve, responseDelay));
+        }
         
         // Send the response
         await sock.sendMessage(chatId, { text: aiResponse }, { quoted: message });
@@ -374,6 +477,16 @@ async function processMessage(sock, message) {
       } catch (responseError) {
         logger.error('Error generating or sending response', responseError);
         try {
+          // Calculate a short delay for error messages
+          const errorMessageDelay = calculateResponseDelay("", 
+            `Maaf, terjadi kesalahan saat memproses pesan: ${responseError.message}. Coba lagi nanti ya~`, 
+            { minDelay: 500, maxDelay: 1500, privateChat: !isGroup }
+          );
+          
+          // Wait a moment before sending error message
+          logger.info(`Waiting ${errorMessageDelay}ms before sending error message`);
+          await new Promise(resolve => setTimeout(resolve, errorMessageDelay));
+          
           await sock.sendMessage(chatId, { 
             text: `Maaf, terjadi kesalahan saat memproses pesan: ${responseError.message}. Coba lagi nanti ya~` 
           }, { quoted: message });

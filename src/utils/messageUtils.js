@@ -218,7 +218,8 @@ function calculateResponseDelay(message, response, options = {}) {
       typingSpeed: options.typingSpeed || 15, // Characters per second for typing
       thinkingTime: options.thinkingTime || 1.5, // Multiplier for thinking time
       privateChat: options.privateChat || false, // Whether this is a private chat
-      wordCount: options.wordCount || false // Calculate based on words instead of chars
+      wordCount: options.wordCount || false, // Calculate based on words instead of chars
+      humanVariability: options.humanVariability !== undefined ? options.humanVariability : true // Add human variability
     };
     
     // Calculate reading time (how long it would take a human to read the message)
@@ -241,10 +242,26 @@ function calculateResponseDelay(message, response, options = {}) {
     
     // Calculate typing time (how long it would take to type the response)
     const responseLength = response?.length || 0;
-    const typingTime = (responseLength / config.typingSpeed) * 1000; // Convert to milliseconds
+    const responseWords = response?.split(/\s+/)?.length || 0;
     
-    // Cap typing time
-    const cappedTypingTime = Math.min(typingTime, 5000); // Cap at 5 seconds
+    // Human-like typing speed varies based on response type/complexity
+    let typingSpeed = config.typingSpeed;
+    
+    // Adjust typing speed based on content
+    if (responseLength < 50) {
+      // Short responses are typed faster
+      typingSpeed = config.typingSpeed * 1.3;
+    } else if (responseLength > 200) {
+      // Long responses are typed slower (fatigue)
+      typingSpeed = config.typingSpeed * 0.9;
+    }
+    
+    // Calculate typing time with adjusted speed
+    const typingTime = (responseLength / typingSpeed) * 1000; // Convert to milliseconds
+    
+    // Cap typing time at a more realistic value based on message length
+    const typingCap = Math.min(5000 + (responseWords * 20), 12000); // Cap longer for longer responses
+    const cappedTypingTime = Math.min(typingTime, typingCap);
     
     // Add thinking time - simulates human thinking before responding
     // More complex/longer messages need more thinking time
@@ -252,25 +269,46 @@ function calculateResponseDelay(message, response, options = {}) {
       wordCount > 0 ? wordCount / 10 : messageLength / 50, 
       2.0
     ); 
-    const thinkingTime = config.thinkingTime * 1000 * complexityFactor;
     
-    // Combine all times
-    let totalDelay = readingTime + thinkingTime + (cappedTypingTime / 3); 
-    // We only consider part of typing time since we show typing indicator
+    // Add "understanding complexity" - longer/complex responses need more thinking time
+    const responseComplexity = Math.min(responseWords / 15, 1.5);
+    
+    // Combined thinking time includes both message and response complexity
+    const thinkingTime = config.thinkingTime * 1000 * (complexityFactor + responseComplexity) / 2;
+    
+    // Combine all times - we only consider part of typing time since typing indicator will be shown
+    let totalDelay = readingTime + thinkingTime + (cappedTypingTime / 3.5); 
     
     // Reduce delay for private chats to be more responsive
     if (config.privateChat) {
       totalDelay = totalDelay * 0.7;
     }
     
-    // Add a small random factor to make it more human-like
-    const randomFactor = Math.random() * 0.3 + 0.85; // 0.85 to 1.15
-    totalDelay = totalDelay * randomFactor;
+    // Add human-like inconsistency
+    if (config.humanVariability) {
+      // Humans aren't machines - timing varies based on attention, mood, etc.
+      // Sometimes we reply quickly, sometimes we take longer even for simple messages
+      // Add a weighted random factor that tends more toward being slower than faster
+      const variabilityFactor = Math.random() * Math.random(); // Weighted toward smaller values
+      const isQuicker = Math.random() > 0.7; // 30% chance of being quicker
+      
+      if (isQuicker) {
+        // Occasionally we reply more quickly than expected
+        totalDelay = totalDelay * (1 - variabilityFactor * 0.3); // Up to 30% faster
+      } else {
+        // More often we're a bit slower than expected
+        totalDelay = totalDelay * (1 + variabilityFactor * 0.5); // Up to 50% slower
+      }
+    } else {
+      // Still add a small random factor even without full human variability
+      const randomFactor = Math.random() * 0.2 + 0.9; // 0.9 to 1.1
+      totalDelay = totalDelay * randomFactor;
+    }
     
     // Add logging to help debug
     console.log(`[DELAY] Message length: ${messageLength} chars, ${wordCount} words`);
-    console.log(`[DELAY] Response length: ${responseLength} chars`);
-    console.log(`[DELAY] Reading time: ${Math.round(readingTime)}ms, Thinking time: ${Math.round(thinkingTime)}ms, Typing time (partial): ${Math.round(cappedTypingTime/3)}ms`);
+    console.log(`[DELAY] Response length: ${responseLength} chars, ${responseWords} words`);
+    console.log(`[DELAY] Reading time: ${Math.round(readingTime)}ms, Thinking time: ${Math.round(thinkingTime)}ms, Typing time (partial): ${Math.round(cappedTypingTime/3.5)}ms`);
     console.log(`[DELAY] Total delay (before min/max): ${Math.round(totalDelay)}ms`);
     
     // Ensure delay is within min and max bounds

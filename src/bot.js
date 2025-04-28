@@ -9,6 +9,7 @@ import { processMessage } from './handlers/messageHandler.js';
 import { fileURLToPath } from 'url';
 import chalk from 'chalk';
 import { generateGroupIntroduction } from './services/contextService.js';
+import { calculateResponseDelay } from './utils/messageUtils.js';
 
 // Get current directory
 const __filename = fileURLToPath(import.meta.url);
@@ -289,6 +290,22 @@ const startBot = async () => {
             try {
               // Generate and send introduction message
               const introMessage = await generateGroupIntroduction(db, update.id);
+              
+              // Calculate a delay for the introduction
+              const introDelay = calculateResponseDelay(
+                "Hello", 
+                introMessage, 
+                { minDelay: 800, maxDelay: 2500 }
+              );
+              
+              // Show typing indicator
+              await sock.sendPresenceUpdate('composing', update.id);
+              
+              // Wait a moment to make the introduction feel more natural
+              console.log(chalk.yellow(`[GROUP UPDATE] Waiting ${introDelay}ms before sending introduction`));
+              await new Promise(resolve => setTimeout(resolve, introDelay));
+              
+              // Send introduction message
               await sock.sendMessage(update.id, { text: introMessage });
               
               // Update the database to mark that we've introduced ourselves
