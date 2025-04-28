@@ -5,6 +5,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getApiLogs, clearApiLogs } from './apiLogService.js';
+import { getDb } from '../database/index.js';
+import chalk from 'chalk';
 
 // Get current directory
 const __filename = fileURLToPath(import.meta.url);
@@ -919,9 +921,8 @@ async function handleApiLogsCommand(sock, message, args, db) {
         i++; // Skip the next argument
       } else if (arg === 'clear') {
         // Clear logs
-        const keepLastDay = args[i + 1] === 'all' ? false : true;
-        await clearApiLogs(keepLastDay);
-        return `API logs have been cleared${keepLastDay ? ' (logs from the last 24 hours were kept)' : ' completely'}`;
+        await clearApiLogs();
+        return 'API logs have been cleared completely';
       } else if (arg === 'today') {
         const today = new Date();
         today.setHours(0, 0, 0, 0);

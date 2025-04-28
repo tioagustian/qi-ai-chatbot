@@ -46,8 +46,7 @@ const defaultData = {
   globalFacts: {
     facts: {},
     factHistory: []
-  },
-  apiLogs: []
+  }
 };
 
 // Initialize database
@@ -167,17 +166,6 @@ function ensureDataStructure() {
   
   if (db.data.config.apiLogRetentionDays === undefined) {
     db.data.config.apiLogRetentionDays = parseInt(process.env.API_LOG_RETENTION_DAYS || 7);
-  }
-  
-  // Clean up old API logs based on retention policy
-  if (db.data.apiLogs && db.data.apiLogs.length > 0) {
-    const retentionDays = db.data.config.apiLogRetentionDays || 7;
-    const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
-    
-    db.data.apiLogs = db.data.apiLogs.filter(log => 
-      new Date(log.timestamp) > cutoffDate
-    );
   }
   
   // Ensure existing conversations have the updated structure

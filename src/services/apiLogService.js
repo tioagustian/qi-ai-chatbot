@@ -1,5 +1,15 @@
 import { getDb } from '../database/index.js';
 import chalk from 'chalk';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Get current directory
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Define logs directory path
+const logsDir = path.join(__dirname, '../../logs/api');
 
 // Console logging helper
 const logger = {
@@ -31,7 +41,7 @@ const logger = {
 };
 
 /**
- * Log an API request and its response
+ * Log an API request and its response to a file
  * @param {string} endpoint - API endpoint
  * @param {string} provider - API provider (e.g., 'gemini', 'openrouter', 'together')
  * @param {string} model - Model being used
@@ -52,7 +62,8 @@ async function logApiRequest(endpoint, provider, model, requestData, responseDat
     
     // Create a log entry
     const timestamp = new Date().toISOString();
-    const logId = `log_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    const date = new Date().toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '-');
+    const logId = `log_${date}}`;
     
     // Sanitize request data by removing API keys
     let sanitizedRequestData = JSON.parse(JSON.stringify(requestData));
@@ -84,17 +95,18 @@ async function logApiRequest(endpoint, provider, model, requestData, responseDat
       }
     };
     
-    // Add to database
-    db.data.apiLogs.push(logEntry);
-    
-    // Limit the number of logs (keep latest 1000)
-    const maxLogEntries = 1000;
-    if (db.data.apiLogs.length > maxLogEntries) {
-      db.data.apiLogs = db.data.apiLogs.slice(-maxLogEntries);
+    // Ensure logs directory exists
+    if (!fs.existsSync(logsDir)) {
+      fs.mkdirSync(logsDir, { recursive: true });
     }
     
-    // Save to database
-    await db.write();
+    // Write log to file
+    const logFilePath = path.join(logsDir, `${logId}.json`);
+    let previousLogData = [];
+    if (fs.existsSync(logFilePath)) {
+      previousLogData = JSON.parse(fs.readFileSync(logFilePath, 'utf8'));
+    }
+    await fs.promises.writeFile(logFilePath, JSON.stringify([...previousLogData, logEntry], null, 2));
     
     logger.success(`Logged API request to ${provider} (${model}) with log ID: ${logId}`);
     
@@ -113,10 +125,27 @@ async function logApiRequest(endpoint, provider, model, requestData, responseDat
  */
 function getApiLogs(options = {}, limit = 100) {
   try {
-    const db = getDb();
+    // Read all log files from directory
+    if (!fs.existsSync(logsDir)) {
+      return [];
+    }
+    
+    const logFiles = fs.readdirSync(logsDir)
+      .filter(file => file.endsWith('.json'));
+    
+    // Read and parse each log file
+    let logs = [];
+    for (const file of logFiles) {
+      try {
+        const logData = JSON.parse(fs.readFileSync(path.join(logsDir, file), 'utf8'));
+        logs.push(logData);
+      } catch (err) {
+        logger.error(`Error reading log file ${file}`, err);
+      }
+    }
     
     // Filter logs based on options
-    let filteredLogs = [...db.data.apiLogs];
+    let filteredLogs = [...logs];
     
     // Filter by provider
     if (options.provider) {
@@ -156,31 +185,23 @@ function getApiLogs(options = {}, limit = 100) {
 }
 
 /**
- * Clear API logs (for maintenance or privacy reasons)
- * @param {boolean} keepLastDay - Whether to keep the last day of logs
- * @returns {Promise<boolean>} - Success status
+ * Clear all API logs
+ * @returns {Promise<boolean>} - Whether the operation was successful
  */
-async function clearApiLogs(keepLastDay = true) {
+async function clearApiLogs() {
   try {
-    const db = getDb();
-    
-    if (keepLastDay) {
-      // Keep only the last 24 hours of logs
-      const cutoffDate = new Date();
-      cutoffDate.setDate(cutoffDate.getDate() - 1);
-      
-      db.data.apiLogs = db.data.apiLogs.filter(log => 
-        new Date(log.timestamp) > cutoffDate
-      );
-    } else {
-      // Clear all logs
-      db.data.apiLogs = [];
+    if (!fs.existsSync(logsDir)) {
+      return true;
     }
     
-    // Save to database
-    await db.write();
+    const logFiles = fs.readdirSync(logsDir)
+      .filter(file => file.endsWith('.json'));
     
-    logger.success(`Cleared API logs (keepLastDay: ${keepLastDay})`);
+    for (const file of logFiles) {
+      fs.unlinkSync(path.join(logsDir, file));
+    }
+    
+    logger.success('All API logs cleared successfully');
     return true;
   } catch (error) {
     logger.error('Error clearing API logs', error);
@@ -188,8 +209,57 @@ async function clearApiLogs(keepLastDay = true) {
   }
 }
 
+/**
+ * Clean up old API logs based on retention days
+ * @returns {Promise<number>} - Number of logs removed
+ */
+async function cleanupOldLogs() {
+  try {
+    const db = getDb();
+    const retentionDays = db.data.config.apiLogRetentionDays || 7;
+    
+    if (!fs.existsSync(logsDir)) {
+      return 0;
+    }
+    
+    const logFiles = fs.readdirSync(logsDir)
+      .filter(file => file.endsWith('.json'));
+    
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+    
+    let removedCount = 0;
+    
+    for (const file of logFiles) {
+      try {
+        const logPath = path.join(logsDir, file);
+        const stats = fs.statSync(logPath);
+        
+        // Check if file's modified date is older than retention period
+        if (stats.mtime < cutoffDate) {
+          fs.unlinkSync(logPath);
+          removedCount++;
+
+        }
+      } catch (err) {
+        logger.error(`Error processing log file ${file} during cleanup`, err);
+      }
+    }
+    
+    if (removedCount > 0) {
+      logger.success(`Cleaned up ${removedCount} old API logs (older than ${retentionDays} days)`);
+    }
+    
+    return removedCount;
+  } catch (error) {
+    logger.error('Error cleaning up old API logs', error);
+    return 0;
+  }
+}
+
 export {
   logApiRequest,
   getApiLogs,
-  clearApiLogs
+  clearApiLogs,
+  cleanupOldLogs
 }; 

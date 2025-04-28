@@ -51,6 +51,7 @@ const TOOL_SUPPORTED_MODELS = [
 // Together.AI available models
 const TOGETHER_MODELS = [
   'deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free',
+  'meta-llama/Llama-3.3-70B-Instruct-Turbo-Free',
   'meta-llama/Llama-Vision-Free' // Vision model for image analysis
 ];
 
@@ -94,6 +95,7 @@ const logger = {
 // Generate a response using the AI model
 async function generateAIResponseLegacy(message, context, botData) {
   try {
+    const startTime = Date.now();
     logger.info(`Generating AI response for message: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`);
     logger.debug('Context length:', context.length);
     
@@ -336,6 +338,36 @@ async function generateAIResponseLegacy(message, context, botData) {
           headers: response.headers
         });
         
+        // Log API request and response
+        await logApiRequest(
+          OPENROUTER_API_URL,
+          API_PROVIDERS.OPENROUTER, 
+          config.model,
+          {
+            method: 'POST',
+            url: OPENROUTER_API_URL,
+            headers: {
+              'Authorization': 'Bearer *** REDACTED ***',
+              'Content-Type': 'application/json',
+              'HTTP-Referer': 'https://github.com/qi-ai-chatbot',
+              'X-Title': 'Qi AI WhatsApp Chatbot'
+            },
+            data: requestBody
+          },
+          {
+            status: response.status,
+            statusText: response.statusText,
+            data: response.data
+          },
+          {
+            executionTime: Date.now() - startTime,
+            messageCount: messages.length,
+            promptTokens: response.data.usage?.prompt_tokens || 0,
+            completionTokens: response.data.usage?.completion_tokens || 0,
+            success: true
+          }
+        );
+        
         // CRITICAL: Add immediate response data validation right after receiving
         if (!response || typeof response !== 'object') {
           logger.error('API response is not an object', { responseType: typeof response });
@@ -364,6 +396,35 @@ async function generateAIResponseLegacy(message, context, botData) {
           statusText: apiError.response?.statusText,
           data: apiError.response?.data
         });
+        
+        // Log the failed API request
+        await logApiRequest(
+          OPENROUTER_API_URL,
+          API_PROVIDERS.OPENROUTER,
+          config.model,
+          {
+            method: 'POST',
+            url: OPENROUTER_API_URL,
+            headers: {
+              'Authorization': 'Bearer *** REDACTED ***',
+              'Content-Type': 'application/json',
+              'HTTP-Referer': 'https://github.com/qi-ai-chatbot',
+              'X-Title': 'Qi AI WhatsApp Chatbot'
+            },
+            data: requestBody
+          },
+          apiError.response ? {
+            status: apiError.response.status,
+            statusText: apiError.response.statusText,
+            data: apiError.response.data
+          } : { error: apiError.message },
+          {
+            executionTime: Date.now() - startTime,
+            messageCount: messages.length,
+            success: false,
+            error: apiError.message
+          }
+        );
         
         // Check for rate limit errors
         const errorMessage = apiError.message || '';
@@ -880,6 +941,7 @@ function handleToolCall(functionCall) {
 
 // Get available AI models from OpenRouter
 async function getAvailableModels() {
+  const startTime = Date.now();
   try {
     const apiKey = process.env.OPENROUTER_API_KEY;
     
@@ -900,10 +962,60 @@ async function getAvailableModels() {
       }
     );
     
+    // Log API request and response
+    await logApiRequest(
+      'https://openrouter.ai/api/v1/models',
+      API_PROVIDERS.OPENROUTER,
+      'models-list',
+      {
+        method: 'GET',
+        url: 'https://openrouter.ai/api/v1/models',
+        headers: {
+          'Authorization': 'Bearer *** REDACTED ***',
+          'Content-Type': 'application/json'
+        }
+      },
+      {
+        status: response.status,
+        statusText: response.statusText,
+        data: response.data
+      },
+      {
+        executionTime: Date.now() - startTime,
+        success: true
+      }
+    );
+    
     console.log(`Successfully fetched ${response.data.data.length} models from OpenRouter`);
     return response.data.data;
   } catch (error) {
     console.error('Error fetching AI models from OpenRouter', error);
+    
+    // Log failed API request
+    await logApiRequest(
+      'https://openrouter.ai/api/v1/models',
+      API_PROVIDERS.OPENROUTER,
+      'models-list',
+      {
+        method: 'GET',
+        url: 'https://openrouter.ai/api/v1/models',
+        headers: {
+          'Authorization': 'Bearer *** REDACTED ***',
+          'Content-Type': 'application/json'
+        }
+      },
+      error.response ? {
+        status: error.response.status,
+        statusText: error.response.statusText,
+        data: error.response.data
+      } : { error: error.message },
+      {
+        executionTime: Date.now() - startTime,
+        success: false,
+        error: error.message
+      }
+    );
+    
     return [];
   }
 }
@@ -916,7 +1028,13 @@ async function getAvailableModels() {
  */
 async function generateAIResponse2(botConfig, contextMessages, streamCallback = null, chatId = null, messageId = null) {
   let streaming = !!streamCallback;
-  let rateLimitInfo = null;
+  const startTime = Date.now();
+  let rateLimitInfo = {
+    isLimited: false,
+    limitReachedAt: null,
+    resetTime: null,
+    error: null
+  };
   
   try {
     // Get database
@@ -1078,6 +1196,38 @@ async function generateAIResponse2(botConfig, contextMessages, streamCallback = 
         // Regular request
         const axiosResponse = await axios.post(endpoint, requestData, { headers });
         response = axiosResponse.data;
+        
+        // Log the API request and response
+        await logApiRequest(
+          endpoint,
+          API_PROVIDERS.OPENROUTER,
+          botConfig.model,
+          {
+            method: 'POST',
+            url: endpoint,
+            headers: {
+              'Authorization': 'Bearer *** REDACTED ***',
+              'Content-Type': 'application/json',
+              'HTTP-Referer': 'https://github.com/qi-ai-chatbot',
+              'X-Title': 'Qi AI WhatsApp Chatbot'
+            },
+            data: requestData
+          },
+          {
+            status: axiosResponse.status,
+            statusText: axiosResponse.statusText,
+            data: response
+          },
+          {
+            executionTime: Date.now() - startTime,
+            messageCount: formattedMessages.length,
+            chatId: chatId,
+            messageId: messageId,
+            promptTokens: response.usage?.prompt_tokens || 0,
+            completionTokens: response.usage?.completion_tokens || 0,
+            success: true
+          }
+        );
       }
     }
     
@@ -1118,6 +1268,44 @@ async function generateAIResponse2(botConfig, contextMessages, streamCallback = 
         resetTime: null, // This should be extracted from response headers if available
         error: error.message
       };
+    }
+    
+    // Log failed API request if it's from OpenRouter
+    if (botConfig.defaultProvider !== API_PROVIDERS.GEMINI && botConfig.defaultProvider !== API_PROVIDERS.TOGETHER) {
+      await logApiRequest(
+        OPENROUTER_API_URL,
+        API_PROVIDERS.OPENROUTER,
+        botConfig.model,
+        {
+          method: 'POST',
+          url: OPENROUTER_API_URL,
+          headers: {
+            'Authorization': 'Bearer *** REDACTED ***',
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://github.com/qi-ai-chatbot',
+            'X-Title': 'Qi AI WhatsApp Chatbot'
+          },
+          data: {
+            model: botConfig.model,
+            messages: contextMessages,
+            temperature: botConfig.temperature || 0.7,
+            max_tokens: botConfig.max_tokens || 1024
+          }
+        },
+        error.response ? {
+          status: error.response.status,
+          statusText: error.response.statusText,
+          data: error.response.data
+        } : { error: error.message },
+        {
+          executionTime: Date.now() - startTime,
+          messageCount: contextMessages.length,
+          chatId: chatId,
+          messageId: messageId,
+          success: false,
+          error: error.message
+        }
+      );
     }
     
     return {

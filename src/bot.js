@@ -11,7 +11,7 @@ import chalk from 'chalk';
 import { generateGroupIntroduction } from './services/contextService.js';
 import { calculateResponseDelay } from './utils/messageUtils.js';
 // Import API logging service
-import './services/apiLogService.js';
+import { cleanupOldLogs } from './services/apiLogService.js';
 
 // Get current directory
 const __filename = fileURLToPath(import.meta.url);
@@ -193,6 +193,23 @@ const startBot = async () => {
         console.log('Connected to WhatsApp');
         // Reset reconnect counter on successful connection
         reconnectAttempts = 0;
+        
+        // Schedule cleanup of old API logs daily
+        console.log('Setting up scheduled tasks...');
+        // Run immediately to clean up existing logs
+        cleanupOldLogs().then(count => {
+          if (count > 0) {
+            console.log(`Initial cleanup: removed ${count} old API log files`);
+          }
+        });
+        
+        // Then schedule to run daily
+        setInterval(async () => {
+          const count = await cleanupOldLogs();
+          if (count > 0) {
+            console.log(`Daily cleanup: removed ${count} old API log files`);
+          }
+        }, 24 * 60 * 60 * 1000); // 24 hours
         
         // Store the bot's ID in environment variable for use in other parts of the app
         try {
