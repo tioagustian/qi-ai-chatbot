@@ -1,20 +1,20 @@
 // Maximum number of messages to keep in context memory per chat
-const MAX_CONTEXT_MESSAGES = 100;
+const MAX_CONTEXT_MESSAGES = process.env.MAX_CONTEXT_MESSAGES || 100;
 
 // Maximum number of relevant messages to return for AI prompt
-const MAX_RELEVANT_MESSAGES = 20;
+const MAX_RELEVANT_MESSAGES = process.env.MAX_RELEVANT_MESSAGES || 20;
 
 // Maximum number of cross-chat context messages to include
-const MAX_CROSS_CHAT_MESSAGES = 8;
+const MAX_CROSS_CHAT_MESSAGES = process.env.MAX_CROSS_CHAT_MESSAGES || 8;
 
 // Maximum number of participants to include in introductions
-const MAX_PARTICIPANTS_INTRO = 10;
+const MAX_PARTICIPANTS_INTRO = process.env.MAX_PARTICIPANTS_INTRO || 10;
 
 // Maximum number of image analysis messages to include in context
-const MAX_IMAGE_ANALYSIS_MESSAGES = 3;
+const MAX_IMAGE_ANALYSIS_MESSAGES = process.env.MAX_IMAGE_ANALYSIS_MESSAGES || 3;
 
 // Maximum number of topic-specific messages to include
-const MAX_TOPIC_SPECIFIC_MESSAGES = 10;
+const MAX_TOPIC_SPECIFIC_MESSAGES = process.env.MAX_TOPIC_SPECIFIC_MESSAGES || 10;
 
 // Import from memoryService
 import { findImagesByDescription } from './memoryService.js';

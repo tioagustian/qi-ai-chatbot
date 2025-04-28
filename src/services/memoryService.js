@@ -10,6 +10,16 @@ const MAX_MESSAGE_HISTORY = 20; // Number of messages to include in the fact ext
 const FACT_EXTRACTION_MODEL = 'gemini-2.0-flash'; // Model to use for fact extraction
 const FACT_SIMILARITY_THRESHOLD = 0.7; // Threshold for considering facts similar
 
+// Define semantic categories for facts
+const FACT_CATEGORIES = {
+  PERSONAL: 'personal',        // Name, age, gender, etc.
+  PREFERENCE: 'preference',    // Likes, dislikes, favorites
+  DEMOGRAPHIC: 'demographic',  // Location, occupation, education
+  RELATIONSHIP: 'relationship', // Family, friends, connections
+  TEMPORAL: 'temporal',        // Time-based facts that may change
+  BEHAVIORAL: 'behavioral'     // Habits, patterns, routines
+};
+
 // Console logging helper
 const logger = {
   info: (message) => console.log(chalk.blue(`[MEMORY][${new Date().toISOString()}] ${message}`)),
@@ -61,6 +71,28 @@ function ensureMemoryStructure(db) {
   if (!db.data.imageEmbeddings) {
     db.data.imageEmbeddings = {};
   }
+
+  // Ensure fact relationships structure exists
+  if (!db.data.factRelationships) {
+    db.data.factRelationships = {};
+  }
+}
+
+/**
+ * Helper function to determine fact category
+ * @param {string} key - Fact key
+ * @param {string} value - Fact value
+ * @returns {string} - Category name
+ */
+function determineFactCategory(key, value) {
+  if (/name|age|gender|birthday|height|weight/.test(key)) return FACT_CATEGORIES.PERSONAL;
+  if (/likes|loves|hates|favorite|prefers|enjoy/.test(key)) return FACT_CATEGORIES.PREFERENCE;
+  if (/lives in|works at|studies|location|city|country|address/.test(key)) return FACT_CATEGORIES.DEMOGRAPHIC;
+  if (/married|children|brother|sister|father|mother|friend|spouse|partner/.test(key)) return FACT_CATEGORIES.RELATIONSHIP;
+  if (/today|yesterday|last week|planning|will|going to/.test(key)) return FACT_CATEGORIES.TEMPORAL;
+  if (/usually|always|never|habit|routine|often|daily/.test(key)) return FACT_CATEGORIES.BEHAVIORAL;
+  
+  return 'uncategorized';
 }
 
 /**
@@ -220,7 +252,8 @@ function getChatHistory(chatId, userId, limit = 20) {
 function createFactExtractionPrompt(userFacts, globalFacts, otherParticipantsFacts, chatHistory, currentMessage) {
   // Format current facts
   const formattedUserFacts = Object.entries(userFacts).map(([key, fact]) => {
-    return `"${key}": { "value": "${fact.value}", "confidence": ${fact.confidence} }`;
+    const category = fact.category ? `, "category": "${fact.category}"` : '';
+    return `"${key}": { "value": "${fact.value}", "confidence": ${fact.confidence}${category} }`;
   }).join(',\n    ');
   
   const formattedGlobalFacts = Object.entries(globalFacts).map(([key, fact]) => {
@@ -260,6 +293,15 @@ function createFactExtractionPrompt(userFacts, globalFacts, otherParticipantsFac
 
 IMPORTANT GUIDELINES FOR FACT EXTRACTION:
 * Facts are about the specific user's personal information, preferences, or experiences.
+* Distinguish between PERMANENT facts (name, birthplace) and TEMPORAL facts (current location, recent activities).
+* For each fact, provide a CATEGORY tag to help organize knowledge:
+  - PERSONAL: Basic identity information (name, age, gender)
+  - PREFERENCE: Likes, dislikes, favorites
+  - DEMOGRAPHIC: Location, occupation, education
+  - RELATIONSHIP: Family, friends, connections
+  - TEMPORAL: Time-based facts that may change
+  - BEHAVIORAL: Habits, patterns, routines
+
 * DO NOT include hypothetical scenarios, future intentions, or temporary states.
 * DO NOT include facts about other people the user mentions unless it relates to their relationship with the user.
 * DO NOT include system information or meta-conversation facts.
@@ -270,6 +312,11 @@ GLOBAL FACTS VS USER FACTS:
 
 USER FACTS should be included in "new_facts", "update_facts", and "relevant_facts".
 GLOBAL FACTS should be added to "new_facts" and "update_facts" with the "is_global" property set to true.
+
+FACT CONFIDENCE GUIDELINES:
+* Assign higher confidence (0.8-0.95) to explicitly stated information
+* Assign medium confidence (0.7-0.8) to strongly implied information
+* Assign lower confidence (0.5-0.7) to inferred information that seems likely
 
 CURRENT FACTS ABOUT THE USER:
 {
@@ -306,16 +353,41 @@ Respond with a JSON object containing these sections:
 Example response format:
 {
   "new_facts": {
-    "favorite_color": { "value": "blue", "confidence": 0.92 },
-    "capital of Indonesia": { "value": "Jakarta", "confidence": 0.98, "is_global": true }
+    "favorite_color": { 
+      "value": "blue", 
+      "confidence": 0.92,
+      "category": "PREFERENCE"
+    },
+    "capital of Indonesia": { 
+      "value": "Jakarta", 
+      "confidence": 0.98, 
+      "is_global": true 
+    }
   },
   "update_facts": {
-    "location": { "value": "Jakarta", "confidence": 0.85, "previous_value": "Bandung" },
-    "population of Jakarta": { "value": "10.5 million", "confidence": 0.95, "is_global": true }
+    "location": { 
+      "value": "Jakarta", 
+      "confidence": 0.85, 
+      "previous_value": "Bandung",
+      "category": "DEMOGRAPHIC"
+    },
+    "population of Jakarta": { 
+      "value": "10.5 million", 
+      "confidence": 0.95, 
+      "is_global": true 
+    }
   },
   "relevant_facts": {
-    "favorite_color": { "value": "blue", "confidence": 0.92 },
-    "location": { "value": "Jakarta", "confidence": 0.85 }
+    "favorite_color": { 
+      "value": "blue", 
+      "confidence": 0.92,
+      "category": "PREFERENCE"
+    },
+    "location": { 
+      "value": "Jakarta", 
+      "confidence": 0.85,
+      "category": "DEMOGRAPHIC"
+    }
   }
 }
 
@@ -361,25 +433,27 @@ function parseFactExtractionResponse(response) {
     const updateFacts = {};
     const relevantFacts = {};
     
-    // Process new facts, preserving the is_global flag
+    // Process new facts, preserving the is_global flag and category
     if (parsedJson.new_facts) {
       Object.entries(parsedJson.new_facts).forEach(([key, fact]) => {
         newFacts[key] = {
           value: fact.value,
           confidence: fact.confidence,
-          is_global: fact.is_global === true
+          is_global: fact.is_global === true,
+          category: fact.category || determineFactCategory(key, fact.value)
         };
       });
     }
     
-    // Process updated facts, preserving the is_global flag and previous_value
+    // Process updated facts, preserving the is_global flag, previous_value, and category
     if (parsedJson.update_facts) {
       Object.entries(parsedJson.update_facts).forEach(([key, fact]) => {
         updateFacts[key] = {
           value: fact.value,
           confidence: fact.confidence,
           previous_value: fact.previous_value,
-          is_global: fact.is_global === true
+          is_global: fact.is_global === true,
+          category: fact.category || determineFactCategory(key, fact.value)
         };
       });
     }
@@ -389,7 +463,8 @@ function parseFactExtractionResponse(response) {
       Object.entries(parsedJson.relevant_facts).forEach(([key, fact]) => {
         relevantFacts[key] = {
           value: fact.value,
-          confidence: fact.confidence
+          confidence: fact.confidence,
+          category: fact.category || determineFactCategory(key, fact.value)
         };
       });
     }
@@ -404,6 +479,45 @@ function parseFactExtractionResponse(response) {
     logger.error('Error parsing fact extraction response', error);
     return { success: false, error: 'Failed to parse fact extraction response' };
   }
+}
+
+/**
+ * Apply decay factor for time-sensitive facts
+ * @param {Object} facts - Facts object
+ */
+function applyFactDecay(facts) {
+  const now = new Date();
+  
+  Object.entries(facts).forEach(([key, fact]) => {
+    // Skip facts that aren't time-sensitive
+    if (fact.category !== FACT_CATEGORIES.TEMPORAL) return;
+    
+    const daysSinceUpdate = (now - new Date(fact.lastUpdated)) / (1000 * 60 * 60 * 24);
+    
+    // Reduce confidence for older temporal facts
+    if (daysSinceUpdate > 30) { // More than a month old
+      const decayFactor = 0.9 ** Math.floor(daysSinceUpdate / 30);
+      fact.confidence = Math.max(MIN_CONFIDENCE_THRESHOLD, fact.confidence * decayFactor);
+    }
+  });
+}
+
+/**
+ * Updated confidence calculation when facts are repeated
+ * @param {Object} existingFact - Existing fact
+ * @param {number} newConfidence - New confidence value
+ * @returns {number} - Updated confidence
+ */
+function updateFactConfidence(existingFact, newConfidence) {
+  // Facts become more confident when repeatedly confirmed
+  // But confidence increases more slowly as it gets higher
+  if (existingFact.value === existingFact.value) {
+    const confidenceGain = (1 - existingFact.confidence) * 0.3;
+    return Math.min(0.99, existingFact.confidence + confidenceGain);
+  }
+  
+  // If conflicting, use the higher confidence
+  return Math.max(existingFact.confidence, newConfidence);
 }
 
 /**
@@ -446,10 +560,32 @@ async function processExtractedFacts(userId, extractionResult) {
       continue;
     }
     
+    // Check if fact already exists with the same value
+    if (userFactsObj.facts[factKey] && userFactsObj.facts[factKey].value === factData.value) {
+      // Same fact repeated - increase confidence
+      const newConfidence = updateFactConfidence(userFactsObj.facts[factKey], factData.confidence);
+      
+      userFactsObj.facts[factKey].confidence = newConfidence;
+      userFactsObj.facts[factKey].lastUpdated = new Date().toISOString();
+      
+      updatedFacts.push({
+        key: factKey,
+        oldValue: factData.value, // Same value, just confidence updated
+        newValue: factData.value,
+        oldConfidence: userFactsObj.facts[factKey].confidence,
+        newConfidence: newConfidence,
+        category: factData.category
+      });
+      
+      logger.info(`Reinforced fact: "${factKey}" (confidence: ${userFactsObj.facts[factKey].confidence} -> ${newConfidence})`);
+      continue;
+    }
+    
     // Add new fact
     userFactsObj.facts[factKey] = {
       value: factData.value,
       confidence: factData.confidence,
+      category: factData.category,
       lastUpdated: new Date().toISOString(),
       source: 'auto-extracted',
       createdAt: new Date().toISOString()
@@ -458,10 +594,11 @@ async function processExtractedFacts(userId, extractionResult) {
     newFacts.push({
       key: factKey,
       value: factData.value,
-      confidence: factData.confidence
+      confidence: factData.confidence,
+      category: factData.category
     });
     
-    logger.info(`Added new fact: "${factKey}" = "${factData.value}" (confidence: ${factData.confidence})`);
+    logger.info(`Added new fact: "${factKey}" = "${factData.value}" (confidence: ${factData.confidence}, category: ${factData.category})`);
   }
   
   // Process fact updates
@@ -499,6 +636,7 @@ async function processExtractedFacts(userId, extractionResult) {
       userFactsObj.facts[factKey] = {
         value: factData.value,
         confidence: factData.confidence,
+        category: factData.category,
         lastUpdated: new Date().toISOString(),
         source: 'auto-extracted',
         createdAt: new Date().toISOString()
@@ -507,10 +645,31 @@ async function processExtractedFacts(userId, extractionResult) {
       newFacts.push({
         key: factKey,
         value: factData.value,
-        confidence: factData.confidence
+        confidence: factData.confidence,
+        category: factData.category
       });
       
-      logger.info(`Added new fact (from update): "${factKey}" = "${factData.value}" (confidence: ${factData.confidence})`);
+      logger.info(`Added new fact (from update): "${factKey}" = "${factData.value}" (confidence: ${factData.confidence}, category: ${factData.category})`);
+      continue;
+    }
+    
+    // Check if fact value is same but needs category update
+    if (factData.value === userFactsObj.facts[factKey].value) {
+      // Same value, possibly update category or increase confidence
+      const newConfidence = updateFactConfidence(userFactsObj.facts[factKey], factData.confidence);
+      const category = factData.category || userFactsObj.facts[factKey].category;
+      
+      // Only update if confidence improved or category changed
+      if (newConfidence > userFactsObj.facts[factKey].confidence || 
+          category !== userFactsObj.facts[factKey].category) {
+        
+        userFactsObj.facts[factKey].confidence = newConfidence;
+        userFactsObj.facts[factKey].category = category;
+        userFactsObj.facts[factKey].lastUpdated = new Date().toISOString();
+        
+        logger.info(`Updated fact metadata: "${factKey}" (confidence: ${newConfidence}, category: ${category})`);
+      }
+      
       continue;
     }
     
@@ -525,6 +684,7 @@ async function processExtractedFacts(userId, extractionResult) {
         newValue: factData.value,
         oldConfidence: userFactsObj.facts[factKey].confidence,
         newConfidence: factData.confidence,
+        category: factData.category,
         timestamp: new Date().toISOString()
       });
       
@@ -532,6 +692,7 @@ async function processExtractedFacts(userId, extractionResult) {
       userFactsObj.facts[factKey] = {
         value: factData.value,
         confidence: factData.confidence,
+        category: factData.category,
         lastUpdated: new Date().toISOString(),
         source: 'auto-extracted',
         createdAt: userFactsObj.facts[factKey].createdAt
@@ -541,12 +702,16 @@ async function processExtractedFacts(userId, extractionResult) {
         key: factKey,
         oldValue,
         newValue: factData.value,
-        confidence: factData.confidence
+        confidence: factData.confidence,
+        category: factData.category
       });
       
-      logger.info(`Updated fact: "${factKey}" from "${oldValue}" to "${factData.value}" (confidence: ${factData.confidence})`);
+      logger.info(`Updated fact: "${factKey}" from "${oldValue}" to "${factData.value}" (confidence: ${factData.confidence}, category: ${factData.category})`);
     }
   }
+  
+  // Apply fact decay for temporal facts
+  applyFactDecay(userFactsObj.facts);
   
   // Limit the number of facts per user
   const factKeys = Object.keys(userFactsObj.facts);
@@ -595,9 +760,21 @@ function getRelevantFactsForMessage(userId, chatId, relevantFactsObj) {
   // Get relevant facts for the primary user
   const primaryUserFacts = formatRelevantFacts(userId, relevantFactsObj);
   
-  // For private chats, just return the primary user's facts
+  // Find related facts based on the relevant facts
+  let relatedFacts = [];
+  Object.keys(relevantFactsObj).forEach(factKey => {
+    const related = findRelatedFacts(userId, factKey, 0.5, 2);
+    if (related.length > 0) {
+      relatedFacts = [...relatedFacts, ...related.map(fact => `${fact.key}: ${fact.value} (related to ${factKey})`)];
+    }
+  });
+  
+  // Deduplicate related facts
+  relatedFacts = [...new Set(relatedFacts)];
+  
+  // For private chats, just return the primary user's facts and related facts
   if (!chatId.endsWith('@g.us')) {
-    return primaryUserFacts;
+    return [...primaryUserFacts, ...relatedFacts];
   }
   
   // For group chats, include relevant facts from other participants
@@ -626,26 +803,52 @@ function getRelevantFactsForMessage(userId, chatId, relevantFactsObj) {
       ...participants.filter(id => !recentSpeakers.has(id))
     ];
     
+    // Extract topic categories from relevant facts to find similar facts from others
+    const relevantCategories = new Set(
+      Object.values(relevantFactsObj)
+        .map(fact => fact.category)
+        .filter(Boolean)
+    );
+    
     // Get relevant facts for each participant (limit to 3 participants)
     prioritizedParticipants.slice(0, 3).forEach(participantId => {
       if (db.data.userFacts[participantId]) {
         const participantName = db.data.conversations[chatId]?.participants[participantId]?.name || 
                              participantId.split('@')[0];
         
-        // Get high-confidence facts only (limit to 5 facts per participant)
+        // Get high-confidence facts with preference for same categories as current context
         const userFacts = db.data.userFacts[participantId].facts;
-        const highConfidenceFacts = Object.entries(userFacts)
-          .filter(([_, fact]) => fact.confidence >= 0.85)
-          .sort((a, b) => b[1].confidence - a[1].confidence)
-          .slice(0, 5)
-          .map(([key, fact]) => `${participantName}: ${key} = ${fact.value}`);
         
-        otherParticipantsFacts.push(...highConfidenceFacts);
+        const categorizedFacts = Object.entries(userFacts)
+          .filter(([_, fact]) => fact.confidence >= 0.85)
+          .sort((a, b) => {
+            // Prioritize facts in relevant categories, then by confidence
+            const aInRelevantCategory = relevantCategories.has(a[1].category) ? 1 : 0;
+            const bInRelevantCategory = relevantCategories.has(b[1].category) ? 1 : 0;
+            
+            if (aInRelevantCategory !== bInRelevantCategory) {
+              return bInRelevantCategory - aInRelevantCategory;
+            }
+            
+            return b[1].confidence - a[1].confidence;
+          })
+          .slice(0, 5)
+          .map(([key, fact]) => {
+            const categoryLabel = fact.category ? ` (${fact.category})` : '';
+            return `${participantName}: ${key} = ${fact.value}${categoryLabel}`;
+          });
+        
+        otherParticipantsFacts.push(...categorizedFacts);
       }
     });
   }
   
-  return [...primaryUserFacts, ...otherParticipantsFacts];
+  // Analyze fact relationships if we haven't done so recently
+  analyzeFactRelationships(userId, chatId).catch(error => {
+    logger.warning('Error analyzing fact relationships', error);
+  });
+  
+  return [...primaryUserFacts, ...relatedFacts, ...otherParticipantsFacts];
 }
 
 /**
@@ -657,7 +860,8 @@ function getRelevantFactsForMessage(userId, chatId, relevantFactsObj) {
 function formatRelevantFacts(userId, relevantFactsObj) {
   // Convert the relevant facts object to an array of formatted strings
   const relevantFactsArray = Object.entries(relevantFactsObj).map(([key, fact]) => {
-    return `${key}: ${fact.value}`;
+    const categoryLabel = fact.category ? ` (${fact.category})` : '';
+    return `${key}: ${fact.value}${categoryLabel}`;
   });
   
   return relevantFactsArray;
@@ -717,7 +921,7 @@ async function addImageRecognitionFacts(userId, recognitionData) {
     // Track most recent image content
     if (recognitionData.description) {
       userFactsObj.facts['recent_image_content'] = {
-        value: recognitionData.description.substring(0, 100),
+        value: recognitionData.description,
         confidence: 0.85,
         lastUpdated: timestamp,
         source: 'image-recognition',
@@ -1139,6 +1343,367 @@ function getOtherParticipantsFacts(db, chatId, currentUserId) {
   return participantsFacts;
 }
 
+/**
+ * Record relationship between two facts
+ * @param {string} userId - User ID
+ * @param {string} factKey1 - First fact key
+ * @param {string} factKey2 - Second fact key
+ * @param {number} relationStrength - Relationship strength (0-1)
+ */
+async function recordFactRelationship(userId, factKey1, factKey2, relationStrength = 0.5) {
+  try {
+    const db = getDb();
+    
+    // Ensure structure exists
+    if (!db.data.factRelationships) {
+      db.data.factRelationships = {};
+    }
+    
+    // Create a unique ID for this relationship
+    const sortedKeys = [factKey1, factKey2].sort();
+    const relationshipId = `${userId}:${sortedKeys[0]}:${sortedKeys[1]}`;
+    
+    // Check if relationship already exists
+    if (db.data.factRelationships[relationshipId]) {
+      // Update strength (strengthen existing connections)
+      const currentStrength = db.data.factRelationships[relationshipId].strength;
+      db.data.factRelationships[relationshipId].strength = Math.min(1.0, currentStrength + (relationStrength * 0.1));
+      db.data.factRelationships[relationshipId].updatedAt = new Date().toISOString();
+    } else {
+      // Create new relationship
+      db.data.factRelationships[relationshipId] = {
+        userId,
+        fact1: sortedKeys[0],
+        fact2: sortedKeys[1],
+        strength: relationStrength,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+    }
+    
+    await db.write();
+    return true;
+  } catch (error) {
+    logger.error('Error recording fact relationship', error);
+    return false;
+  }
+}
+
+/**
+ * Find facts related to a given fact
+ * @param {string} userId - User ID
+ * @param {string} factKey - Fact key to find relations for
+ * @param {number} minStrength - Minimum relationship strength
+ * @param {number} limit - Maximum number of related facts to return
+ * @returns {Array} - Related facts sorted by relationship strength
+ */
+function findRelatedFacts(userId, factKey, minStrength = 0.3, limit = 5) {
+  try {
+    const db = getDb();
+    
+    if (!db.data.factRelationships) {
+      return [];
+    }
+    
+    const relatedFacts = [];
+    
+    // Find all relationships involving this fact
+    Object.values(db.data.factRelationships).forEach(relation => {
+      if (relation.userId !== userId) return;
+      
+      let relatedFactKey = null;
+      
+      if (relation.fact1 === factKey) {
+        relatedFactKey = relation.fact2;
+      } else if (relation.fact2 === factKey) {
+        relatedFactKey = relation.fact1;
+      }
+      
+      if (relatedFactKey && relation.strength >= minStrength) {
+        // Check if the fact still exists
+        if (db.data.userFacts[userId]?.facts[relatedFactKey]) {
+          relatedFacts.push({
+            key: relatedFactKey,
+            strength: relation.strength,
+            ...db.data.userFacts[userId].facts[relatedFactKey]
+          });
+        }
+      }
+    });
+    
+    // Sort by relationship strength (strongest first) and limit results
+    return relatedFacts
+      .sort((a, b) => b.strength - a.strength)
+      .slice(0, limit);
+  } catch (error) {
+    logger.error('Error finding related facts', error);
+    return [];
+  }
+}
+
+/**
+ * Analyze a conversation to find potential fact relationships
+ * @param {string} userId - User ID
+ * @param {string} chatId - Chat ID
+ */
+async function analyzeFactRelationships(userId, chatId) {
+  try {
+    const db = getDb();
+    
+    if (!db.data.conversations[chatId] || !db.data.userFacts[userId]) {
+      return false;
+    }
+    
+    // Get recent user messages
+    const recentMessages = db.data.conversations[chatId].messages
+      .filter(msg => msg.sender === userId)
+      .slice(-20);
+    
+    // Get all user facts
+    const userFacts = Object.keys(db.data.userFacts[userId].facts);
+    
+    // For each message, check which facts are mentioned together
+    for (const message of recentMessages) {
+      const mentionedFacts = [];
+      
+      // Check which facts might be mentioned in this message
+      for (const factKey of userFacts) {
+        // Simple check: does the message contain the fact value?
+        const factValue = db.data.userFacts[userId].facts[factKey].value.toLowerCase();
+        if (message.content.toLowerCase().includes(factValue)) {
+          mentionedFacts.push(factKey);
+        }
+      }
+      
+      // If multiple facts are mentioned in one message, they may be related
+      if (mentionedFacts.length >= 2) {
+        // Record relationships between all pairs of facts
+        for (let i = 0; i < mentionedFacts.length; i++) {
+          for (let j = i+1; j < mentionedFacts.length; j++) {
+            await recordFactRelationship(userId, mentionedFacts[i], mentionedFacts[j], 0.6);
+          }
+        }
+      }
+    }
+    
+    return true;
+  } catch (error) {
+    logger.error('Error analyzing fact relationships', error);
+    return false;
+  }
+}
+
+/**
+ * Manually add or update a fact for a user (admin/user-controlled)
+ * @param {string} userId - User ID
+ * @param {string} factKey - Fact key
+ * @param {string} factValue - Fact value
+ * @param {Object} options - Additional options
+ * @returns {Promise<boolean>} - Success status
+ */
+async function manuallyAddFact(userId, factKey, factValue, options = {}) {
+  try {
+    const db = getDb();
+    if (!db.data.userFacts[userId]) {
+      db.data.userFacts[userId] = {
+        facts: {},
+        factHistory: []
+      };
+    }
+    
+    const userFactsObj = db.data.userFacts[userId];
+    const oldFact = userFactsObj.facts[factKey];
+    
+    // Default options
+    const {
+      confidence = 0.95,
+      category = determineFactCategory(factKey, factValue),
+      source = 'manual',
+      overrideExisting = true
+    } = options;
+    
+    // Check if we should override existing fact
+    if (oldFact && !overrideExisting) {
+      return false;
+    }
+    
+    // If fact exists, add to history
+    if (oldFact) {
+      userFactsObj.factHistory.push({
+        fact: factKey,
+        oldValue: oldFact.value,
+        newValue: factValue,
+        oldConfidence: oldFact.confidence,
+        newConfidence: confidence,
+        timestamp: new Date().toISOString(),
+        source: 'manual-override'
+      });
+    }
+    
+    // Add or update fact
+    userFactsObj.facts[factKey] = {
+      value: factValue,
+      confidence,
+      category,
+      lastUpdated: new Date().toISOString(),
+      source,
+      createdAt: oldFact?.createdAt || new Date().toISOString(),
+      manuallyVerified: true
+    };
+    
+    await db.write();
+    logger.success(`Manually added/updated fact: ${factKey} = ${factValue} for user ${userId}`);
+    return true;
+  } catch (error) {
+    logger.error('Error manually adding fact', error);
+    return false;
+  }
+}
+
+/**
+ * Delete a fact for a user
+ * @param {string} userId - User ID
+ * @param {string} factKey - Fact key
+ * @returns {Promise<boolean>} - Success status
+ */
+async function deleteFact(userId, factKey) {
+  try {
+    const db = getDb();
+    if (!db.data.userFacts[userId]?.facts?.[factKey]) {
+      return false;
+    }
+    
+    // Record deletion in history
+    db.data.userFacts[userId].factHistory.push({
+      fact: factKey,
+      oldValue: db.data.userFacts[userId].facts[factKey].value,
+      newValue: null,
+      oldConfidence: db.data.userFacts[userId].facts[factKey].confidence,
+      newConfidence: 0,
+      timestamp: new Date().toISOString(),
+      action: 'deleted'
+    });
+    
+    // Delete fact
+    delete db.data.userFacts[userId].facts[factKey];
+    
+    await db.write();
+    logger.success(`Deleted fact: ${factKey} for user ${userId}`);
+    return true;
+  } catch (error) {
+    logger.error('Error deleting fact', error);
+    return false;
+  }
+}
+
+/**
+ * Consolidate user facts to remove redundancies and contradictions
+ * @param {string} userId - User ID
+ * @returns {Promise<boolean>} - Success status
+ */
+async function consolidateUserFacts(userId) {
+  try {
+    const db = getDb();
+    const userFactsObj = db.data.userFacts[userId];
+    
+    if (!userFactsObj || !userFactsObj.facts) return false;
+    
+    // Find potentially contradictory or redundant facts
+    const factGroups = groupRelatedFacts(userFactsObj.facts);
+    
+    // Resolve contradictions and merge related facts
+    for (const [factGroup, relatedFacts] of Object.entries(factGroups)) {
+      if (relatedFacts.length <= 1) continue;
+      
+      // Sort by confidence, highest first
+      const sortedFacts = relatedFacts.sort((a, b) => b.confidence - a.confidence);
+      
+      // Keep the highest confidence fact, mark others for removal
+      const primaryFact = sortedFacts[0];
+      const factsToRemove = sortedFacts.slice(1).map(f => f.key);
+      
+      // Remove redundant facts
+      factsToRemove.forEach(key => {
+        // Record the consolidation in history
+        userFactsObj.factHistory.push({
+          fact: key,
+          oldValue: userFactsObj.facts[key].value,
+          newValue: "[CONSOLIDATED]",
+          oldConfidence: userFactsObj.facts[key].confidence,
+          newConfidence: 0,
+          timestamp: new Date().toISOString(),
+          action: "consolidated",
+          consolidatedInto: primaryFact.key
+        });
+        
+        // Remove the fact
+        delete userFactsObj.facts[key];
+        
+        logger.info(`Consolidated redundant fact "${key}" into "${primaryFact.key}"`);
+      });
+    }
+    
+    await db.write();
+    return true;
+  } catch (error) {
+    logger.error('Error consolidating user facts', error);
+    return false;
+  }
+}
+
+/**
+ * Group facts that are likely related or contradictory
+ * @param {Object} facts - User facts object
+ * @returns {Object} - Grouped facts by similarity
+ */
+function groupRelatedFacts(facts) {
+  const groups = {};
+  
+  // Define potential synonym patterns for fact keys
+  const synonymPatterns = [
+    [/name/, /called|full.?name/],
+    [/lives|location|city/, /home|address|lives.in/],
+    [/job|profession|work/, /career|occupation|employed/],
+    [/likes|loves/, /favorite|enjoys/]
+  ];
+  
+  // Group facts by category first
+  const factsByCategory = {};
+  
+  Object.entries(facts).forEach(([key, fact]) => {
+    const category = fact.category || 'uncategorized';
+    if (!factsByCategory[category]) factsByCategory[category] = [];
+    factsByCategory[category].push({ key, ...fact });
+  });
+  
+  // For each category, find potentially related facts
+  Object.entries(factsByCategory).forEach(([category, categoryFacts]) => {
+    // Group facts by similarity in keys
+    categoryFacts.forEach(fact => {
+      let assigned = false;
+      
+      // Check for synonym patterns
+      for (const [pattern1, pattern2] of synonymPatterns) {
+        if ((pattern1.test(fact.key) || pattern2.test(fact.key)) && !assigned) {
+          const groupKey = `${category}_${pattern1.toString()}`;
+          if (!groups[groupKey]) groups[groupKey] = [];
+          groups[groupKey].push(fact);
+          assigned = true;
+        }
+      }
+      
+      // Default grouping if no match
+      if (!assigned) {
+        const groupKey = `${category}_${fact.key}`;
+        if (!groups[groupKey]) groups[groupKey] = [];
+        groups[groupKey].push(fact);
+      }
+    });
+  });
+  
+  return groups;
+}
+
 // Export functions
 export {
   extractAndProcessFacts,
@@ -1151,5 +1716,11 @@ export {
   generateTextEmbedding,
   ensureMemoryStructure,
   findImagesByDescription,
-  addGlobalFact
+  addGlobalFact,
+  recordFactRelationship,
+  findRelatedFacts,
+  analyzeFactRelationships,
+  manuallyAddFact,
+  deleteFact,
+  consolidateUserFacts
 }; 
