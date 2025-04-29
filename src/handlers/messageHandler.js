@@ -1,5 +1,5 @@
 import { getDb } from '../database/index.js';
-import { generateAIResponseLegacy, analyzeImage, storeImageAnalysis } from '../services/aiService.js';
+import { generateAIResponseLegacy, analyzeImage, storeImageAnalysis, generateImage } from '../services/aiService.js';
 import { updateMoodAndPersonality } from '../services/personalityService.js';
 import { detectCommand, executeCommand } from '../services/commandService.js';
 import { shouldRespond, QUESTION_INDICATORS } from '../utils/decisionMaker.js';
@@ -271,7 +271,7 @@ async function processMessage(sock, message) {
     }
     
     // Check if we need to respond to the message
-    const shouldRespond = shouldRespondToMessage(message, content, isTagged, isGroup, db.data.config.botName);
+    let shouldRespond = shouldRespondToMessage(message, content, isTagged, isGroup, db.data.config.botName);
     
     // Check if this is a query about a previous image
       let isPreviousImageQuery = false;
@@ -316,14 +316,27 @@ async function processMessage(sock, message) {
         });
       }
       
-      // Check if the current image has a caption that explicitly asks for analysis
-      const imageAnalysisKeywords = ['analisis', 'analyze', 'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat', 'cek'];
+    // Check if the current image has a caption that explicitly asks for analysis
+    const imageAnalysisKeywords = ['analisis', 'analyze', 'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat', 'cek'];
     const isExplicitImageAnalysisRequest = containsImage && 
       imageData.caption && 
       imageAnalysisKeywords.some(keyword => imageData.caption.toLowerCase().includes(keyword));
-      
-    // If we have an explicit image analysis request, we should respond with the analysis
+    
+    // NEW: Check if this is an image generation request
+    const isImageGenerationRequest = detectImageGenerationRequest(content);
+    
+    logger.debug('Request type determination', { 
+      isImageGenerationRequest,
+      promptIfImageRequest: isImageGenerationRequest ? extractImagePrompt(content) : null
+    });
+    
+    // If this is an explicit image analysis request, we should respond with the analysis
     if (isExplicitImageAnalysisRequest) {
+      shouldRespond = true;
+    }
+    
+    // If this is an image generation request, we should respond
+    if (isImageGenerationRequest) {
       shouldRespond = true;
     }
     
@@ -332,6 +345,7 @@ async function processMessage(sock, message) {
       isTagged, 
       isPreviousImageQuery,
       isExplicitImageAnalysisRequest,
+      isImageGenerationRequest,
       isGroup,
       userMessage: content?.substring(0, 50)
     });
@@ -359,15 +373,15 @@ async function processMessage(sock, message) {
             const imageAnalysisObj = db.data.imageAnalysis[imageAnalysisId];
             if (imageAnalysisObj) {
               contextMessages.push({
-              role: 'system',
+                role: 'system',
                 content: `User baru saja mengirim gambar. Berikut analisis gambar: ${imageAnalysisObj.analysis}`,
                 name: 'image_context'
-            });
-          }
+              });
+            }
           }
         }
         
-        // NEW: Add relevant facts to context if available
+        // Add relevant facts to context if available
         if (relevantFacts.length > 0) {
           logger.info(`Adding ${relevantFacts.length} relevant facts to context`);
           
@@ -379,8 +393,164 @@ async function processMessage(sock, message) {
           });
         }
         
-        // Generate AI response
-          logger.info('Generating AI response');
+        // NEW: Handle image generation requests
+        if (isImageGenerationRequest) {
+          try {
+            logger.info('Handling image generation request');
+            
+            // Extract the prompt from the message
+            const imagePrompt = extractImagePrompt(content);
+            
+            if (!imagePrompt) {
+              logger.warning('Empty image prompt extracted from message');
+              await sock.sendMessage(chatId, { 
+                text: 'Maaf, aku perlu tahu gambar apa yang kamu inginkan. Contoh: "Buatkan gambar kucing berwarna hitam"' 
+              }, { quoted: message });
+              return;
+            }
+            
+            // Show typing indicator
+            await sock.sendPresenceUpdate('composing', chatId);
+            
+            // Inform the AI that we're about to generate an image
+            contextMessages.push({
+              role: 'system',
+              content: `User has requested an image with prompt: "${imagePrompt}". You will respond as if you're generating the image.`,
+              name: 'image_request_context'
+            });
+            
+            // Generate AI response first to get a nice message about the image
+            logger.info('Generating AI response for image request');
+            
+            // Create a function to keep the typing indicator active during API calls
+            let stopTypingInterval = false;
+            const keepTypingActive = async () => {
+              while (!stopTypingInterval) {
+                await sock.sendPresenceUpdate('composing', chatId);
+                await new Promise(resolve => setTimeout(resolve, 3000)); // Refresh typing indicator every 3 seconds
+                
+                // Occasionally pause typing to make it more natural
+                if (Math.random() > 0.7) {
+                  await sock.sendPresenceUpdate('paused', chatId);
+                  await new Promise(resolve => setTimeout(resolve, 1500)); // Pause for 1.5 seconds
+                  await sock.sendPresenceUpdate('composing', chatId);
+                }
+              }
+            };
+            
+            // Start keeping typing indicator active
+            const typingPromise = keepTypingActive();
+            
+            // Generate a message first
+            const aiResponse = await generateAIResponseLegacy(
+              `Buatkan gambar: ${imagePrompt}`, 
+              contextMessages, 
+              db.data, 
+              senderName
+            );
+            
+            logger.info('AI response generated, now generating image');
+            
+            try {
+              // Generate the image with Gemini
+              const generatedImage = await generateImage(imagePrompt, {
+                temperature: 0.7,
+                topK: 40,
+                topP: 0.95
+              });
+              
+              // Stop typing indicator interval
+              stopTypingInterval = true;
+              
+              // Convert base64 to buffer for sending
+              const imageBuffer = Buffer.from(generatedImage.base64Data, 'base64');
+              
+              // Calculate a small delay before sending
+              const sendDelay = Math.floor(Math.random() * 1000) + 1000; // 1-2 seconds
+              logger.info(`Waiting ${sendDelay}ms before sending generated image`);
+              await new Promise(resolve => setTimeout(resolve, sendDelay));
+              
+              // Send the image with the AI response as caption
+              await sock.sendMessage(chatId, {
+                image: imageBuffer,
+                mimetype: generatedImage.mimeType,
+                caption: aiResponse
+              }, { quoted: message });
+              
+              logger.success('Generated image sent successfully');
+              
+              // Update context with AI's response including the image
+              try {
+                await updateContext(db, chatId, process.env.BOT_ID, 
+                  `[Gambar telah dibuat]\n\n${aiResponse}`, 
+                  {
+                    key: { 
+                      id: `ai_image_${Date.now()}`,
+                      remoteJid: chatId
+                    },
+                    pushName: db.data.config.botName
+                  }
+                );
+              } catch (updateError) {
+                logger.error('Error updating context with AI image response', updateError);
+              }
+            } catch (imageGenError) {
+              // Handle image generation error
+              logger.error('Error generating image', imageGenError);
+              
+              // Stop typing indicator
+              stopTypingInterval = true;
+              
+              // Get a simplified error message for the user
+              const errorMessage = imageGenError.message || 'unknown error';
+              let userFriendlyError = 'Maaf, ada masalah teknis saat membuat gambar.';
+              
+              // Create more user-friendly error messages
+              if (errorMessage.includes('rate limit') || errorMessage.includes('quota')) {
+                userFriendlyError = 'Maaf, batas kuota pembuatan gambar sudah tercapai untuk saat ini. Coba lagi nanti ya~';
+              } else if (errorMessage.includes('content filtered') || errorMessage.includes('inappropriate') || errorMessage.includes('safety')) {
+                userFriendlyError = 'Maaf, prompt yang kamu minta terdeteksi sebagai konten yang tidak sesuai dengan aturan keamanan. Coba dengan permintaan yang berbeda ya~';
+              } else if (errorMessage.includes('No image data') || errorMessage.includes('format')) {
+                userFriendlyError = 'Maaf, aku gagal membuat gambar. Coba dengan deskripsi yang lebih detail atau kata kunci yang berbeda ya~';
+              }
+              
+              // Send AI response anyway with error message
+              await sock.sendMessage(chatId, {
+                text: `${aiResponse}\n\n${userFriendlyError}`
+              }, { quoted: message });
+              
+              // Still update the context
+              try {
+                await updateContext(db, chatId, process.env.BOT_ID, 
+                  `[Gambar tidak berhasil dibuat]\n\n${aiResponse}`, 
+                  {
+                    key: { 
+                      id: `ai_image_failed_${Date.now()}`,
+                      remoteJid: chatId
+                    },
+                    pushName: db.data.config.botName
+                  }
+                );
+              } catch (updateError) {
+                logger.error('Error updating context with failed AI image response', updateError);
+              }
+            }
+            
+            return; // End processing here as we've handled the image generation
+          } catch (overallError) {
+            logger.error('Unhandled error in image generation flow', overallError);
+            
+            // Send a generic error message
+            await sock.sendMessage(chatId, {
+              text: `Maaf, terjadi kesalahan tak terduga saat mencoba membuat gambar. Mohon coba lagi nanti ya~`
+            }, { quoted: message });
+            
+            return; // End processing here
+          }
+        }
+        
+        // Regular text response generation (existing code)
+        logger.info('Generating AI response');
         
         // Create a function to keep the typing indicator active during API calls
         let stopTypingInterval = false;
@@ -598,4 +768,84 @@ function shouldRespondToMessage(message, content, isTagged, isGroup, botName) {
   return false;
 }
 
-export { processMessage, shouldRespondToMessage, getLastImageAnalysisId };
+/**
+ * Detect if a message is requesting image generation
+ * @param {string} content - Message content
+ * @returns {boolean} - Whether the message is requesting image generation
+ */
+function detectImageGenerationRequest(content) {
+  if (!content) return false;
+  
+  const lowerContent = content.toLowerCase();
+  
+  // Look for common patterns indicating image generation requests
+  const imageRequestPatterns = [
+    // Indonesian patterns
+    'buatkan gambar', 'buat gambar', 'bikin gambar', 'tolong gambarkan', 
+    'gambarin', 'generate gambar', 'coba gambar', 'hasilkan gambar',
+    'buatin gambar', 'buatkan image', 'buatkan foto', 'bikin foto',
+    'generate image', 'bisakah kamu menggambar', 'bisakah kamu membuat gambar',
+    'bisa gambarkan', 'bisa buatkan gambar', 'tolong buatkan gambar',
+    // English patterns
+    'create an image', 'generate an image', 'create image', 'make an image', 
+    'draw', 'create a picture', 'make a picture', 'generate a picture',
+    'can you create an image', 'please create an image', 'please draw',
+    'create a drawing', 'make a drawing', 'please generate an image',
+    'create a photo', 'make a photo', 'please create a photo'
+  ];
+  
+  return imageRequestPatterns.some(pattern => lowerContent.includes(pattern));
+}
+
+/**
+ * Extract the image prompt from a message requesting image generation
+ * @param {string} content - Message content
+ * @returns {string} - The extracted prompt
+ */
+function extractImagePrompt(content) {
+  if (!content) return '';
+  
+  const lowerContent = content.toLowerCase();
+  
+  // Common prefixes to remove
+  const prefixesToRemove = [
+    'buatkan gambar', 'buat gambar', 'bikin gambar', 'tolong gambarkan', 
+    'gambarin', 'generate gambar', 'coba gambar', 'hasilkan gambar',
+    'buatin gambar', 'buatkan image', 'buatkan foto', 'bikin foto',
+    'generate image', 'bisakah kamu menggambar', 'bisakah kamu membuat gambar',
+    'bisa gambarkan', 'bisa buatkan gambar', 'tolong buatkan gambar',
+    'create an image', 'generate an image', 'create image', 'make an image', 
+    'draw', 'create a picture', 'make a picture', 'generate a picture',
+    'can you create an image', 'please create an image', 'please draw',
+    'create a drawing', 'make a drawing', 'please generate an image',
+    'create a photo', 'make a photo', 'please create a photo',
+    'dari', 'of', 'tentang', 'about', 'dengan', 'with'
+  ];
+  
+  // Find the prefix in the content
+  let cleanedPrompt = content;
+  for (const prefix of prefixesToRemove) {
+    if (lowerContent.includes(prefix)) {
+      // Get the position of the prefix
+      const prefixPos = lowerContent.indexOf(prefix);
+      const prefixEnd = prefixPos + prefix.length;
+      
+      // Extract everything after the prefix
+      cleanedPrompt = content.substring(prefixEnd).trim();
+      // No need to continue checking once we've found a match
+      break;
+    }
+  }
+  
+  // Remove common filler words at the beginning
+  cleanedPrompt = cleanedPrompt.replace(/^(dari|of|tentang|about|dengan|with)\s+/i, '');
+  
+  // Make sure the prompt is not empty
+  if (!cleanedPrompt.trim()) {
+    return content.trim(); // Return original content if extraction failed
+  }
+  
+  return cleanedPrompt.trim();
+}
+
+export { processMessage, shouldRespondToMessage, getLastImageAnalysisId, detectImageGenerationRequest, extractImagePrompt };

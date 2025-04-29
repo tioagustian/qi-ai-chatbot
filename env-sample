@@ -7,6 +7,8 @@ TOGETHER_API_KEY=your_together_api_key
 DEFAULT_MODEL=anthropic/claude-3-opus-20240229
 GEMINI_MODEL=google/gemini-1.5-pro
 TOGETHER_MODEL=meta-llama/Llama-3.3-70B-Instruct-Turbo-Free
+IMAGE_GENERATION_MODEL=gemini-2.0-flash-exp-image-generation
+TOGETHER_IMAGE_MODEL=black-forest-labs/FLUX.1-schnell-Free
 DEFAULT_PROVIDER=openrouter
 
 # WhatsApp Session

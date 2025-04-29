@@ -2218,6 +2218,324 @@ function extractTopicsFromAnalysis(analysisText) {
   return [...new Set(topics)];
 }
 
+// Constants for image generation
+const IMAGE_GENERATION_MODEL = 'gemini-2.0-flash-exp-image-generation';
+const GEMINI_IMAGE_GEN_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
+
+/**
+ * Generate an image using the Gemini model
+ * @param {string} prompt - Text prompt to generate image
+ * @param {Object} options - Optional configuration
+ * @returns {Promise<Object>} - The generated image in base64 format
+ */
+async function generateImage(prompt, options = {}) {
+  try {
+    logger.info(`Generating image with Gemini: prompt="${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}"`);
+    
+    const apiKey = options.apiKey || process.env.GEMINI_API_KEY;
+    
+    if (!apiKey) {
+      throw new Error('No Gemini API key found for image generation');
+    }
+    
+    const model = options.model || IMAGE_GENERATION_MODEL;
+    const endpoint = `${GEMINI_IMAGE_GEN_URL}/${model}:generateContent`;
+    
+    const headers = {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey
+    };
+    
+    // Prepare request data
+    const requestData = {
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: prompt
+            }
+          ]
+        }
+      ],
+      generation_config: {
+        temperature: options.temperature || 0.4,
+        topP: options.topP || 0.95,
+        topK: options.topK || 40,
+        maxOutputTokens: options.maxOutputTokens || 2048
+      }
+    };
+    
+    logger.debug('Gemini image generation request data:', JSON.stringify(requestData));
+    
+    // Make the API request
+    const response = await axios.post(endpoint, requestData, { headers });
+    
+    if (!response.data) {
+      throw new Error('Empty response from Gemini image generation');
+    }
+    
+    logger.debug('Gemini response structure:', {
+      hasCandidates: !!response.data.candidates,
+      candidatesLength: response.data.candidates ? response.data.candidates.length : 0,
+      firstCandidateKeys: response.data.candidates && response.data.candidates.length > 0 ? 
+        Object.keys(response.data.candidates[0]) : []
+    });
+    
+    if (!response.data.candidates || 
+        response.data.candidates.length === 0 ||
+        !response.data.candidates[0].content ||
+        !response.data.candidates[0].content.parts ||
+        response.data.candidates[0].content.parts.length === 0) {
+      throw new Error('Invalid response structure from Gemini image generation');
+    }
+    
+    // Extract image data - try to handle different response formats
+    const parts = response.data.candidates[0].content.parts;
+    logger.debug('Gemini image parts:', {
+      partsLength: parts.length,
+      partsTypes: parts.map(p => Object.keys(p)).flat()
+    });
+    
+    // Look for image data in any of the parts
+    const part = parts.find(part => part.inlineData) || parts.find(part => part.fileData) || parts[0];
+    
+    if (!part) {
+      throw new Error('No content parts found in Gemini response');
+    }
+    
+    // Check for different possible image data formats
+    if (part.inlineData) {
+      // Standard format
+      const imageData = part.inlineData;
+      logger.success('Successfully generated image with Gemini (inlineData format)');
+      
+      return {
+        mimeType: imageData.mimeType,
+        base64Data: imageData.data,
+        fullBase64: `data:${imageData.mimeType};base64,${imageData.data}`
+      };
+    } else if (part.fileData) {
+      // Alternative format
+      const imageData = part.fileData;
+      logger.success('Successfully generated image with Gemini (fileData format)');
+      
+      return {
+        mimeType: imageData.mimeType || 'image/jpeg',
+        base64Data: imageData.fileData || imageData.data,
+        fullBase64: `data:${imageData.mimeType || 'image/jpeg'};base64,${imageData.fileData || imageData.data}`
+      };
+    } else if (part.text && part.text.includes('base64')) {
+      // Sometimes the model returns base64 data as text
+      logger.success('Successfully generated image with Gemini (text with base64 format)');
+      
+      // Try to extract base64 data from text
+      const base64Match = part.text.match(/data:(image\/[^;]+);base64,([^"'\s]+)/);
+      if (base64Match) {
+        return {
+          mimeType: base64Match[1],
+          base64Data: base64Match[2],
+          fullBase64: `data:${base64Match[1]};base64,${base64Match[2]}`
+        };
+      }
+    }
+    
+    // We've tried all formats but couldn't find valid image data
+    throw new Error('No image data found in Gemini response');
+  } catch (error) {
+    logger.error('Error generating image with Gemini:', error);
+    
+    if (error.response && error.response.data) {
+      const errorData = JSON.stringify(error.response.data).substring(0, 500);
+      logger.error(`Gemini API error details: ${errorData}`);
+    } else if (error.response) {
+      // Log other response properties if data is not available
+      logger.error('Gemini API error response:', {
+        status: error.response.status,
+        statusText: error.response.statusText,
+        headers: error.response.headers
+      });
+    }
+    
+    // Try Together.ai fallback
+    try {
+      logger.info(`Gemini image generation failed, trying Together.ai fallback: ${error.message}`);
+      return await generateImageWithTogetherAI(prompt, options);
+    } catch (fallbackError) {
+      logger.error('Both Gemini and Together.ai image generation failed:', fallbackError);
+      throw new Error(`Failed to generate image with Gemini (${error.message}) and Together.ai fallback (${fallbackError.message})`);
+    }
+  }
+}
+
+/**
+ * Generate an image using Together.ai as fallback
+ * @param {string} prompt - Text prompt to generate image
+ * @param {Object} options - Optional configuration
+ * @returns {Promise<Object>} - The generated image in base64 format
+ */
+async function generateImageWithTogetherAI(prompt, options = {}) {
+  try {
+    logger.info(`Generating image with Together.ai: prompt="${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}"`);
+    
+    const apiKey = options.togetherApiKey || process.env.TOGETHER_API_KEY;
+    
+    if (!apiKey) {
+      throw new Error('No Together.ai API key found for image generation fallback');
+    }
+    
+    const model = options.togetherModel || process.env.TOGETHER_IMAGE_MODEL || 'black-forest-labs/FLUX.1-schnell-Free';
+    const endpoint = `https://api.together.xyz/v1/images/generations`;
+    
+    logger.info(`Using Together.ai model: ${model} for image generation`);
+    
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    };
+    
+    // Prepare request data for Together.ai
+    const requestData = {
+      model: model,
+      prompt: prompt,
+      n: 1, // Generate one image
+      width: options.width || 1024,
+      height: options.height || 1024,
+      steps: options.steps || 4, // Fixed: steps must be between 1 and 4
+      seed: options.seed || Math.floor(Math.random() * 10000000)
+    };
+    
+    logger.debug('Together.ai request data:', JSON.stringify(requestData));
+    
+    // Make the API request
+    const response = await axios.post(endpoint, requestData, { headers });
+    logger.debug('Together.ai raw response:', JSON.stringify(response.data));
+    
+    // Handle the new response format where image URL is in data[0].url
+    if (response.data && response.data.data && Array.isArray(response.data.data) && response.data.data.length > 0) {
+      // Get the first image URL
+      const imageUrl = response.data.data[0].url;
+      
+      if (!imageUrl) {
+        throw new Error('No image URL found in Together.ai response');
+      }
+      
+      logger.info('Received image URL from Together.ai, downloading...');
+      
+      // Download the image
+      const imageResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+      const buffer = Buffer.from(imageResponse.data);
+      const base64Data = buffer.toString('base64');
+      
+      // Determine mime type based on URL or default to jpeg
+      let mimeType = 'image/jpeg';
+      if (imageUrl.endsWith('.png')) {
+        mimeType = 'image/png';
+      }
+      
+      logger.success('Successfully generated image with Together.ai');
+      
+      return {
+        mimeType: mimeType,
+        base64Data: base64Data,
+        fullBase64: `data:${mimeType};base64,${base64Data}`
+      };
+    } 
+    // Legacy format handling
+    else if (response.data && response.data.output) {
+      // Extract image data - Together.ai typically returns base64 or URLs
+      const imageData = response.data.output;
+      logger.debug('Together.ai legacy response structure detected');
+      
+      // Check if response is a URL or base64
+      if (typeof imageData === 'string' && imageData.startsWith('http')) {
+        // It's a URL, download the image
+        logger.info('Received legacy image URL from Together.ai, downloading...');
+        const imageResponse = await axios.get(imageData, { responseType: 'arraybuffer' });
+        const buffer = Buffer.from(imageResponse.data);
+        const base64Data = buffer.toString('base64');
+        
+        // Determine mime type based on URL or default to jpeg
+        let mimeType = 'image/jpeg';
+        if (imageData.endsWith('.png')) {
+          mimeType = 'image/png';
+        }
+        
+        logger.success('Successfully generated image with Together.ai (legacy URL mode)');
+        
+        return {
+          mimeType: mimeType,
+          base64Data: base64Data,
+          fullBase64: `data:${mimeType};base64,${base64Data}`
+        };
+      } else if (Array.isArray(imageData) && imageData.length > 0) {
+        // Some Together.ai models return an array of images
+        logger.success('Successfully generated image with Together.ai (legacy array mode)');
+        
+        // Get the first image
+        let base64Data = imageData[0];
+        
+        // Strip data:image prefix if present
+        if (base64Data.startsWith('data:image')) {
+          const parts = base64Data.split(',');
+          const mimeMatch = parts[0].match(/data:(image\/[^;]+);/);
+          const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+          
+          return {
+            mimeType: mimeType,
+            base64Data: parts[1],
+            fullBase64: base64Data
+          };
+        }
+        
+        return {
+          mimeType: 'image/jpeg', // Default to JPEG if not specified
+          base64Data: base64Data,
+          fullBase64: `data:image/jpeg;base64,${base64Data}`
+        };
+      } else if (response.data.output && response.data.output.data) {
+        // Some Together.ai endpoints return {output: {data: "base64string", mime_type: "image/jpeg"}}
+        logger.success('Successfully generated image with Together.ai (legacy data object mode)');
+        
+        const mimeType = response.data.output.mime_type || 'image/jpeg';
+        const base64Data = response.data.output.data;
+        
+        return {
+          mimeType: mimeType,
+          base64Data: base64Data,
+          fullBase64: `data:${mimeType};base64,${base64Data}`
+        };
+      } else {
+        // Last attempt to handle any other format
+        logger.warning('Unexpected Together.ai legacy response format, attempting to parse...');
+        
+        if (typeof imageData === 'string') {
+          // Assume it's a base64 string directly
+          logger.success('Treating legacy response as direct base64 string');
+          return {
+            mimeType: 'image/jpeg',
+            base64Data: imageData,
+            fullBase64: `data:image/jpeg;base64,${imageData}`
+          };
+        }
+      }
+    }
+    
+    // If we reached here, we couldn't handle the response format
+    logger.error('Unhandled Together.ai response format:', JSON.stringify(response.data));
+    throw new Error('Unsupported or empty response format from Together.ai image generation');
+  } catch (error) {
+    logger.error('Error generating image with Together.ai:', error);
+    
+    if (error.response && error.response.data) {
+      const errorData = JSON.stringify(error.response.data).substring(0, 500);
+      logger.error(`Together.ai API error details: ${errorData}`);
+    }
+    
+    throw new Error(`Failed to generate image with Together.ai: ${error.message}`);
+  }
+}
+
 // Export functions
 export {
   generateAIResponse2,
@@ -2230,5 +2548,7 @@ export {
   TOGETHER_MODELS,
   analyzeImage,
   storeImageAnalysis,
-  IMAGE_ANALYSIS_MODEL
+  IMAGE_ANALYSIS_MODEL,
+  generateImage,
+  generateImageWithTogetherAI
 };
