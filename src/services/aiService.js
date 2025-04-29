@@ -275,7 +275,7 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
         logger.error('Together.AI API request failed', togetherError);
         
         // Check for rate limit error (429) and try Gemini as fallback
-        if (togetherError.response && togetherError.response.status === 429) {
+        if (togetherError.response && togetherError.response.status !== 200) {
           logger.warning('Together.AI API rate limited, falling back to Gemini API');
           
           // Check if Gemini API key is available
