@@ -382,11 +382,11 @@ async function getRelevantContext(db, chatId, message) {
             console.log(`[CONTEXT] Found relevant image analysis: ${imageAnalysis.id}`);
             
             // Include the image analysis in the context
-            recentMessages.unshift({
-              role: 'system',
-              content: `User juga pernah mengirim gambar. Berikut analisis gambar: ${imageAnalysis.analysis}`,
-              name: 'image_context'
-            });
+            // recentMessages.unshift({
+            //   role: 'system',
+            //   content: `User juga pernah mengirim gambar. Berikut analisis gambar: ${imageAnalysis.analysis}`,
+            //   name: 'image_context'
+            // });
             
             // Get any follow-up messages about this image if available
             if (imageAnalysis.relatedMessages && imageAnalysis.relatedMessages.length > 0) {
@@ -417,11 +417,11 @@ async function getRelevantContext(db, chatId, message) {
             if (recentAnalysisId && db.data.imageAnalysis[recentAnalysisId]) {
               const imageAnalysis = db.data.imageAnalysis[recentAnalysisId];
               
-              recentMessages.unshift({
-                role: 'system',
-                content: `User juga pernah mengirim gambar. Berikut analisis gambar terbaru: ${imageAnalysis.analysis}`,
-                name: 'image_context'
-              });
+              // recentMessages.unshift({
+              //   role: 'system',
+              //   content: `User juga pernah mengirim gambar. Berikut analisis gambar terbaru: ${imageAnalysis.analysis}`,
+              //   name: 'image_context'
+              // });
               
               // Mark that we've accessed this image analysis
               imageAnalysis.lastAccessTime = new Date().toISOString();

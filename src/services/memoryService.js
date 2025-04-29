@@ -680,6 +680,7 @@ async function processExtractedFacts(userId, extractionResult) {
   const newFacts = [];
   const updatedFacts = [];
   const processedRelationships = [];
+  const globalFacts = [];
   
   // Process new facts
   for (const [factKey, factData] of Object.entries(extractionResult.newFacts)) {
@@ -710,6 +711,14 @@ async function processExtractedFacts(userId, extractionResult) {
         category: factData.category,
         isGlobal: true,
         tags: factData.tags || []
+      });
+      
+      // Add to global facts list
+      globalFacts.push({
+        key: factKey,
+        value: factData.value,
+        confidence: factData.confidence,
+        category: factData.category
       });
       
       continue;
@@ -804,6 +813,15 @@ async function processExtractedFacts(userId, extractionResult) {
         category: factData.category,
         isGlobal: true,
         tags: factData.tags || []
+      });
+      
+      // Add to global facts list
+      globalFacts.push({
+        key: factKey,
+        value: factData.value,
+        confidence: factData.confidence,
+        category: factData.category,
+        previous_value: factData.previous_value
       });
       
       continue;
@@ -912,6 +930,9 @@ async function processExtractedFacts(userId, extractionResult) {
     }
   }
   
+  // NEW: Process relevant facts to identify global knowledge
+  await extractGlobalKnowledgeFromRelevantFacts(extractionResult.relevantFacts, globalFacts);
+  
   // Process fact relationships if available
   if (extractionResult.factRelationships && extractionResult.factRelationships.length > 0) {
     for (const relationship of extractionResult.factRelationships) {
@@ -1008,8 +1029,121 @@ async function processExtractedFacts(userId, extractionResult) {
     newFacts,
     updatedFacts,
     relationships: processedRelationships,
+    globalFacts,
     success: true
   };
+}
+
+/**
+ * Extract and save global knowledge from relevant facts
+ * @param {Object} relevantFacts - Relevant facts from extraction result
+ * @param {Array} existingGlobalFacts - List of global facts already processed
+ * @returns {Promise<void>}
+ */
+async function extractGlobalKnowledgeFromRelevantFacts(relevantFacts, existingGlobalFacts = []) {
+  try {
+    if (!relevantFacts || Object.keys(relevantFacts).length === 0) {
+      return;
+    }
+    
+    const db = getDb();
+    let globalFactsAdded = 0;
+    
+    // Patterns that likely indicate global knowledge
+    const globalFactPatterns = [
+      /^(capital|population|area|president|prime minister|language|currency|timezone|location) of/i,
+      /^(is|was|are|were) (a|an|the)/i,
+      /^(founded|established|created|discovered|invented)/i,
+      /^(height|depth|size|length|width) of/i,
+      /^(largest|smallest|tallest|deepest|oldest|newest)/i,
+      /^(distance|time) (between|from|to)/i,
+      /^(headquarters|offices|branches) (of|in)/i,
+      /^(ceo|founder|creator|inventor|author) of/i
+    ];
+    
+    // Words that often indicate factual/global knowledge
+    const factualIndicators = [
+      'fact', 'officially', 'scientifically', 'technically', 'actually',
+      'historically', 'typically', 'generally', 'universally', 'internationally',
+      'approximately', 'estimated', 'recognized', 'defined', 'classified',
+      'standard', 'common', 'established', 'known', 'verified'
+    ];
+    
+    // Check each relevant fact for potential global knowledge
+    for (const [factKey, factData] of Object.entries(relevantFacts)) {
+      // Skip facts already identified as global facts
+      if (existingGlobalFacts.some(f => f.key === factKey)) {
+        continue;
+      }
+      
+      let isGlobalFact = false;
+      const normalizedKey = factKey.toLowerCase().trim();
+      const normalizedValue = factData.value.toLowerCase().trim();
+      
+      // Check if key matches global fact patterns
+      if (globalFactPatterns.some(pattern => pattern.test(normalizedKey))) {
+        isGlobalFact = true;
+      }
+      
+      // Check if value contains factual indicators
+      if (!isGlobalFact && factualIndicators.some(indicator => 
+          normalizedValue.includes(indicator))) {
+        isGlobalFact = true;
+      }
+      
+      // Check for date, numerical, or measurement patterns in the value (often indicate factual info)
+      const hasNumbers = /\d+/.test(normalizedValue);
+      const hasMeasurements = /\d+\s*(km|m|kg|lb|ft|mile|year|month|century|decade)/i.test(normalizedValue);
+      const hasDate = /\b(in|since|from|until)\s+\d{4}\b/.test(normalizedValue) || 
+                     /\b\d{4}\b-\b\d{4}\b/.test(normalizedValue);
+      
+      if (!isGlobalFact && (hasMeasurements || hasDate || 
+          (hasNumbers && factData.confidence > 0.85))) {
+        isGlobalFact = true;
+      }
+      
+      // If identified as global fact, add it to the global facts database
+      if (isGlobalFact) {
+        // Format the key to be more canonical for global facts
+        const formattedKey = normalizedKey
+          .replace(/\s+/g, '_')
+          .replace(/[^\w_]/g, '')
+          .toLowerCase();
+        
+        // Determine appropriate category
+        let category = factData.category;
+        if (!category) {
+          // Try to infer a better category for global facts
+          if (hasDate) category = 'historical';
+          else if (hasMeasurements) category = 'measurement';
+          else if (/capital|city|country|region|continent/.test(normalizedKey)) category = 'geographic';
+          else if (/person|people|born|died/.test(normalizedKey)) category = 'biographical';
+          else if (/company|organization|corporation|business/.test(normalizedKey)) category = 'organizational';
+          else if (/technology|software|programming|computer|game/.test(normalizedKey)) category = 'technological';
+          else category = 'general_knowledge';
+        }
+        
+        // Add to global facts
+        await addGlobalFact(formattedKey, factData.value, {
+          confidence: factData.confidence,
+          category: category,
+          tags: factData.tags || [],
+          factType: factData.factType || FACT_TYPES.EXPLICIT,
+          source: 'extracted_from_relevant_facts'
+        });
+        
+        globalFactsAdded++;
+        
+        logger.info(`Added global fact from relevant facts: "${formattedKey}" = "${factData.value}"`);
+      }
+    }
+    
+    if (globalFactsAdded > 0) {
+      logger.success(`Added ${globalFactsAdded} global facts extracted from relevant facts`);
+    }
+  } catch (error) {
+    logger.error('Error extracting global knowledge from relevant facts', error);
+  }
 }
 
 /**
@@ -1027,6 +1161,9 @@ function getRelevantFactsForMessage(userId, chatId, relevantFactsObj) {
   
   // Get global facts that might be relevant
   const relevantGlobalFacts = getRelevantGlobalFacts(relevantFactsObj);
+  
+  // Update usage metrics for relevant facts
+  updateRelevanceMetrics(userId, relevantFactsObj);
   
   // Find related facts based on the relevant facts
   let relatedFacts = [];
@@ -1158,6 +1295,116 @@ function getRelevantFactsForMessage(userId, chatId, relevantFactsObj) {
   });
   
   return [...enhancedFacts, ...relatedFacts, ...relevantGlobalFacts, ...otherParticipantsFacts];
+}
+
+/**
+ * Update the relevance metrics for facts that were found relevant
+ * @param {string} userId - User ID
+ * @param {Object} relevantFactsObj - Relevant facts object from Gemini
+ * @returns {Promise<void>}
+ */
+async function updateRelevanceMetrics(userId, relevantFactsObj) {
+  try {
+    const db = getDb();
+    let needsUpdate = false;
+    
+    // Skip if no relevant facts
+    if (!relevantFactsObj || Object.keys(relevantFactsObj).length === 0) {
+      return;
+    }
+    
+    // Get current time
+    const now = new Date().toISOString();
+    
+    // Process user facts
+    if (db.data.userFacts[userId] && db.data.userFacts[userId].facts) {
+      Object.entries(relevantFactsObj).forEach(([factKey, relevantFact]) => {
+        if (db.data.userFacts[userId].facts[factKey]) {
+          const fact = db.data.userFacts[userId].facts[factKey];
+          
+          // Update usage metrics
+          fact.lastUsed = now;
+          fact.usageCount = (fact.usageCount || 0) + 1;
+          
+          // Update relevance metrics
+          fact.relevanceScore = Math.min(1.0, (fact.relevanceScore || 0.5) + 0.05);
+          
+          // Save reasoning if provided
+          if (relevantFact.reasoning && relevantFact.reasoning !== 'Relevant to current context') {
+            // Store recent reasonings with timestamps
+            if (!fact.reasoningHistory) {
+              fact.reasoningHistory = [];
+            }
+            
+            // Add to reasoning history
+            fact.reasoningHistory.push({
+              reasoning: relevantFact.reasoning,
+              timestamp: now
+            });
+            
+            // Limit history size
+            if (fact.reasoningHistory.length > 5) {
+              fact.reasoningHistory = fact.reasoningHistory.slice(-5);
+            }
+            
+            fact.lastReasoning = relevantFact.reasoning;
+          }
+          
+          needsUpdate = true;
+        }
+      });
+    }
+    
+    // Process global facts
+    // Find relevant global facts from the ones retrieved for this conversation
+    const globalFactsRetrieved = getRelevantGlobalFacts(relevantFactsObj);
+    globalFactsRetrieved.forEach(globalFactStr => {
+      // Extract the key from the formatted string
+      // Format is "GLOBAL: key: value"
+      const match = globalFactStr.match(/^GLOBAL:\s+([^:]+):/);
+      if (match && match[1]) {
+        const normalizedKey = match[1].trim().replace(/\s+/g, '_');
+        
+        if (db.data.globalFacts.facts[normalizedKey]) {
+          const globalFact = db.data.globalFacts.facts[normalizedKey];
+          
+          // Update usage metrics
+          globalFact.lastUsed = now;
+          globalFact.usageCount = (globalFact.usageCount || 0) + 1;
+          
+          // Create relevance tracking if it doesn't exist
+          if (!db.data.globalFacts.facts[normalizedKey].relevanceStats) {
+            db.data.globalFacts.facts[normalizedKey].relevanceStats = {
+              usageHistory: [],
+              topContexts: []
+            };
+          }
+          
+          // Add to usage history
+          db.data.globalFacts.facts[normalizedKey].relevanceStats.usageHistory.push({
+            userId: userId,
+            timestamp: now
+          });
+          
+          // Limit history size
+          if (db.data.globalFacts.facts[normalizedKey].relevanceStats.usageHistory.length > 10) {
+            db.data.globalFacts.facts[normalizedKey].relevanceStats.usageHistory = 
+              db.data.globalFacts.facts[normalizedKey].relevanceStats.usageHistory.slice(-10);
+          }
+          
+          needsUpdate = true;
+        }
+      }
+    });
+    
+    // Save if any changes were made
+    if (needsUpdate) {
+      await db.write();
+      logger.debug(`Updated relevance metrics for ${Object.keys(relevantFactsObj).length} facts`);
+    }
+  } catch (error) {
+    logger.error('Error updating relevance metrics', error);
+  }
 }
 
 /**
@@ -2196,5 +2443,7 @@ export {
   manuallyAddFact,
   deleteFact,
   consolidateUserFacts,
-  getRelevantGlobalFacts
+  getRelevantGlobalFacts,
+  updateRelevanceMetrics,
+  extractGlobalKnowledgeFromRelevantFacts
 }; 

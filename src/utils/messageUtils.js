@@ -183,7 +183,7 @@ function isTaggedMessage(message, botName) {
 function getSenderInfo(message) {
   const sender = message.key.participant || message.key.remoteJid;
   const pushName = message.pushName || sender.split('@')[0];
-  
+  console.log(message);
   return {
     jid: sender,
     name: pushName
