@@ -194,9 +194,9 @@ async function processMessage(sock, message) {
         const lastMoodChange = db.data.state.lastMoodChange ? new Date(db.data.state.lastMoodChange) : null;
         const lastPersonalityChange = db.data.state.lastPersonalityChange ? new Date(db.data.state.lastPersonalityChange) : null;
         
-        // Append mood/personality change history to status response
+        // Create a wrapper function for executeCommand instead of reassigning it
         const originalExecuteCommand = executeCommand;
-        executeCommand = async (...args) => {
+        const wrappedExecuteCommand = async (...args) => {
           let response = await originalExecuteCommand(...args);
           
           // Add mood and personality change information to status response
@@ -232,7 +232,9 @@ async function processMessage(sock, message) {
         // Show typing indicator for command processing
         await sock.sendPresenceUpdate('composing', chatId);
         
-        const response = await executeCommand(sock, message, commandData, db);
+        // Use the wrapped function if it's a status command
+        const commandExecutor = commandData.command === 'status' ? wrappedExecuteCommand : executeCommand;
+        const response = await commandExecutor(sock, message, commandData, db);
         if (response) {
           logger.success(`Command ${commandData.command} executed successfully, sending response`);
           
