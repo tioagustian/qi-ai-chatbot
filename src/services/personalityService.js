@@ -169,6 +169,174 @@ async function updateMoodAndPersonality(db, message = null) {
   }
 }
 
+// NEW FUNCTION: Update mood and personality using AI analysis
+// Uses AI to determine appropriate mood and personality based on message context
+async function updateMoodAndPersonalityWithAI(db, message, context, aiService) {
+  try {
+    console.log(`Analyzing message for AI-based mood/personality change: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`);
+    
+    const currentTime = new Date();
+    const lastInteraction = new Date(db.data.state.lastInteraction || 0);
+    const currentMood = db.data.state.currentMood;
+    const currentPersonality = db.data.config.personality;
+    
+    // Only consider AI-based mood change with some probability or after significant time
+    const timeDiff = (currentTime - lastInteraction) / (1000 * 60); // in minutes
+    const shouldAnalyze = Math.random() < 0.3 || timeDiff >= 30; // 30% chance or after 30 minutes
+    
+    if (!shouldAnalyze) {
+      console.log('Skipping AI mood analysis due to probability check');
+      return false;
+    }
+    
+    // Get all available moods and personalities
+    const availableMoods = getAllMoods(db);
+    const availablePersonalities = getAllPersonalities(db);
+    
+    // Prepare prompt for AI to analyze appropriate mood/personality
+    const analysisPrompt = `
+Analyze the following message and conversation context to determine the most appropriate mood and personality for me to respond with.
+
+Recent message: "${message}"
+
+Current mood: ${currentMood}
+Current personality: ${currentPersonality}
+
+Available moods: ${availableMoods.join(', ')}
+Available personalities: ${availablePersonalities.join(', ')}
+
+Based on the message content, tone, and context, determine:
+1. What mood would be most natural for me to have right now? Should I keep my current mood or change to a different mood?
+2. What personality would be most appropriate for responding to this message?
+3. Provide a brief explanation of why these changes make sense in this context.
+
+Return your response in this format only:
+{
+  "mood": "selected_mood",
+  "personality": "selected_personality",
+  "explanation": "brief explanation of why these fit the context"
+}
+`;
+
+    // Use AI to analyze the message and recommend mood/personality
+    const analysisResponse = await aiService.generateAnalysis(analysisPrompt, {
+      temperature: 0.7,
+      max_tokens: 300
+    });
+    
+    console.log('Raw AI response:', typeof analysisResponse, analysisResponse ? analysisResponse.substring(0, 100) + '...' : 'empty');
+    
+    // Parse the AI response to extract mood and personality
+    let resultData;
+    try {
+      // Try to parse the response in different ways depending on the format
+      if (typeof analysisResponse === 'object') {
+        // If it's already an object, try to use it directly
+        if (analysisResponse.mood && analysisResponse.personality) {
+          resultData = analysisResponse;
+        } else if (analysisResponse.text || analysisResponse.content) {
+          // If it's an object with text/content property, extract JSON from there
+          const textContent = analysisResponse.text || analysisResponse.content;
+          const jsonMatch = textContent.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            resultData = JSON.parse(jsonMatch[0]);
+          } else {
+            throw new Error('No valid JSON found in response object text');
+          }
+        } else {
+          // Try to stringify and re-parse to get a clean object
+          const jsonString = JSON.stringify(analysisResponse);
+          resultData = JSON.parse(jsonString);
+        }
+      } else if (typeof analysisResponse === 'string') {
+        // If it's a string, try to extract JSON from it
+        const jsonMatch = analysisResponse.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          resultData = JSON.parse(jsonMatch[0]);
+        } else {
+          // If no JSON object is found, try to parse key-value pairs
+          const moodMatch = analysisResponse.match(/mood["\s:]+([a-z]+)/i);
+          const personalityMatch = analysisResponse.match(/personality["\s:]+([a-z]+)/i);
+          const explanationMatch = analysisResponse.match(/explanation["\s:]+["']([^"']+)/i);
+          
+          if (moodMatch || personalityMatch) {
+            resultData = {
+              mood: moodMatch ? moodMatch[1].toLowerCase() : currentMood,
+              personality: personalityMatch ? personalityMatch[1].toLowerCase() : currentPersonality,
+              explanation: explanationMatch ? explanationMatch[1] : 'Based on message content.'
+            };
+          } else {
+            throw new Error('No valid mood/personality data found in response');
+          }
+        }
+      } else {
+        throw new Error(`Unexpected response type: ${typeof analysisResponse}`);
+      }
+    } catch (parseError) {
+      console.error('Error parsing AI mood analysis response:', parseError);
+      console.log('Raw response:', analysisResponse);
+      
+      // Fallback to basic mood detection using keywords for reliability
+      await updateMoodAndPersonality(db, message);
+      
+      return false;
+    }
+    
+    const { mood: suggestedMood, personality: suggestedPersonality, explanation } = resultData;
+    
+    // Validate suggested mood and personality
+    let shouldChangeMood = false;
+    let shouldChangePersonality = false;
+    let newMood = currentMood;
+    let newPersonality = currentPersonality;
+    
+    // Check if suggested mood is valid and different from current
+    if (suggestedMood && availableMoods.includes(suggestedMood) && suggestedMood !== currentMood) {
+      shouldChangeMood = true;
+      newMood = suggestedMood;
+    }
+    
+    // Check if suggested personality is valid and different from current
+    if (suggestedPersonality && availablePersonalities.includes(suggestedPersonality) && suggestedPersonality !== currentPersonality) {
+      shouldChangePersonality = true;
+      newPersonality = suggestedPersonality;
+    }
+    
+    // Apply changes if any
+    if (shouldChangeMood || shouldChangePersonality) {
+      if (shouldChangeMood) {
+        db.data.state.currentMood = newMood;
+        db.data.state.lastMoodChange = currentTime.toISOString();
+        db.data.state.lastMoodChangeReason = explanation || 'AI-determined mood change';
+        console.log(`Bot mood changed to: ${newMood} (AI-determined)`);
+      }
+      
+      if (shouldChangePersonality) {
+        db.data.config.personality = newPersonality;
+        db.data.state.lastPersonalityChange = currentTime.toISOString();
+        db.data.state.lastPersonalityChangeReason = explanation || 'AI-determined personality change';
+        console.log(`Bot personality changed to: ${newPersonality} (AI-determined)`);
+      }
+      
+      // Log the explanation
+      console.log(`Mood/personality change explanation: ${explanation}`);
+      
+      // Save changes
+      await db.write();
+      return true; // Changes were made
+    }
+    
+    return false; // No changes were made
+  } catch (error) {
+    console.error('Error in AI-based mood and personality update:', error);
+    
+    // Fallback to basic mood detection using keywords for reliability
+    await updateMoodAndPersonality(db, message);
+    
+    return false;
+  }
+}
+
 // Get all moods (both predefined and custom)
 function getAllMoods(db) {
   // Ensure custom moods structure exists
@@ -572,7 +740,13 @@ function getCharacterKnowledge(db) {
 }
 
 export {
+  MOODS,
+  PERSONALITIES,
+  MOOD_TRIGGERS,
+  PERSONALITY_DESCRIPTIONS,
+  MOOD_DESCRIPTIONS,
   updateMoodAndPersonality,
+  updateMoodAndPersonalityWithAI,
   setMood,
   setPersonality,
   getAvailableMoods,
@@ -586,7 +760,5 @@ export {
   getPersonalityDescription,
   getAllMoodTriggers,
   setCharacterKnowledge,
-  getCharacterKnowledge,
-  MOODS,
-  PERSONALITIES
+  getCharacterKnowledge
 }; 

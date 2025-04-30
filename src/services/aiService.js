@@ -92,6 +92,121 @@ const logger = {
   }
 };
 
+// New function for generating analysis of message content to determine mood and personality
+async function generateAnalysis(prompt, options = {}) {
+  try {
+    logger.info('Generating analysis for mood/personality determination');
+    
+    const db = getDb();
+    const { config } = db.data;
+    
+    // Use a simpler, faster model for analysis to reduce token usage
+    // Prefer the current provider but with a more efficient model
+    let provider = 'gemini';
+    let model = null;
+    
+    // Select appropriate model based on provider
+    if (provider === 'gemini') {
+      model = 'google/gemini-2.0-flash-lite'; // Faster Gemini model
+    } else if (provider === 'together') {
+      model = 'meta-llama/Llama-3.3-8B-Instruct-Turbo-Free'; // Smaller, faster Together model
+    } else {
+      // OpenRouter - use a smaller, efficient model
+      model = 'anthropic/claude-3-haiku';
+    }
+    
+    // Get appropriate API key
+    let apiKey;
+    if (provider === 'gemini') {
+      apiKey = config.geminiApiKey || process.env.GEMINI_API_KEY;
+    } else if (provider === 'together') {
+      apiKey = config.togetherApiKey || process.env.TOGETHER_API_KEY;
+    } else {
+      apiKey = process.env.OPENROUTER_API_KEY;
+    }
+    
+    if (!apiKey) {
+      logger.warning(`No API key configured for ${provider}, falling back to OpenRouter`);
+      provider = 'openrouter';
+      model = 'anthropic/claude-3-haiku';
+      apiKey = process.env.OPENROUTER_API_KEY;
+      
+      if (!apiKey) {
+        throw new Error('No API keys configured for any provider');
+      }
+    }
+    
+    // Prepare messages for API
+    const messages = [
+      { role: 'system', content: 'You are an expert at analyzing message tone, emotion, and context. Your task is to determine the most appropriate mood and personality for a conversational AI to adopt when responding.' },
+      { role: 'user', content: prompt }
+    ];
+    
+    // Set parameters
+    const params = {
+      temperature: options.temperature || 0.3, // Lower temperature for more consistent analysis
+      max_tokens: options.max_tokens || 300,
+      top_p: options.top_p || 0.95,
+      stream: false
+    };
+    
+    // Make API request based on provider
+    let response;
+    if (provider === 'gemini') {
+      // Format messages for Gemini
+      const formattedMessages = formatMessagesForAPI(messages, { defaultProvider: 'gemini' });
+      const geminiResponse = await requestGeminiChat(model, apiKey, formattedMessages, params);
+      
+      // For Gemini, the response is already the text content
+      response = geminiResponse;
+      
+      // If the response is an object (newer Gemini API), extract the text content
+      if (typeof response === 'object' && response.choices && response.choices[0] && response.choices[0].message) {
+        response = response.choices[0].message.content;
+        logger.debug('Extracted text content from Gemini response object');
+      }
+    } else if (provider === 'together') {
+      const togetherResponse = await requestTogetherChat(model, apiKey, messages, params);
+      
+      // For Together, extract the text content from the response
+      if (typeof togetherResponse === 'object' && togetherResponse.choices && togetherResponse.choices[0]) {
+        response = togetherResponse.choices[0].message.content;
+      } else {
+        response = togetherResponse;
+      }
+    } else {
+      // OpenRouter request
+      const apiResponse = await axios.post(
+        OPENROUTER_API_URL,
+        {
+          model: model,
+          messages: messages,
+          ...params
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+            'HTTP-Referer': 'https://github.com/Qi-Blockchain/qi-ai-chatbot'
+          }
+        }
+      );
+      
+      // Log API usage
+      await logApiRequest('openrouter', model, messages, apiResponse.data, null);
+      
+      // Extract response text
+      response = apiResponse.data.choices[0]?.message?.content || '';
+    }
+    
+    logger.success('Successfully generated mood/personality analysis');
+    return response;
+  } catch (error) {
+    logger.error('Error generating analysis:', error);
+    throw error;
+  }
+}
+
 // Generate a response using the AI model
 async function generateAIResponseLegacy(message, context, botData, senderName = null) {
   try {
@@ -2549,5 +2664,8 @@ export {
   storeImageAnalysis,
   IMAGE_ANALYSIS_MODEL,
   generateImage,
-  generateImageWithTogetherAI
+  generateImageWithTogetherAI,
+  generateAnalysis, // Export the new function
+  extractEntitiesFromAnalysis,
+  extractTopicsFromAnalysis
 };
