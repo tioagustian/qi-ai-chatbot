@@ -20,7 +20,7 @@ const MAX_TOPIC_SPECIFIC_MESSAGES = process.env.MAX_TOPIC_SPECIFIC_MESSAGES || 1
 import { findImagesByDescription } from './memoryService.js';
 
 // Update context with new message
-async function updateContext(db, chatId, sender, content, message) {
+async function updateContext(db, chatId, sender, content, message, sock) {
   try {
     // Get chat type (group or private)
     const isGroup = chatId.endsWith('@g.us');
@@ -63,8 +63,9 @@ async function updateContext(db, chatId, sender, content, message) {
       };
     } else {
       // Update the chat name if needed
-      if (isGroup && chatName !== 'Group Chat' && db.data.conversations[chatId].chatName === 'Group Chat') {
-        db.data.conversations[chatId].chatName = chatName;
+      if (isGroup) {
+        const groupInfo = await sock.groupMetadata(chatId);
+        db.data.conversations[chatId].chatName = groupInfo.subject;
       }
     }
     

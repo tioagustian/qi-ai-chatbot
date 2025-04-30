@@ -270,7 +270,7 @@ const startBot = async () => {
         try {
           // Get database
           const db = getDb();
-          
+          const groupInfo = await sock.groupMetadata(update.id);
           // Create or update group information in the database
           if (!db.data.conversations[update.id]) {
             db.data.conversations[update.id] = {
@@ -278,7 +278,7 @@ const startBot = async () => {
               participants: {},
               lastActive: new Date().toISOString(),
               chatType: 'group',
-              chatName: 'Group Chat',
+              chatName: groupInfo.subject,
               hasIntroduced: false,
               lastIntroduction: null,
               addedBy: addedBy,
@@ -286,6 +286,7 @@ const startBot = async () => {
             };
           } else {
             // Update existing entry
+            db.data.conversations[update.id].chatName = groupInfo.subject;
             db.data.conversations[update.id].addedBy = addedBy;
             db.data.conversations[update.id].joinedAt = new Date().toISOString();
             db.data.conversations[update.id].hasIntroduced = false; // Reset introduction state

@@ -64,9 +64,14 @@ async function processMessage(sock, message) {
     }
     
     const chatType = isGroup ? 'group' : 'private';
+    let groupName = '';
+    if (isGroup) {
+      const groupInfo = await sock.groupMetadata(message.key.remoteJid);
+      groupName = groupInfo.subject;
+    }
     const senderName = message.pushName || sender.split('@')[0];
     
-    logger.info(`Received message from ${senderName} in ${chatType}: "${content?.substring(0, 50)}${content?.length > 50 ? '...' : ''}"${containsImage ? ' (contains image)' : ''}`);
+    logger.info(`Received message from ${senderName} in ${chatType} ${groupName}: "${content?.substring(0, 50)}${content?.length > 50 ? '...' : ''}"${containsImage ? ' (contains image)' : ''}`);
     logger.debug('Message details', { 
       sender, 
       chatId, 
@@ -219,7 +224,7 @@ async function processMessage(sock, message) {
     // Update conversation context
     try {
       logger.debug('Updating conversation context');
-      await updateContext(db, chatId, sender, content || (containsImage ? `[Image with analysis: ${imageAnalysisId}]` : "[Empty message]"), message);
+      await updateContext(db, chatId, sender, content || (containsImage ? `[Image with analysis: ${imageAnalysisId}]` : "[Empty message]"), message, sock);
     } catch (contextError) {
       logger.error('Error updating context', contextError);
     }
@@ -489,7 +494,8 @@ async function processMessage(sock, message) {
                       remoteJid: chatId
                     },
                     pushName: db.data.config.botName
-                  }
+                  },
+                  sock
                 );
               } catch (updateError) {
                 logger.error('Error updating context with AI image response', updateError);
@@ -529,7 +535,8 @@ async function processMessage(sock, message) {
                       remoteJid: chatId
                     },
                     pushName: db.data.config.botName
-                  }
+                  },
+                  sock
                 );
               } catch (updateError) {
                 logger.error('Error updating context with failed AI image response', updateError);
@@ -653,7 +660,7 @@ async function processMessage(sock, message) {
               remoteJid: chatId
                 },
                 pushName: db.data.config.botName
-          });
+          }, sock);
         } catch (updateError) {
           logger.error('Error updating context with AI response', updateError);
           }
