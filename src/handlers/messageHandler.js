@@ -279,47 +279,47 @@ async function processMessage(sock, message) {
     let shouldRespond = shouldRespondToMessage(message, content, isTagged, isGroup, db.data.config.botName);
     
     // Check if this is a query about a previous image
-      let isPreviousImageQuery = false;
+    let isPreviousImageQuery = false;
+    
+    if (content && !containsImage) {
+      const lowerContent = content.toLowerCase();
       
-      if (content && !containsImage) {
-        const lowerContent = content.toLowerCase();
+      // Check for temporal references combined with demonstrative pronouns
+      const hasTemporalReference = [
+        'tadi', 'sebelumnya', 'sebelum ini', 'yang tadi', 'yang sebelumnya', 'yang barusan',
+        'earlier', 'before', 'previous', 'just now', 'just sent'
+      ].some(ref => lowerContent.includes(ref));
+      
+      const hasDemonstrativeReference = [
+        'ini', 'itu', 'tersebut', 'this', 'that', 'those', 'these'
+      ].some(ref => lowerContent.includes(ref));
+      
+      // Check for image-related terms
+      const hasImageTerms = [
+        'gambar', 'foto', 'image', 'picture', 'photo', 'lihat', 'cek', 'check', 'analisis', 'analyze',
+        'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat'
+      ].some(term => lowerContent.includes(term));
+      
+      // If the message has temporal references and demonstrative pronouns, or explicitly mentions images
+      // it's likely referring to a previously shared image
+      isPreviousImageQuery = (hasTemporalReference && hasDemonstrativeReference) || hasImageTerms;
+      
+      // Additional check: if it's a question and has demonstrative pronouns, it might be about a previous image
+      const isQuestion = content.endsWith('?') || 
+        ['apa', 'siapa', 'kapan', 'dimana', 'gimana', 'bagaimana', 'kenapa', 'mengapa', 'tolong'].some(q => lowerContent.includes(q));
         
-        // Check for temporal references combined with demonstrative pronouns
-        const hasTemporalReference = [
-          'tadi', 'sebelumnya', 'sebelum ini', 'yang tadi', 'yang sebelumnya', 'yang barusan',
-          'earlier', 'before', 'previous', 'just now', 'just sent'
-        ].some(ref => lowerContent.includes(ref));
-        
-        const hasDemonstrativeReference = [
-          'ini', 'itu', 'tersebut', 'this', 'that', 'those', 'these'
-        ].some(ref => lowerContent.includes(ref));
-        
-        // Check for image-related terms
-        const hasImageTerms = [
-          'gambar', 'foto', 'image', 'picture', 'photo', 'lihat', 'cek', 'check', 'analisis', 'analyze',
-          'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat'
-        ].some(term => lowerContent.includes(term));
-        
-        // If the message has temporal references and demonstrative pronouns, or explicitly mentions images
-        // it's likely referring to a previously shared image
-        isPreviousImageQuery = (hasTemporalReference && hasDemonstrativeReference) || hasImageTerms;
-        
-        // Additional check: if it's a question and has demonstrative pronouns, it might be about a previous image
-        const isQuestion = content.endsWith('?') || 
-          ['apa', 'siapa', 'kapan', 'dimana', 'gimana', 'bagaimana', 'kenapa', 'mengapa', 'tolong'].some(q => lowerContent.includes(q));
-          
-        if (isQuestion && hasDemonstrativeReference) {
-          isPreviousImageQuery = true;
-        }
-        
-        logger.debug('Image query detection', { 
-          isPreviousImageQuery, 
-          hasTemporalReference, 
-          hasDemonstrativeReference,
-          hasImageTerms,
-          isQuestion
-        });
+      if (isQuestion && hasDemonstrativeReference) {
+        isPreviousImageQuery = true;
       }
+      
+      logger.debug('Image query detection', { 
+        isPreviousImageQuery, 
+        hasTemporalReference, 
+        hasDemonstrativeReference,
+        hasImageTerms,
+        isQuestion
+      });
+    }
       
     // Check if the current image has a caption that explicitly asks for analysis
     const imageAnalysisKeywords = ['analisis', 'analyze', 'jelaskan', 'explain', 'apa ini', 'what is this', 'tolong lihat', 'cek'];
@@ -446,14 +446,6 @@ async function processMessage(sock, message) {
             // Start keeping typing indicator active
             const typingPromise = keepTypingActive();
             
-            // Generate a message first
-            const aiResponse = await generateAIResponseLegacy(
-              `Buatkan gambar: ${imagePrompt}`, 
-              contextMessages, 
-              db.data, 
-              senderName
-            );
-            
             logger.info('AI response generated, now generating image');
             
             try {
@@ -475,6 +467,13 @@ async function processMessage(sock, message) {
               logger.info(`Waiting ${sendDelay}ms before sending generated image`);
               await new Promise(resolve => setTimeout(resolve, sendDelay));
               
+              // Generate a message first
+              const aiResponse = await generateAIResponseLegacy(
+                `Kamu berhasil membuat gambar dengan prompt: ${imagePrompt}`, 
+                contextMessages, 
+                db.data, 
+                senderName
+              );
               // Send the image with the AI response as caption
               await sock.sendMessage(chatId, {
                 image: imageBuffer,
@@ -487,7 +486,7 @@ async function processMessage(sock, message) {
               // Update context with AI's response including the image
               try {
                 await updateContext(db, chatId, process.env.BOT_ID, 
-                  `[Gambar telah dibuat]\n\n${aiResponse}`, 
+                  `Kamu berhasil membuat gambar\n\n${aiResponse}`, 
                   {
                     key: { 
                       id: `ai_image_${Date.now()}`,
@@ -519,16 +518,23 @@ async function processMessage(sock, message) {
               } else if (errorMessage.includes('No image data') || errorMessage.includes('format')) {
                 userFriendlyError = 'Maaf, aku gagal membuat gambar. Coba dengan deskripsi yang lebih detail atau kata kunci yang berbeda ya~';
               }
+
+              const aiResponse = await generateAIResponseLegacy(
+                `Kamu gagal membuat gambar dengan prompt: ${imagePrompt}`, 
+                contextMessages, 
+                db.data, 
+                senderName
+              );
               
               // Send AI response anyway with error message
               await sock.sendMessage(chatId, {
-                text: `${aiResponse}\n\n${userFriendlyError}`
+                text: `${aiResponse}`
               }, { quoted: message });
               
               // Still update the context
               try {
                 await updateContext(db, chatId, process.env.BOT_ID, 
-                  `[Gambar tidak berhasil dibuat]\n\n${aiResponse}`, 
+                  `Kamu gagal membuat gambar\n\n${aiResponse}`, 
                   {
                     key: { 
                       id: `ai_image_failed_${Date.now()}`,

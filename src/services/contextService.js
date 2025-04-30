@@ -595,7 +595,7 @@ function getCrossContextFromPrivateChats(db, message, currentChatId, participant
             .slice(-3)
             .map(msg => ({
               role: msg.role,
-              content: `[Dari chat pribadi dengan ${chat.participants[participantId].name}] ${msg.content}`,
+              content: `${chat.participants[participantId].name}: ${msg.content}`,
               name: msg.name,
               timestamp: msg.timestamp
             }));

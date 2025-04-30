@@ -168,7 +168,6 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
     // Create system message with personality and mood
     const systemMessage = createSystemMessage(config, state);
     logger.debug('System message created', { length: systemMessage.length });
-    logger.debug(`"${systemMessage}"`)
     
     // Prepare messages array for the API
     const messages = [
@@ -834,7 +833,7 @@ function createSystemMessage(config, state) {
   // Add language style instruction
   systemMessage += 'Kamu HARUS selalu menjawab dalam Bahasa Indonesia. ';
   systemMessage += 'Kamu berbicara dengan gaya bahasa anak muda Indonesia yang santai, menggunakan singkatan dan slang. ';
-  systemMessage += 'Gunakan emoji secukupnya saja, maksimal 1 emoji per pesan. ';
+  systemMessage += 'Penting! Gunakan emoji secukupnya saja, maksimal 1 emoji per pesan. ';
   
   // Add behavior instruction for more conversational responses
   systemMessage += 'Selalu jawab langsung ke topik tanpa perlu memperkenalkan diri atau memberikan penjelasan panjang. ';
@@ -842,7 +841,7 @@ function createSystemMessage(config, state) {
   systemMessage += 'JANGAN menyebutkan bahwa kamu adalah AI atau asisten. ';
   systemMessage += 'JANGAN mengatakan bahwa kamu tidak bisa mengakses WhatsApp atau nomor telepon. ';
   systemMessage += 'JANGAN menambahkan baris kosong atau karakter newline di awal responsenya. ';
-  systemMessage += 'Jawab dengan singkat, padat, dan to the point. Hindari kalimat yang bertele-tele. ';
+  systemMessage += 'Penting! Jawab dengan singkat, padat, dan to the point. Hindari kalimat yang bertele-tele. Dan emoji berlebihan';
   
   // Enhanced conversational abilities
   systemMessage += 'Kamu adalah manusia nyata yang ikut chat di grup. ';
@@ -2219,7 +2218,7 @@ function extractTopicsFromAnalysis(analysisText) {
 }
 
 // Constants for image generation
-const IMAGE_GENERATION_MODEL = 'gemini-2.0-flash-exp-image-generation';
+const IMAGE_GENERATION_MODEL = 'gemini-2.0-flash-exp';
 const GEMINI_IMAGE_GEN_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 /**
@@ -2238,7 +2237,7 @@ async function generateImage(prompt, options = {}) {
       throw new Error('No Gemini API key found for image generation');
     }
     
-    const model = options.model || IMAGE_GENERATION_MODEL;
+    const model = IMAGE_GENERATION_MODEL;
     const endpoint = `${GEMINI_IMAGE_GEN_URL}/${model}:generateContent`;
     
     const headers = {
@@ -2259,18 +2258,18 @@ async function generateImage(prompt, options = {}) {
         }
       ],
       generation_config: {
-        temperature: options.temperature || 0.4,
-        topP: options.topP || 0.95,
-        topK: options.topK || 40,
-        maxOutputTokens: options.maxOutputTokens || 2048
+        responseModalities: ["image", "text"],
       }
     };
-    
+    logger.debug(model)
+    logger.debug(endpoint)
+    logger.debug(JSON.stringify(requestData))
     logger.debug('Gemini image generation request data:', JSON.stringify(requestData));
+    
     
     // Make the API request
     const response = await axios.post(endpoint, requestData, { headers });
-    
+    console.log(response.data)
     if (!response.data) {
       throw new Error('Empty response from Gemini image generation');
     }
