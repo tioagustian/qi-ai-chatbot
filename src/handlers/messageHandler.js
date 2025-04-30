@@ -232,9 +232,43 @@ async function processMessage(sock, message) {
         // Show typing indicator for command processing
         await sock.sendPresenceUpdate('composing', chatId);
         
-        // Use the wrapped function if it's a status command
-        const commandExecutor = commandData.command === 'status' ? wrappedExecuteCommand : executeCommand;
-        const response = await commandExecutor(sock, message, commandData, db);
+        // Execute the command
+        let response;
+        if (commandData.command === 'status') {
+          // For status command, handle with special processing
+          const originalExecuteCommand = executeCommand;
+          response = await originalExecuteCommand(sock, message, commandData, db);
+          
+          if (response) {
+            // Add mood and personality information
+            const currentMood = db.data.state.currentMood;
+            const currentPersonality = db.data.config.personality;
+            const lastMoodChange = db.data.state.lastMoodChange ? new Date(db.data.state.lastMoodChange) : null;
+            const lastPersonalityChange = db.data.state.lastPersonalityChange ? new Date(db.data.state.lastPersonalityChange) : null;
+            
+            response += '\n\n📊 Mood & Personality Info:';
+            response += `\n• Current Mood: ${currentMood}`;
+            response += `\n• Current Personality: ${currentPersonality}`;
+            
+            if (lastMoodChange) {
+              response += `\n• Last Mood Change: ${lastMoodChange.toLocaleString('id-ID')}`;
+              if (db.data.state.lastMoodChangeReason) {
+                response += `\n• Reason: ${db.data.state.lastMoodChangeReason}`;
+              }
+            }
+            
+            if (lastPersonalityChange) {
+              response += `\n• Last Personality Change: ${lastPersonalityChange.toLocaleString('id-ID')}`;
+              if (db.data.state.lastPersonalityChangeReason) {
+                response += `\n• Reason: ${db.data.state.lastPersonalityChangeReason}`;
+              }
+            }
+          }
+        } else {
+          // For all other commands, use standard execution
+          response = await executeCommand(sock, message, commandData, db);
+        }
+        
         if (response) {
           logger.success(`Command ${commandData.command} executed successfully, sending response`);
           
