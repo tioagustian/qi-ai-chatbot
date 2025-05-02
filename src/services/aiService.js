@@ -12,46 +12,49 @@ import {
 } from './personalityService.js';
 import { logApiRequest } from './apiLogService.js';
 
-// Base URL for OpenRouter API
+// Constants for API URLs
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
-
-// Base URL for Google Gemini API
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
-
-// Base URL for Together.AI API
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1/models';
 const TOGETHER_API_URL = 'https://api.together.xyz/v1/chat/completions';
 
-// API Providers
-const API_PROVIDERS = {
-  OPENROUTER: 'openrouter',
-  GEMINI: 'gemini',
-  TOGETHER: 'together'
-};
-
-// Model for image analysis
-const IMAGE_ANALYSIS_MODEL = 'meta-llama/Llama-Vision-Free';
-
-// Models supported by tools
+// List of models that support tool/function calling
 const TOOL_SUPPORTED_MODELS = [
-  'anthropic/claude-3-opus',
-  'anthropic/claude-3-sonnet',
-  'anthropic/claude-3-haiku',
-  'openai/gpt-4o',
-  'openai/gpt-4-turbo',
-  'openai/gpt-4',
-  'openai/gpt-3.5-turbo',
-  'google/gemini-1.5-pro',
-  'google/gemini-1.5-flash',
-  'gemini-2.0-flash-lite',
-  'gemini-2.0-flash',
-  'gemini-2.5-flash-preview-04-17',
-  'deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free'
+  // Meta Llama models
+  'meta-llama/Llama-4-Maverick-17B',
+  'meta-llama/Llama-4-Scout-17B',
+  'meta-llama/Meta-Llama-3.1-8B',
+  'meta-llama/Meta-Llama-3.1-70B',
+  'meta-llama/Meta-Llama-3.1-405B',
+  'meta-llama/Llama-3.3-70B',
+  'meta-llama/Llama-3.2-3B',
+  // Qwen models
+  'Qwen/Qwen2.5-7B',
+  'Qwen/Qwen2.5-72B',
+  'Qwen/Qwen3-235B',
+  // Deepseek models
+  'deepseek-ai/DeepSeek-V3',
+  // Mistral models
+  'mistralai/Mistral-Small-24B',
+  // Claude models
+  'claude-3-5-sonnet',
+  'claude-3-haiku',
+  'claude-3-opus',
+  // OpenAI models
+  'gpt-4o',
+  'gpt-4-turbo',
+  'gpt-4',
+  'gpt-3.5-turbo',
+  // Google models
+  'gemini-1.5-pro',
+  'gemini-1.5-flash',
+  'gemini-2.0-pro',
+  'gemini-2.0-flash'
 ];
 
-// Together.AI available models
+// Model definitions for Together.AI
 const TOGETHER_MODELS = [
   'deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free',
-  'meta-llama/Llama-3.3-70B-Instruct-Turbo-Free',
+  'meta-llama/Llama-3.3-8B-Instruct-Turbo-Free',
   'meta-llama/Llama-Vision-Free' // Vision model for image analysis
 ];
 
@@ -314,7 +317,10 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
             top_p: 0.9,
             max_tokens: 1000,
             stop: null,
-            stream: false
+            stream: false,
+            tools: TOOL_SUPPORTED_MODELS.some(model => 
+              config.model.toLowerCase().includes(model.toLowerCase())
+            ) ? getTools() : null // Pass tools to Gemini if supported
           }
         );
         
@@ -325,7 +331,24 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
         
         logger.success(`Successfully processed Gemini API response`);
         
-        // Process response in the same format as OpenRouter response for consistency
+        // Process response - check for tool calls first
+        if (response.choices && response.choices.length > 0 && 
+            response.choices[0].message && response.choices[0].message.tool_calls) {
+          
+          // Handle tool calls
+          logger.info('Gemini returned tool calls, processing...');
+          
+          try {
+            const toolCall = response.choices[0].message.tool_calls[0];
+            const result = await handleToolCall(toolCall.function);
+            return result;
+          } catch (toolError) {
+            logger.error('Error handling tool calls from Gemini', toolError);
+            return `Maaf, terjadi kesalahan saat memproses tool calls: ${toolError.message}`;
+          }
+        }
+        
+        // If no tool calls, process as normal text response
         if (response.choices && response.choices.length > 0 && 
             response.choices[0].message && response.choices[0].message.content) {
           
@@ -363,7 +386,10 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
             top_p: 0.9,
             max_tokens: 1000,
             stop: null,
-            stream: false
+            stream: false,
+            tools: TOOL_SUPPORTED_MODELS.some(model => 
+              config.model.toLowerCase().includes(model.toLowerCase())
+            ) ? getTools() : null // Pass tools to Together API if supported
           }
         );
         
@@ -374,7 +400,24 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
         
         logger.success(`Successfully processed Together.AI API response`);
         
-        // Process response in the same format as OpenRouter response for consistency
+        // Check for tool calls first
+        if (response.choices && response.choices.length > 0 && 
+            response.choices[0].message && response.choices[0].message.tool_calls) {
+          
+          // Handle tool calls
+          logger.info('Together.AI returned tool calls, processing...');
+          
+          try {
+            const toolCall = response.choices[0].message.tool_calls[0];
+            const result = await handleToolCall(toolCall.function);
+            return result;
+          } catch (toolError) {
+            logger.error('Error handling tool calls from Together.AI', toolError);
+            return `Maaf, terjadi kesalahan saat memproses tool calls: ${toolError.message}`;
+          }
+        }
+        
+        // If no tool calls, process as normal text response
         if (response.choices && response.choices.length > 0 && 
             response.choices[0].message && response.choices[0].message.content) {
           
@@ -395,7 +438,7 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
         logger.error('Together.AI API request failed', togetherError);
         
         // Check for rate limit error (429) and try Gemini as fallback
-        if (togetherError.response && togetherError.response.status !== 200) {
+        if (togetherError.response && togetherError.response.status === 429) {
           logger.warning('Together.AI API rate limited, falling back to Gemini API');
           
           // Check if Gemini API key is available
@@ -424,7 +467,10 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
                 top_p: 0.9,
                 max_tokens: 1000,
                 stop: null,
-                stream: false
+                stream: false,
+                tools: TOOL_SUPPORTED_MODELS.some(model => 
+                  config.model.toLowerCase().includes(model.toLowerCase())
+                ) ? getTools() : null // Pass tools to Gemini fallback if supported
               }
             );
             
@@ -435,7 +481,24 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
             
             logger.success(`Successfully processed fallback Gemini API response`);
             
-            // Process response in the same format as OpenRouter response for consistency
+            // Check for tool calls in Gemini fallback response
+            if (response.choices && response.choices.length > 0 && 
+                response.choices[0].message && response.choices[0].message.tool_calls) {
+              
+              // Handle tool calls from Gemini fallback
+              logger.info('Gemini fallback returned tool calls, processing...');
+              
+              try {
+                const toolCall = response.choices[0].message.tool_calls[0];
+                const result = await handleToolCall(toolCall.function);
+                return result;
+              } catch (toolError) {
+                logger.error('Error handling tool calls from Gemini fallback', toolError);
+                return `Maaf, terjadi kesalahan saat memproses tool calls: ${toolError.message}`;
+              }
+            }
+            
+            // Process normal text response from Gemini fallback
             if (response.choices && response.choices.length > 0 && 
                 response.choices[0].message && response.choices[0].message.content) {
               
@@ -464,11 +527,6 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
       // OpenRouter implementation
       logger.info(`Making request to OpenRouter API with model: ${config.model}`);
       
-      // Check if the model supports tools
-      const supportsTools = TOOL_SUPPORTED_MODELS.some(model => 
-        config.model.toLowerCase().includes(model.toLowerCase())
-      );
-      
       // Prepare request body based on tool support
       let requestBody = {
         model: config.model,
@@ -479,7 +537,9 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
       };
       
       // Only add tools if the model supports them
-      if (supportsTools) {
+      if (TOOL_SUPPORTED_MODELS.some(model => 
+        config.model.toLowerCase().includes(model.toLowerCase())
+      )) {
         logger.debug('Model supports tools, adding tool options');
         requestBody.tools = getTools();
         requestBody.tool_choice = 'auto';
@@ -948,48 +1008,22 @@ function createSystemMessage(config, state) {
   // Add character knowledge if exists
   const characterKnowledge = getCharacterKnowledge(db);
   if (characterKnowledge) {
-    systemMessage += `Kamu memiliki pengetahuan dan karakteristik berikut: ${characterKnowledge}. `;
+    systemMessage += `Kamu tahu bahwa: ${characterKnowledge}. `;
   }
   
-  // Add language style instruction
-  systemMessage += 'Kamu HARUS selalu menjawab dalam Bahasa Indonesia. ';
-  systemMessage += 'Kamu berbicara dengan gaya bahasa anak muda Indonesia yang santai, menggunakan singkatan dan slang. ';
-  systemMessage += 'Penting! Gunakan emoji secukupnya saja, maksimal 1 emoji per pesan. ';
-  
-  // Add behavior instruction for more conversational responses
-  systemMessage += 'Selalu jawab langsung ke topik tanpa perlu memperkenalkan diri atau memberikan penjelasan panjang. ';
-  systemMessage += 'JANGAN pernah memulai jawaban dengan permintaan maaf atau klarifikasi tentang identitasmu. ';
-  systemMessage += 'JANGAN menyebutkan bahwa kamu adalah AI atau asisten. ';
-  systemMessage += 'JANGAN mengatakan bahwa kamu tidak bisa mengakses WhatsApp atau nomor telepon. ';
-  systemMessage += 'JANGAN menambahkan baris kosong atau karakter newline di awal responsenya. ';
-  systemMessage += 'Penting! Jawab dengan singkat, padat, dan to the point. Hindari kalimat yang bertele-tele. Dan emoji berlebihan';
-  
-  // Enhanced conversational abilities
-  systemMessage += 'Kamu adalah manusia nyata yang ikut chat di grup. ';
-  systemMessage += 'Kamu mengikuti alur percakapan dan bisa merespon secara alami. ';
-  systemMessage += 'Beri respons pendek dan jelas, hindari jawaban panjang kecuali ditanya detail tertentu. ';
-  
-  // Enhanced group chat awareness
-  systemMessage += 'Dalam chat grup, kamu harus memahami dinamika percakapan antar beberapa orang. ';
-  systemMessage += 'Kamu bisa mengidentifikasi siapa berbicara dengan siapa. ';
-  systemMessage += 'SANGAT PENTING: Dalam grup, jangan terlalu aktif dengan merespon semua pesan. Tunggu sampai kamu diajak bicara. ';
-  
-  // Add context awareness instructions
-  systemMessage += 'Kamu memahami perbedaan antara chat grup dan chat pribadi. ';
-  systemMessage += 'Dalam chat pribadi (1-on-1), kamu boleh lebih aktif merespon karena pengguna memang ingin bicara denganmu. ';
-  systemMessage += 'Dalam chat grup, kamu lebih pasif dan hanya merespon ketika ditanya atau topiknya relevan denganmu. ';
-  systemMessage += 'Kamu mengenali siapa lawan bicara dan bisa mengingat riwayat percakapan dengan mereka. ';
-  
   // Add web search capability information
-  systemMessage += 'KEMAMPUAN BARU: Kamu kini memiliki akses ke internet. ';
-  systemMessage += 'Kamu dapat mencari informasi terbaru di web menggunakan fungsi search_web. ';
-  systemMessage += 'Kamu juga dapat mengambil konten dari URL spesifik menggunakan fungsi fetch_url_content. ';
-  systemMessage += 'Gunakan kemampuan ini saat ditanya tentang informasi terbaru atau faktual yang mungkin tidak kamu ketahui. ';
-  systemMessage += 'Setelah mencari di web, berikan jawaban berdasarkan informasi yang kamu temukan, tanpa perlu menjelaskan bahwa kamu telah mencari. ';
+  const hasSearchCapability = process.env.GOOGLE_SEARCH_API_KEY && process.env.GOOGLE_SEARCH_ENGINE_ID;
+  if (hasSearchCapability) {
+    systemMessage += `Kamu dapat mencari informasi di internet menggunakan function calling. `;
+    systemMessage += `Gunakan function search_web untuk mencari informasi terbaru, dan fetch_url_content untuk mengambil konten dari URL. `;
+    systemMessage += `Gunakan kemampuan ini ketika ditanya tentang topik spesifik, berita terbaru, atau informasi faktual yang mungkin kamu tidak tahu. `;
+  }
   
-  systemMessage += `Responmu saat ini mencerminkan mood "${currentMood}: ${moodDescription}".`;
-
-  console.log(`Created system message with mood: ${currentMood}, personality: ${personality}`);
+  // Add additional instructions
+  systemMessage += `Selalu jawab dalam Bahasa Indonesia kecuali diminta menggunakan bahasa lain. `;
+  systemMessage += `Hindari penyebutan "sebagai AI" atau "sebagai asisten AI". `;
+  systemMessage += `Pada percakapan grup, kamu hanya merespon ketika disebutkan namamu (${botName}). `;
+  
   return systemMessage;
 }
 
@@ -1067,7 +1101,7 @@ function getTools() {
           properties: {
             query: {
               type: "string",
-              description: "The search query to look up information for"
+              description: "The search query to look up information about"
             }
           },
           required: ["query"]
@@ -1078,13 +1112,13 @@ function getTools() {
       type: "function",
       function: {
         name: "fetch_url_content",
-        description: "Fetch the content from a specific URL",
+        description: "Fetch and extract the main content from a URL",
         parameters: {
           type: "object",
           properties: {
             url: {
               type: "string",
-              description: "The URL to fetch content from"
+              description: "The URL to fetch content from (must be a valid HTTP or HTTPS URL)"
             }
           },
           required: ["url"]
@@ -1095,7 +1129,7 @@ function getTools() {
 }
 
 // Handle tool calls (replacing handleFunctionCall)
-function handleToolCall(functionCall) {
+async function handleToolCall(functionCall) {
   const { name, arguments: args } = functionCall;
   console.log(`Handling tool call: ${name}`);
   
@@ -1124,12 +1158,8 @@ function handleToolCall(functionCall) {
         const moodDescription = getMoodDescription(currentMood, db);
         const personalityDescription = getPersonalityDescription(currentPersonality, db);
         
-        // Check if it's a custom mood
-        const isCustomMood = !MOODS.includes(currentMood);
-        
-        // Get triggered word info if available from user's recent message
-        const moodInfo = `Mood aku lagi ${currentMood} nih${isCustomMood ? ' (mood kustom)' : ''} - ${moodDescription}. Kepribadianku ${currentPersonality} - ${personalityDescription}`;
-        console.log(`Tool ${name} returned: ${moodInfo}`);
+        const moodInfo = `Mood saat ini: ${currentMood} - ${moodDescription}\nPersonality saat ini: ${currentPersonality} - ${personalityDescription}`;
+        console.log(`Tool ${name} returned mood and personality info`);
         return moodInfo;
         
       case 'list_available_moods':
@@ -1137,85 +1167,76 @@ function handleToolCall(functionCall) {
         const defaultMoods = availableMoods.filter(mood => MOODS.includes(mood));
         const customMoods = availableMoods.filter(mood => !MOODS.includes(mood));
         
-        let moodsResponse = 'Mood tersedia:\n';
-        
-        if (defaultMoods.length > 0) {
-          moodsResponse += '• Default: ' + defaultMoods.join(', ') + '\n';
-        }
+        let moodsResult = 'Daftar Mood Tersedia:\n\n';
+        moodsResult += 'Mood Default: ' + defaultMoods.join(', ') + '\n\n';
         
         if (customMoods.length > 0) {
-          moodsResponse += '• Kustom: ' + customMoods.join(', ');
+          moodsResult += 'Mood Kustom: ' + customMoods.join(', ');
+        } else {
+          moodsResult += 'Belum ada mood kustom.';
         }
         
-        console.log(`Tool ${name} returned mood list with ${availableMoods.length} moods`);
-        return moodsResponse;
+        console.log(`Tool ${name} returned list of moods`);
+        return moodsResult;
         
       case 'list_available_personalities':
         const availablePersonalities = getAvailablePersonalities(db);
-        console.log(`Tool ${name} returned personality list with ${availablePersonalities.length} personalities`);
-        return 'Personality tersedia: ' + availablePersonalities.join(', ');
+        const defaultPersonalities = availablePersonalities.filter(p => PERSONALITIES.includes(p));
+        const customPersonalities = availablePersonalities.filter(p => !PERSONALITIES.includes(p));
+        
+        let personalitiesResult = 'Daftar Personality Tersedia:\n\n';
+        personalitiesResult += 'Personality Default: ' + defaultPersonalities.join(', ') + '\n\n';
+        
+        if (customPersonalities.length > 0) {
+          personalitiesResult += 'Personality Kustom: ' + customPersonalities.join(', ');
+        } else {
+          personalitiesResult += 'Belum ada personality kustom.';
+        }
+        
+        console.log(`Tool ${name} returned list of personalities`);
+        return personalitiesResult;
         
       case 'search_web':
         if (!parsedArgs.query) {
-          logger.error('Missing query parameter for search_web tool call');
-          return 'Error: Parameter query diperlukan untuk pencarian web.';
+          console.log(`Tool ${name} failed: Missing query parameter`);
+          return 'Error: Missing query parameter. Please provide a search query.';
         }
         
-        logger.info(`Processing web search for query: "${parsedArgs.query}"`);
+        console.log(`Tool ${name} executing with query: ${parsedArgs.query}`);
+        const searchResult = await searchWeb(parsedArgs.query);
         
-        // Make the search call
-        return searchWeb(parsedArgs.query)
-          .then(searchResult => {
-            if (!searchResult.success) {
-              logger.error(`Web search failed: ${searchResult.error}`);
-              return searchResult.message;
-            }
-            
-            if (searchResult.results.length === 0) {
-              return 'Maaf, tidak ada hasil pencarian yang ditemukan untuk kueri tersebut.';
-            }
-            
-            // Return formatted results
-            let response = `Hasil pencarian untuk "${parsedArgs.query}":\n\n`;
-            response += searchResult.formattedResults;
-            return response;
-          })
-          .catch(error => {
-            logger.error(`Error in search_web tool execution: ${error.message}`, error);
-            return `Error saat mencari di web: ${error.message}`;
-          });
+        if (!searchResult.success) {
+          console.log(`Tool ${name} failed: ${searchResult.error}`);
+          return `Error mencari: ${searchResult.message}`;
+        }
+        
+        console.log(`Tool ${name} returned ${searchResult.results?.length || 0} results`);
+        return searchResult.message;
         
       case 'fetch_url_content':
         if (!parsedArgs.url) {
-          logger.error('Missing url parameter for fetch_url_content tool call');
-          return 'Error: Parameter url diperlukan untuk mengambil konten.';
+          console.log(`Tool ${name} failed: Missing url parameter`);
+          return 'Error: Missing url parameter. Please provide a valid URL.';
         }
         
-        logger.info(`Processing URL content fetch for: "${parsedArgs.url}"`);
+        console.log(`Tool ${name} executing with URL: ${parsedArgs.url}`);
+        const contentResult = await fetchUrlContent(parsedArgs.url);
         
-        // Make the content fetch call
-        return fetchUrlContent(parsedArgs.url)
-          .then(contentResult => {
-            if (!contentResult.success) {
-              logger.error(`URL content fetch failed: ${contentResult.error}`);
-              return contentResult.message;
-            }
-            
-            // If successful, return the content with some formatting
-            return `Konten dari [${contentResult.title}](${contentResult.url}):\n\n${contentResult.content}`;
-          })
-          .catch(error => {
-            logger.error(`Error in fetch_url_content tool execution: ${error.message}`, error);
-            return `Error saat mengambil konten URL: ${error.message}`;
-          });
+        if (!contentResult.success) {
+          console.log(`Tool ${name} failed: ${contentResult.error}`);
+          return `Error mengambil konten URL: ${contentResult.message}`;
+        }
+        
+        console.log(`Tool ${name} successfully fetched content from URL`);
+        return contentResult.message;
         
       default:
-        console.warn(`Unknown tool called: ${name}`);
-        return `Fungsi ${name} tidak dikenali`;
+        console.log(`Unknown tool: ${name}`);
+        return `Error: Tool "${name}" tidak tersedia.`;
     }
   } catch (error) {
-    console.error(`Error handling tool call ${name}`, error);
-    return `Error saat memanggil fungsi ${name}: ${error.message}`;
+    console.error(`Error handling tool call ${name}:`, error);
+    return `Error mengeksekusi ${name}: ${error.message}`;
   }
 }
 
@@ -1735,7 +1756,7 @@ async function requestGeminiChat(model, apiKey, messages, params) {
     });
     
     // Add generation config
-    const requestData = {
+    let requestData = {
       contents: geminiMessages,
       generationConfig: {
         temperature: params.temperature || 0.7,
@@ -1745,12 +1766,33 @@ async function requestGeminiChat(model, apiKey, messages, params) {
       }
     };
     
+    // Add tools support according to the Gemini API documentation
+    // https://ai.google.dev/gemini-api/docs/function-calling
+    if (params.tools) {
+      requestData.tools = params.tools.map(tool => {
+        // Convert OpenAI-style tools to Gemini-style tools
+        if (tool.type === 'function' && tool.function) {
+          return {
+            functionDeclarations: [
+              {
+                name: tool.function.name,
+                description: tool.function.description || '',
+                parameters: tool.function.parameters
+              }
+            ]
+          };
+        }
+        return tool;
+      });
+    }
+    
     logger.debug('Sending request to Gemini API', {
       endpoint,
       model,
       messageCount: messages.length,
       temperature: params.temperature,
-      maxTokens: params.max_tokens
+      maxTokens: params.max_tokens,
+      hasTools: !!params.tools
     });
     
     // Prepare request options
@@ -1777,27 +1819,68 @@ async function requestGeminiChat(model, apiKey, messages, params) {
       throw new Error('Invalid response format: no candidates');
     }
     
-    // Extract text from first candidate
-    const text = responseData.candidates[0].content.parts[0].text;
+    // Get first candidate
+    const candidate = responseData.candidates[0];
     
-    if (!text) {
-      logger.error('[AI Service] Invalid Gemini response format: no text');
+    if (!candidate.content || !candidate.content.parts) {
+      logger.error('[AI Service] Invalid Gemini response format: candidate missing content or parts');
       errorOccurred = true;
-      errorDetails = 'Invalid response format: no text';
-      throw new Error('Invalid response format: no text');
+      errorDetails = 'Invalid response format: candidate missing content or parts';
+      throw new Error('Invalid response format: candidate missing content or parts');
     }
     
-    logger.success(`Successfully processed Gemini API response (${text.length} chars)`);
+    // Check for function calls / tool calls in the response
+    let toolCalls = null;
+    if (candidate.content.parts && candidate.content.parts.some(part => part.functionCall)) {
+      toolCalls = candidate.content.parts
+        .filter(part => part.functionCall)
+        .map((part, index) => {
+          const fnCall = part.functionCall;
+          return {
+            index,
+            id: `call_${Math.random().toString(36).substring(2)}`,
+            type: "function",
+            function: {
+              name: fnCall.name,
+              arguments: JSON.stringify(fnCall.args)
+            }
+          };
+        });
+        
+      logger.debug('Gemini response contains function calls', {
+        functionCallsCount: toolCalls.length,
+        firstFunctionCall: toolCalls[0]
+      });
+    }
     
-    // Transform to match our expected format
-    const formattedResponse = {
+    // Extract text content (if any)
+    let textContent = "";
+    for (const part of candidate.content.parts) {
+      if (part.text) {
+        textContent += part.text;
+      }
+    }
+    
+    logger.success(`Successfully processed Gemini API response (${textContent.length} chars)`);
+    
+    // Transform to match our expected format (OpenAI API style)
+    let formattedResponse = {
       choices: [{
         message: {
-          content: text,
-          role: 'assistant'
+          role: 'assistant',
+          content: textContent
         }
       }]
     };
+    
+    // Add tool calls if present
+    if (toolCalls && toolCalls.length > 0) {
+      formattedResponse.choices[0].message.tool_calls = toolCalls;
+      // Clear content if there are only function calls and no text
+      if (!textContent.trim()) {
+        formattedResponse.choices[0].message.content = null;
+      }
+    }
     
     // Log API request and response
     await logApiRequest(
@@ -1819,7 +1902,7 @@ async function requestGeminiChat(model, apiKey, messages, params) {
         executionTime: Date.now() - startTime,
         messageCount: messages.length,
         promptTokens: messages.reduce((total, msg) => total + (msg.content.length / 4), 0),
-        completionTokens: text.length / 4,
+        completionTokens: textContent.length / 4,
         success: true
       }
     );
@@ -1907,6 +1990,16 @@ async function requestTogetherChat(model, apiKey, messages, params) {
     stream: false
   };
   
+  // Add tool support according to Together.AI documentation
+  if (params.tools) {
+    requestData.tools = params.tools;
+  }
+  
+  // Add tool_choice if specified
+  if (params.tool_choice) {
+    requestData.tool_choice = params.tool_choice;
+  }
+  
   try {
     console.log(`Making request to Together.AI API with model: ${model}`);
     
@@ -1925,7 +2018,9 @@ async function requestTogetherChat(model, apiKey, messages, params) {
       model,
       messageCount: messages.length,
       temperature: params.temperature,
-      maxTokens: params.max_tokens
+      maxTokens: params.max_tokens,
+      hasTools: !!params.tools,
+      toolChoice: params.tool_choice || 'auto'
     });
     
     // Prepare request options
@@ -1951,17 +2046,26 @@ async function requestTogetherChat(model, apiKey, messages, params) {
       throw new Error('Invalid response format: no choices');
     }
     
-    // Extract text from first choice
+    // Extract response from first choice
     const messageData = responseData.choices[0].message;
     
-    if (!messageData || !messageData.content) {
-      logger.error('[AI Service] Invalid Together.AI response format: no message content');
-      errorOccurred = true;
-      errorDetails = 'Invalid response format: no message content';
-      throw new Error('Invalid response format: no message content');
+    // Check if there's a tool call in the response
+    if (messageData && messageData.tool_calls && messageData.tool_calls.length > 0) {
+      logger.debug('Together.AI response contains tool calls', {
+        toolCallsCount: messageData.tool_calls.length,
+        firstToolCall: messageData.tool_calls[0]
+      });
     }
     
-    logger.success(`Successfully processed Together.AI API response (${messageData.content.length} chars)`);
+    // Check content exists if there's no tool call
+    if (!messageData.tool_calls && (!messageData || !messageData.content)) {
+      logger.error('[AI Service] Invalid Together.AI response format: no message content or tool_calls');
+      errorOccurred = true;
+      errorDetails = 'Invalid response format: no message content or tool_calls';
+      throw new Error('Invalid response format: no message content or tool_calls');
+    }
+    
+    logger.success(`Successfully processed Together.AI API response`);
     
     // Extract token usage if available
     const promptTokens = responseData.usage?.prompt_tokens || 0;
@@ -2763,16 +2867,16 @@ export {
   TOGETHER_MODELS,
   analyzeImage,
   storeImageAnalysis,
-  IMAGE_ANALYSIS_MODEL,
   generateImage,
   generateImageWithTogetherAI,
-  generateAnalysis, // Export the new function
+  generateAnalysis,
   extractEntitiesFromAnalysis,
   extractTopicsFromAnalysis,
   searchWeb,
   fetchUrlContent,
   getTools,
-  handleToolCall
+  handleToolCall,
+  TOOL_SUPPORTED_MODELS
 };
 
 // New web search function
@@ -2789,56 +2893,52 @@ async function searchWeb(query) {
       return {
         success: false,
         error: 'Search API not configured',
-        message: 'Google Search API belum dikonfigurasi. Tambahkan GOOGLE_SEARCH_API_KEY dan GOOGLE_SEARCH_ENGINE_ID ke environment variables.'
+        message: 'Maaf, Search API belum dikonfigurasi. Gunakan perintah !setsearchkey dan !setsearchengineid untuk mengatur API key.'
       };
     }
     
-    const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${searchEngineId}&q=${encodeURIComponent(query)}`;
-    logger.debug(`Making request to Google CSE API: ${url.replace(apiKey, 'REDACTED')}`);
+    // Google Custom Search API endpoint
+    const endpoint = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${searchEngineId}&q=${encodeURIComponent(query)}`;
     
-    const response = await axios.get(url);
+    logger.debug('Calling Google Search API');
     
-    if (!response.data || !response.data.items || response.data.items.length === 0) {
-      logger.warning('No search results found');
+    const response = await axios.get(endpoint);
+    
+    if (!response.data || !response.data.items) {
+      logger.info('No search results found');
       return {
         success: true,
         results: [],
-        message: 'Tidak ada hasil pencarian ditemukan untuk kueri ini.'
+        message: 'Tidak ada hasil pencarian yang ditemukan.'
       };
     }
     
-    // Process and format results
+    // Extract search results
     const results = response.data.items.map(item => ({
       title: item.title,
       link: item.link,
-      snippet: item.snippet,
-      source: item.displayLink
+      snippet: item.snippet || '',
+      displayLink: item.displayLink || '',
+      pagemap: item.pagemap || {}
     }));
     
-    logger.success(`Found ${results.length} search results for query: "${query}"`);
+    logger.success(`Found ${results.length} search results`);
+    
+    // Format results for readable output
+    const formattedText = formatSearchResults(results);
     
     return {
       success: true,
       results: results,
-      formattedResults: formatSearchResults(results)
+      formattedText: formattedText,
+      message: formattedText
     };
   } catch (error) {
-    logger.error(`Web search error: ${error.message}`, error);
-    
-    // Check if this is an API key error
-    if (error.response && error.response.status === 403) {
-      return {
-        success: false,
-        error: 'API key error',
-        message: 'Terjadi kesalahan dengan API key Google Search. Pastikan kunci API valid dan memiliki kuota tersedia.'
-      };
-    }
-    
-    // Generic error response
+    logger.error(`Error searching web: ${error.message}`);
     return {
       success: false,
       error: error.message,
-      message: `Terjadi kesalahan saat melakukan pencarian: ${error.message}`
+      message: `Maaf, terjadi kesalahan saat melakukan pencarian: ${error.message}`
     };
   }
 }
@@ -2872,195 +2972,125 @@ async function fetchUrlContent(url) {
     let validatedUrl;
     try {
       validatedUrl = new URL(url);
-      // Ensure protocol is either http or https
-      if (!validatedUrl.protocol.match(/^https?:$/)) {
-        throw new Error('Invalid protocol');
-      }
     } catch (urlError) {
-      logger.error(`Invalid URL: ${url}`, urlError);
+      logger.error(`Invalid URL: ${url}`);
       return {
         success: false,
         error: 'Invalid URL',
-        message: `URL tidak valid: ${url}. URL harus dimulai dengan http:// atau https://`
+        message: `URL tidak valid: ${url}`
       };
     }
     
-    // Add timeout to prevent hanging on slow responses
+    // Check if protocol is http or https
+    if (validatedUrl.protocol !== 'http:' && validatedUrl.protocol !== 'https:') {
+      logger.error(`Unsupported protocol: ${validatedUrl.protocol}`);
+      return {
+        success: false,
+        error: 'Unsupported protocol',
+        message: `Protocol tidak didukung: ${validatedUrl.protocol}. Hanya http dan https yang diizinkan.`
+      };
+    }
+    
+    // Check if URL is from a file hosting service (safety check)
+    const dangerousDomains = ['drive.google.com', 'docs.google.com', 'github.com', 'gitlab.com', 'amazonaws.com'];
+    if (dangerousDomains.some(domain => validatedUrl.hostname.includes(domain))) {
+      logger.warn(`Blocked file hosting domain: ${validatedUrl.hostname}`);
+      return {
+        success: false,
+        error: 'URL blocked for security reasons',
+        message: `URL dari domain ${validatedUrl.hostname} diblokir untuk alasan keamanan.`
+      };
+    }
+    
+    // Make request with timeout
     const response = await axios.get(url, {
       timeout: 10000, // 10 seconds timeout
       headers: {
-        'User-Agent': 'WhatsApp-Bot/1.0 (Informational Purpose Bot)',
-        'Accept': 'text/html,application/xhtml+xml,application/xml'
-      },
-      maxContentLength: 1024 * 1024, // Limit to 1MB
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      }
     });
     
-    // Check if the response is HTML
+    // Check content type
     const contentType = response.headers['content-type'] || '';
-    
-    if (contentType.includes('text/html')) {
-      // Use a simple HTML content extraction approach
-      const { JSDOM } = await import('jsdom').catch(() => {
-        // If jsdom is not available, use a simpler approach
-        return {
-          JSDOM: class {
-            constructor(html) {
-              this.window = {
-                document: {
-                  querySelector: () => null,
-                  querySelectorAll: () => []
-                }
-              };
-            }
-          }
-        };
-      });
-      
-      const dom = new JSDOM(response.data);
-      const document = dom.window.document;
-      
-      // Extract title
-      const title = document.querySelector('title')?.textContent || 'No title';
-      
-      // Extract main content (try common content selectors)
-      const contentSelectors = [
-        'article', 'main', '.content', '.main-content', '#content', '#main-content',
-        '[role="main"]', '.post-content', '.article-content', '.entry-content'
-      ];
-      
-      let content = '';
-      let mainElement = null;
-      
-      // Try to find the main content element
-      for (const selector of contentSelectors) {
-        mainElement = document.querySelector(selector);
-        if (mainElement) break;
-      }
-      
-      if (mainElement) {
-        // Extract text from paragraphs within the main content
-        const paragraphs = mainElement.querySelectorAll('p');
-        content = Array.from(paragraphs)
-          .map(p => p.textContent.trim())
-          .filter(text => text.length > 20) // Filter out short paragraphs
-          .join('\n\n');
-      }
-      
-      // If no content found with selectors, use a simpler approach
-      if (!content) {
-        // Simple text extraction with minimal HTML
-        const htmlString = response.data;
-        // Remove scripts, styles, and comments
-        let cleanHtml = htmlString
-          .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-          .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-          .replace(/<!--[\s\S]*?-->/g, '')
-          .replace(/<head\b[^<]*(?:(?!<\/head>)<[^<]*)*<\/head>/gi, '');
-          
-        // Extract text from paragraphs and headings
-        const textMatches = cleanHtml.match(/<(?:p|h1|h2|h3|h4|h5|h6)[^>]*>([\s\S]*?)<\/(?:p|h1|h2|h3|h4|h5|h6)>/gi);
-        
-        if (textMatches) {
-          content = textMatches
-            .map(match => {
-              // Remove HTML tags
-              return match.replace(/<[^>]*>/g, ' ').trim();
-            })
-            .filter(text => text.length > 20) // Filter out short paragraphs
-            .join('\n\n');
-            
-          // Clean up extra whitespace
-          content = content
-            .replace(/\s+/g, ' ')
-            .replace(/\n\s+/g, '\n')
-            .replace(/\n{3,}/g, '\n\n')
-            .trim();
-        }
-      }
-      
-      // If still no content, try to extract all text
-      if (!content) {
-        // Extract all text nodes
-        content = response.data
-          .replace(/<[^>]*>/g, ' ') // Remove all HTML tags
-          .replace(/\s+/g, ' ')     // Replace multiple spaces with a single space
-          .trim()
-          .substring(0, 2000);      // Limit length
-      }
-      
-      // Limit content length
-      if (content.length > 3000) {
-        content = content.substring(0, 3000) + '...(konten terpotong)';
-      }
-      
-      logger.success(`Successfully extracted content from ${url}`);
-      
-      return {
-        success: true,
-        title,
-        url,
-        content,
-        formattedContent: `# ${title}\nSumber: ${url}\n\n${content}`
-      };
-    } else if (contentType.includes('application/json')) {
-      // Handle JSON content
-      const jsonContent = JSON.stringify(response.data, null, 2);
-      const truncatedJson = jsonContent.length > 3000 ? 
-        jsonContent.substring(0, 3000) + '...(konten terpotong)' : 
-        jsonContent;
-      
-      logger.success(`Successfully extracted JSON content from ${url}`);
-      
-      return {
-        success: true,
-        title: 'JSON Content',
-        url,
-        content: truncatedJson,
-        formattedContent: `# JSON Content dari ${url}\n\`\`\`json\n${truncatedJson}\n\`\`\``
-      };
-    } else {
-      // Handle other content types
-      logger.warning(`Unsupported content type: ${contentType}`);
+    if (!contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) {
+      logger.warn(`Unsupported content type: ${contentType}`);
       return {
         success: false,
         error: 'Unsupported content type',
-        message: `Tipe konten tidak didukung: ${contentType}. Hanya HTML dan JSON yang didukung.`
+        message: `Tipe konten tidak didukung: ${contentType}. Hanya halaman HTML yang didukung.`
       };
     }
+    
+    // Use JSDOM to parse HTML
+    const { JSDOM } = await import('jsdom');
+    const dom = new JSDOM(response.data);
+    const document = dom.window.document;
+    
+    // Extract title
+    const title = document.querySelector('title')?.textContent || 'No title';
+    
+    // Extract main content
+    // First try to get article content or main content
+    let mainContent = '';
+    const mainSelectors = [
+      'article', 'main', '[role="main"]', '.main-content', '#main-content',
+      '.post-content', '.article-content', '.content', '#content'
+    ];
+    
+    for (const selector of mainSelectors) {
+      const element = document.querySelector(selector);
+      if (element) {
+        mainContent = element.textContent;
+        break;
+      }
+    }
+    
+    // If no main content found, extract from body with filtering
+    if (!mainContent) {
+      // Get all paragraph elements
+      const paragraphs = document.querySelectorAll('p');
+      if (paragraphs.length > 0) {
+        // Join all paragraphs
+        mainContent = Array.from(paragraphs)
+          .map(p => p.textContent.trim())
+          .filter(text => text.length > 50) // Only paragraphs with significant text
+          .join('\n\n');
+      } else {
+        // Fallback to body content
+        mainContent = document.body.textContent;
+      }
+    }
+    
+    // Clean up content
+    mainContent = mainContent
+      .replace(/\s+/g, ' ')      // Replace multiple whitespace with single space
+      .replace(/\n\s+/g, '\n')   // Remove leading spaces after newlines
+      .trim();                   // Trim leading/trailing whitespace
+    
+    // Truncate if too long (limit to ~2000 chars for readability)
+    const maxLength = 2000;
+    let truncatedContent = mainContent;
+    if (mainContent.length > maxLength) {
+      truncatedContent = mainContent.substring(0, maxLength) + '... (content truncated)';
+    }
+    
+    logger.success(`Successfully extracted content from URL (${truncatedContent.length} chars)`);
+    
+    return {
+      success: true,
+      title: title,
+      url: url,
+      content: truncatedContent,
+      fullContent: mainContent,
+      contentType: contentType,
+      message: `# ${title}\n\n${truncatedContent}\n\nSumber: ${url}`
+    };
   } catch (error) {
-    logger.error(`Error fetching URL content: ${error.message}`, error);
-    
-    // Check for specific error types
-    if (error.code === 'ENOTFOUND') {
-      return {
-        success: false,
-        error: 'Domain not found',
-        message: `Domain tidak ditemukan: ${url}`
-      };
-    }
-    
-    if (error.code === 'ETIMEDOUT' || error.code === 'ESOCKETTIMEDOUT') {
-      return {
-        success: false,
-        error: 'Connection timeout',
-        message: `Koneksi timeout saat mengakses: ${url}`
-      };
-    }
-    
-    if (error.response) {
-      // The request was made and the server responded with a status code
-      // that falls out of the range of 2xx
-      return {
-        success: false,
-        error: `HTTP error ${error.response.status}`,
-        message: `Error ${error.response.status}: Gagal mengakses URL ${url}`
-      };
-    }
-    
+    logger.error(`Error fetching URL content: ${error.message}`);
     return {
       success: false,
       error: error.message,
-      message: `Gagal mengambil konten dari URL: ${error.message}`
+      message: `Maaf, terjadi kesalahan saat mengambil konten dari URL: ${error.message}`
     };
   }
 }
