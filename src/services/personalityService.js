@@ -141,6 +141,38 @@ async function updateMoodAndPersonality(db, message = null) {
       db.data.state.currentMood = newMood;
       db.data.state.lastMoodChange = currentTime.toISOString();
       
+      // NEW: Record mood change in history
+      if (!db.data.moodHistory) {
+        db.data.moodHistory = [];
+      }
+      
+      // Track why the mood changed for better awareness
+      const moodChangeReason = message 
+        ? `Detected mood triggers in message: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`
+        : `Time-based change after ${timeDiff.toFixed(1)} minutes of inactivity`;
+      
+      // Get current chat info if available
+      const currentChatId = db.data.state.currentChat || null;
+      const chatName = currentChatId && db.data.conversations[currentChatId] 
+                      ? db.data.conversations[currentChatId].chatName || null
+                      : null;
+      
+      // Add to mood history
+      db.data.moodHistory.push({
+        mood: newMood,
+        previousMood: currentMood,
+        timestamp: currentTime.toISOString(),
+        reason: moodChangeReason,
+        chatId: currentChatId,
+        chatName: chatName,
+        messageBased: !!message
+      });
+      
+      // Limit history size
+      if (db.data.moodHistory.length > 20) {
+        db.data.moodHistory = db.data.moodHistory.slice(-20);
+      }
+      
       // Check if we should change personality too based on mood-personality compatibility
       if (Math.random() < 0.2) { // 20% chance to change personality with mood
         const currentPersonality = db.data.config.personality;
@@ -324,6 +356,34 @@ Return your response in this format only:
         db.data.state.lastMoodChange = currentTime.toISOString();
         db.data.state.lastMoodChangeReason = explanation || 'AI-determined mood change';
         console.log(`Bot mood changed to: ${newMood} (AI-determined)`);
+        
+        // NEW: Record mood change in history
+        if (!db.data.moodHistory) {
+          db.data.moodHistory = [];
+        }
+        
+        // Get current chat info if available
+        const currentChatId = db.data.state.currentChat || null;
+        const chatName = currentChatId && db.data.conversations[currentChatId] 
+                        ? db.data.conversations[currentChatId].chatName || null
+                        : null;
+        
+        // Add to mood history with AI-based explanation
+        db.data.moodHistory.push({
+          mood: newMood,
+          previousMood: currentMood,
+          timestamp: currentTime.toISOString(),
+          reason: explanation || 'AI-determined based on message content',
+          chatId: currentChatId,
+          chatName: chatName,
+          messageBased: true,
+          aiDetermined: true
+        });
+        
+        // Limit history size
+        if (db.data.moodHistory.length > 20) {
+          db.data.moodHistory = db.data.moodHistory.slice(-20);
+        }
       }
       
       if (shouldChangePersonality) {

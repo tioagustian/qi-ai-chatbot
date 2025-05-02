@@ -433,6 +433,39 @@ async function getRelevantContext(db, chatId, message, sock) {
       }
     }
     
+    // NEW: Check for cross-chat questions (about bot's mood or conversations in other chats)
+    if (typeof message === 'string') {
+      const botName = db.data.config.botName || 'AI';
+      
+      // Check if it's a question about cross-chat information
+      const crossChatContext = getCrossChatContextForQuestion(db, chatId, message, botName);
+      console.log(`[CONTEXT] Cross-chat context messages: ${crossChatContext.length}`);
+      
+      if (crossChatContext.length > 0) {
+        // Add a system message to indicate cross-chat context is being provided
+        const questionInfo = detectCrossChatQuestion(message, botName);
+        let contextHeader = 'Here is relevant information from other conversations:';
+        
+        if (questionInfo.type === 'mood') {
+          contextHeader = "The user is asking about your mood in other chats. Here's relevant information:";
+        } else if (questionInfo.type === 'conversation' && questionInfo.targetName) {
+          contextHeader = `The user is asking about conversations with ${questionInfo.targetName}. Here's relevant information:`;
+        } else if (questionInfo.type === 'group_activity') {
+          contextHeader = "The user is asking about what happened in another group. Here's relevant information:";
+        }
+        
+        recentMessages.push({
+          role: 'system',
+          content: contextHeader,
+          name: 'cross_chat_header',
+          priority: 1
+        });
+        
+        // Add cross-chat context
+        recentMessages = recentMessages.concat(crossChatContext);
+      }
+    }
+    
     // Check if we should include cross-chat context from private chats in group chat
     if (isGroup && message) {
       // Find mentions or references to other participants in the current message
@@ -616,6 +649,900 @@ function getCrossContextFromPrivateChats(db, message, currentChatId, participant
   }
 }
 
+/**
+ * Get relevant cross-chat context based on a specific question about mood or conversations
+ * @param {Object} db - Database object
+ * @param {string} currentChatId - Current chat ID
+ * @param {string} content - The question content
+ * @param {string} botName - The bot's name
+ * @returns {Array} - Array of relevant context messages
+ */
+function getCrossChatContextForQuestion(db, currentChatId, content, botName) {
+  try {
+    console.log(`[CONTEXT] Getting cross-chat context for question: "${content}"`);
+    
+    // Detect what kind of cross-chat question this is
+    const questionInfo = detectCrossChatQuestion(content, botName);
+    
+    if (!questionInfo.isCrossChatQuestion) {
+      return [];
+    }
+    
+    console.log(`[CONTEXT] Detected cross-chat question of type: ${questionInfo.type}`);
+    const contextMessages = [];
+    
+    // Different handling based on question type
+    if (questionInfo.type === 'mood') {
+      // Looking for bot's mood in other chats/groups
+      // Find recent messages where the bot was in specific moods
+      const botMoodMessages = findBotMoodMessages(db, currentChatId, questionInfo);
+      contextMessages.push(...botMoodMessages);
+    }
+    else if (questionInfo.type === 'conversation' && questionInfo.targetName) {
+      // Looking for conversations with a specific person
+      const targetName = questionInfo.targetName;
+      console.log(`[CONTEXT] Finding conversations with user: ${targetName}`);
+      
+      // First, try to find matching users by name or nickname
+      const matchingUsers = findUserIdsByName(db, targetName);
+      
+      if (matchingUsers.length > 0) {
+        console.log(`[CONTEXT] Found ${matchingUsers.length} users matching "${targetName}"`);
+        
+        // Gather conversations for each matching user ID
+        for (const match of matchingUsers) {
+          const { userId, score } = match;
+          
+          // Get user's name from conversations or facts for better context
+          let userName = '';
+          
+          // Try to find a name from conversations
+          for (const [chatId, chat] of Object.entries(db.data.conversations)) {
+            if (chat.participants && chat.participants[userId]) {
+              userName = chat.participants[userId].name;
+              break;
+            }
+          }
+          
+          // Or try from user facts
+          if (!userName && db.data.userFacts && db.data.userFacts[userId]) {
+            const userFacts = db.data.userFacts[userId].facts;
+            userName = userFacts.name?.value || 
+                      userFacts.full_name?.value || 
+                      userFacts.nickname?.value || 
+                      userId.split('@')[0];
+          }
+          
+          console.log(`[CONTEXT] Looking for conversations with user "${userName}" (${userId}), match score: ${score}`);
+          
+          // Find conversations with this user across all chats
+          let userConversations = [];
+          
+          for (const [chatId, chat] of Object.entries(db.data.conversations)) {
+            // Skip current chat and ensure this user is a participant
+            if (chatId === currentChatId || !chat.participants || !chat.participants[userId]) {
+              continue;
+            }
+            
+            // Find message exchanges with this user
+            let conversationExchanges = [];
+            let lastBotMessageIndex = -1;
+            
+            // Look for patterns of the bot and user talking to each other
+            chat.messages.forEach((msg, index) => {
+              if (msg.sender === process.env.BOT_ID) {
+                lastBotMessageIndex = index;
+              } else if (msg.sender === userId && lastBotMessageIndex !== -1 && index - lastBotMessageIndex <= 2) {
+                // This is a user response to the bot's message
+                conversationExchanges.push({
+                  botMessage: chat.messages[lastBotMessageIndex],
+                  userMessage: msg,
+                  timestamp: msg.timestamp
+                });
+              }
+            });
+            
+            // Format the conversation exchanges for this user
+            conversationExchanges.forEach(exchange => {
+              userConversations.push({
+                content: exchange.botMessage.content,
+                timestamp: exchange.botMessage.timestamp,
+                name: db.data.config.botName,
+                chatName: chat.chatName || 'a private chat',
+                responseContent: exchange.userMessage.content
+              });
+              
+              userConversations.push({
+                content: exchange.userMessage.content,
+                timestamp: exchange.userMessage.timestamp,
+                name: userName || chat.participants[userId].name,
+                chatName: chat.chatName || 'a private chat'
+              });
+            });
+          }
+          
+          if (userConversations.length > 0) {
+            console.log(`[CONTEXT] Found ${userConversations.length} messages with "${userName}"`);
+            
+            // Sort by recency and limit
+            userConversations.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+            userConversations = userConversations.slice(0, 6); // Limit per user
+            
+            contextMessages.push(...userConversations);
+          }
+        }
+      } else {
+        // If no direct user ID matches were found, fall back to the original method
+        console.log(`[CONTEXT] No user IDs found for "${targetName}", falling back to text matching`);
+        const conversationMessages = findConversationsWithUser(db, currentChatId, targetName);
+        contextMessages.push(...conversationMessages);
+      }
+    }
+    else if (questionInfo.type === 'group_activity') {
+      // Looking for what was happening in a group
+      const targetChat = questionInfo.targetChat; // Might be null if not specified
+      const groupActivityMessages = findGroupActivityMessages(db, currentChatId, targetChat);
+      contextMessages.push(...groupActivityMessages);
+    }
+    
+    // Format messages for context and ensure we don't have too many
+    const formattedMessages = contextMessages
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .slice(0, 10) // Limit total messages to avoid context overload
+      .map(msg => ({
+        role: 'system',
+        content: `${msg.chatName ? `In ${msg.chatName}` : 'In another chat'}: ${msg.name || 'User'} said: "${msg.content}" ${msg.moodInfo ? `(Your mood was: ${msg.moodInfo})` : ''}`,
+        name: 'cross_chat_context',
+        timestamp: msg.timestamp,
+        priority: 1 // Higher priority than regular context
+      }));
+    
+    return formattedMessages;
+  } catch (error) {
+    console.error('Error getting cross-chat context for question:', error);
+    return [];
+  }
+}
+
+/**
+ * Find messages where the bot expressed specific moods
+ * @param {Object} db - Database object
+ * @param {string} currentChatId - Current chat ID
+ * @param {Object} questionInfo - Question detection info
+ * @returns {Array} - Array of relevant mood messages
+ */
+function findBotMoodMessages(db, currentChatId, questionInfo) {
+  const relevantMoods = ['angry', 'annoyed', 'excited', 'sad']; // Most expressive moods
+  const resultMessages = [];
+  const MAX_MOOD_MESSAGES = 3;
+  
+  // Look for messages where the bot was in the relevant mood
+  Object.entries(db.data.conversations).forEach(([chatId, chat]) => {
+    // Skip current chat
+    if (chatId === currentChatId) return;
+    
+    // If targeting a specific chat/group name, check if this matches
+    if (questionInfo.targetChat) {
+      // Skip if this isn't the target chat
+      if (!chat.chatName || !chat.chatName.toLowerCase().includes(questionInfo.targetChat.toLowerCase())) {
+        return;
+      }
+    }
+    
+    // Get the bot's messages
+    const botMessages = chat.messages
+      .filter(msg => msg.sender === process.env.BOT_ID && msg.content && msg.content.length > 0)
+      .reverse() // Most recent first
+      .slice(0, 10); // Look at the 10 most recent messages
+    
+    // Check for emotion indicators in content
+    botMessages.forEach(msg => {
+      const lowerContent = msg.content.toLowerCase();
+      let detectedMood = null;
+      
+      // Simple mood detection from content
+      if (lowerContent.includes('anjing') || lowerContent.includes('bangsat') || 
+          lowerContent.includes('goblok') || lowerContent.includes('kampret') ||
+          lowerContent.includes('brengsek') || lowerContent.includes('jancok') ||
+          lowerContent.includes('sialan') || msg.content.includes('😡') || 
+          msg.content.includes('🤬')) {
+        detectedMood = 'angry';
+      } else if (lowerContent.includes('sedih') || lowerContent.includes('kecewa') ||
+                lowerContent.includes('😢') || lowerContent.includes('😭')) {
+        detectedMood = 'sad';
+      } else if (lowerContent.includes('senang') || lowerContent.includes('gembira') ||
+                lowerContent.includes('seru') || lowerContent.includes('asik') ||
+                lowerContent.includes('keren') || lowerContent.includes('mantap') ||
+                msg.content.includes('😄') || msg.content.includes('🎉')) {
+        detectedMood = 'excited';
+      } else if (lowerContent.includes('kesal') || lowerContent.includes('sebel') ||
+                lowerContent.includes('ganggu') || lowerContent.includes('bete')) {
+        detectedMood = 'annoyed';
+      }
+      
+      if (detectedMood && relevantMoods.includes(detectedMood)) {
+        resultMessages.push({
+          ...msg,
+          chatId,
+          chatName: chat.chatName || 'Another chat',
+          moodInfo: detectedMood
+        });
+      }
+    });
+  });
+  
+  // Find previous state changes
+  if (db.data.moodHistory) {
+    const recentMoodChanges = db.data.moodHistory
+      .filter(entry => relevantMoods.includes(entry.mood))
+      .slice(-3);
+      
+    recentMoodChanges.forEach(entry => {
+      resultMessages.push({
+        content: `I changed my mood to ${entry.mood} ${entry.reason ? `because ${entry.reason}` : ''}`,
+        timestamp: entry.timestamp,
+        name: db.data.config.botName,
+        chatName: entry.chatName || 'a chat',
+        moodInfo: entry.mood
+      });
+    });
+  }
+  
+  // Sort by recency and limit the results
+  return resultMessages
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+    .slice(0, MAX_MOOD_MESSAGES);
+}
+
+/**
+ * Find conversations between the bot and a specific user
+ * @param {Object} db - Database object
+ * @param {string} currentChatId - Current chat ID
+ * @param {string} targetName - Name of target user
+ * @returns {Array} - Array of relevant conversation messages
+ */
+function findConversationsWithUser(db, currentChatId, targetName) {
+  const resultMessages = [];
+  const MAX_CONVERSATION_MESSAGES = 5;
+  const lowerTargetName = targetName.toLowerCase();
+  
+  // Track if we found the user in any chat
+  let foundUser = false;
+  
+  // Build a mapping of all users across all chats for better matching
+  const userDirectory = {};
+  const userAliases = {};
+  const phoneNumberMap = {};
+  
+  // First, compile a directory of all users across all chats
+  Object.entries(db.data.conversations).forEach(([chatId, chat]) => {
+    Object.entries(chat.participants).forEach(([participantId, participantData]) => {
+      if (participantId === process.env.BOT_ID) return;
+      
+      const participantName = participantData.name || '';
+      if (!participantName) return;
+      
+      // Add to main directory
+      if (!userDirectory[participantId]) {
+        userDirectory[participantId] = participantData;
+      }
+      
+      // Track all names this user has been called (might have different names in different chats)
+      if (!userAliases[participantId]) {
+        userAliases[participantId] = new Set();
+      }
+      userAliases[participantId].add(participantName.toLowerCase());
+      
+      // Extract phone number from ID and create a mapping
+      const phoneMatch = participantId.match(/^(\d+)@/);
+      if (phoneMatch) {
+        const phoneNumber = phoneMatch[1];
+        phoneNumberMap[phoneNumber] = participantId;
+      }
+    });
+  });
+  
+  // Add names from user facts if available
+  if (db.data.userFacts) {
+    Object.entries(db.data.userFacts).forEach(([userId, userData]) => {
+      if (userData.facts) {
+        // Check for name-related facts
+        const nameRelatedFacts = ['name', 'full_name', 'nickname', 'first_name', 'last_name', 'alias', 'called'];
+        nameRelatedFacts.forEach(factType => {
+          if (userData.facts[factType] && userData.facts[factType].value) {
+            // Add this name as an alias for this user
+            if (!userAliases[userId]) {
+              userAliases[userId] = new Set();
+            }
+            userAliases[userId].add(userData.facts[factType].value.toLowerCase());
+          }
+        });
+        
+        // NEW: Check for relationship-based nickname facts with pattern user_relationship_*_nickname
+        Object.entries(userData.facts).forEach(([factKey, factData]) => {
+          if (factKey.includes('_nickname') && factData.value) {
+            // Add relationship-based nickname
+            if (!userAliases[userId]) {
+              userAliases[userId] = new Set();
+            }
+            userAliases[userId].add(factData.value.toLowerCase());
+            
+            // Also add parts of the nickname for partial matching
+            const nicknameParts = factData.value.toLowerCase().split(/\s+/);
+            if (nicknameParts.length > 1) {
+              nicknameParts.forEach(part => {
+                if (part.length > 2) { // Only add meaningful parts (longer than 2 chars)
+                  userAliases[userId].add(part);
+                }
+              });
+            }
+          }
+        });
+        
+        // NEW: Handle name extraction from relationship facts
+        // e.g., user_relationship_aditya_ramadhan_nickname
+        Object.entries(userData.facts).forEach(([factKey, factData]) => {
+          if (factKey.startsWith('user_relationship_') && factData.value) {
+            // Try to extract a name from the factKey pattern
+            const relationshipMatch = factKey.match(/user_relationship_([a-z_]+)_/i);
+            if (relationshipMatch && relationshipMatch[1]) {
+              // Convert snake_case to space-separated name (e.g., aditya_ramadhan -> aditya ramadhan)
+              const extractedName = relationshipMatch[1].replace(/_/g, ' ');
+              
+              // Add the extracted name as an alias
+              if (!userAliases[userId]) {
+                userAliases[userId] = new Set();
+              }
+              userAliases[userId].add(extractedName);
+              
+              // Also add individual name components
+              const nameParts = extractedName.split(' ');
+              nameParts.forEach(part => {
+                if (part.length > 2) { // Only add meaningful parts
+                  userAliases[userId].add(part);
+                }
+              });
+            }
+          }
+        });
+      }
+    });
+  }
+  
+  // Generate alias lookup map for efficient search
+  const aliasToId = {};
+  Object.entries(userAliases).forEach(([userId, aliases]) => {
+    aliases.forEach(alias => {
+      if (!aliasToId[alias]) {
+        aliasToId[alias] = [];
+      }
+      aliasToId[alias].push(userId);
+    });
+  });
+  
+  // Find potential target users using a scoring approach
+  const userScores = {};
+  
+  // Method 1: Direct matching with names/aliases
+  Object.entries(userAliases).forEach(([userId, aliases]) => {
+    aliases.forEach(alias => {
+      // Exact match gets highest score
+      if (alias === lowerTargetName) {
+        userScores[userId] = (userScores[userId] || 0) + 10;
+      }
+      // Contains the full target name
+      else if (alias.includes(lowerTargetName)) {
+        userScores[userId] = (userScores[userId] || 0) + 5;
+      }
+      // Target name contains this alias (might be a shorthand)
+      else if (lowerTargetName.includes(alias) && alias.length > 2) {
+        userScores[userId] = (userScores[userId] || 0) + 3;
+      }
+      // First name or nickname match
+      else if (alias.split(/\s+/)[0] === lowerTargetName || 
+              alias.includes(`"${lowerTargetName}"`) ||
+              alias.includes(`'${lowerTargetName}'`)) {
+        userScores[userId] = (userScores[userId] || 0) + 5;
+      }
+    });
+  });
+  
+  // Method 2: Check for phone number matches
+  const phoneMatch = lowerTargetName.match(/\b(\d{10,})\b/);
+  if (phoneMatch && phoneNumberMap[phoneMatch[1]]) {
+    const matchedUserId = phoneNumberMap[phoneMatch[1]];
+    userScores[matchedUserId] = (userScores[matchedUserId] || 0) + 15; // High score for phone match
+  }
+  
+  // Method 3: Handle nicknames and shorthand references like "si ipe" or "pak adi"
+  const nicknamePattern = /\b(si|pak|bu|mas|mbak|bang|kak)\s+(\w+)\b/i;
+  const nicknameMatch = lowerTargetName.match(nicknamePattern);
+  
+  if (nicknameMatch) {
+    const extractedName = nicknameMatch[2]; // The name part after si/pak/bu/etc
+    
+    Object.entries(userAliases).forEach(([userId, aliases]) => {
+      aliases.forEach(alias => {
+        if (alias.includes(extractedName)) {
+          userScores[userId] = (userScores[userId] || 0) + 4;
+        }
+      });
+    });
+  }
+  
+  // NEW: Method 4: Handle abbreviated nicknames like "dan" for "Aditya Ramadhan"
+  // This is especially important for Indonesian names where the last name/part is often used as nickname
+  if (lowerTargetName.length >= 2 && !nicknameMatch) {
+    Object.entries(userAliases).forEach(([userId, aliases]) => {
+      aliases.forEach(alias => {
+        // Check if any name part ends with the target name
+        const aliasParts = alias.split(/\s+/);
+        aliasParts.forEach(part => {
+          if (part.length > 2 && part.endsWith(lowerTargetName)) {
+            userScores[userId] = (userScores[userId] || 0) + 3;
+          }
+          // Or if any part starts with the target name
+          if (part.length > 2 && part.startsWith(lowerTargetName)) {
+            userScores[userId] = (userScores[userId] || 0) + 2;
+          }
+        });
+        
+        // Check for the last part of multi-word names (common Indonesian nickname pattern)
+        if (aliasParts.length > 1) {
+          const lastPart = aliasParts[aliasParts.length - 1];
+          if (lastPart === lowerTargetName) {
+            userScores[userId] = (userScores[userId] || 0) + 5; // Significant boost for exact last name match
+          }
+        }
+      });
+    });
+  }
+  
+  // Get the top matched users
+  const matchedUserIds = Object.entries(userScores)
+    .filter(([_, score]) => score >= 2) // Lower the minimum match score to be more inclusive
+    .sort((a, b) => b[1] - a[1])  // Sort by score descending
+    .map(([userId, _]) => userId);
+  
+  console.log(`[CONTEXT] Found ${matchedUserIds.length} possible users matching "${targetName}" based on name`);
+  
+  // If we have matches, find conversations with these users
+  if (matchedUserIds.length > 0) {
+    matchedUserIds.forEach(targetUserId => {
+      // Look through all chats for conversations with this user
+      Object.entries(db.data.conversations).forEach(([chatId, chat]) => {
+        // Skip current chat and ensure this user is a participant
+        if (chatId === currentChatId || !chat.participants[targetUserId]) {
+          return;
+        }
+        
+        foundUser = true;
+        
+        // Find message exchanges between bot and this user
+        let conversationExchanges = [];
+        let lastBotMessageIndex = -1;
+        
+        // Look for patterns of the bot and user talking to each other
+        chat.messages.forEach((msg, index) => {
+          if (msg.sender === process.env.BOT_ID) {
+            lastBotMessageIndex = index;
+          } else if (msg.sender === targetUserId && lastBotMessageIndex !== -1 && index - lastBotMessageIndex <= 2) {
+            // This is a user response to the bot's message
+            // Add both the bot's message and the user's response
+            conversationExchanges.push({
+              botMessage: chat.messages[lastBotMessageIndex],
+              userMessage: msg,
+              timestamp: msg.timestamp
+            });
+          }
+        });
+        
+        // Add to result messages
+        conversationExchanges.forEach(exchange => {
+          resultMessages.push({
+            content: exchange.botMessage.content,
+            timestamp: exchange.botMessage.timestamp,
+            name: db.data.config.botName,
+            chatName: chat.chatName || 'a private chat',
+            responseContent: exchange.userMessage.content
+          });
+          
+          resultMessages.push({
+            content: exchange.userMessage.content,
+            timestamp: exchange.userMessage.timestamp,
+            name: chat.participants[targetUserId].name,
+            chatName: chat.chatName || 'a private chat'
+          });
+        });
+      });
+    });
+  }
+  
+  // If we didn't find the user but the search term seems like a person reference, add a message indicating that
+  if (!foundUser && (
+    lowerTargetName.length > 2 || 
+    nicknameMatch || 
+    /\b(dia|dia|mereka|teman|friend|user|pengguna|orang|person|manusia|human)\b/i.test(lowerTargetName)
+  )) {
+    resultMessages.push({
+      content: `I don't recall talking to anyone named ${targetName}`,
+      timestamp: new Date().toISOString(),
+      name: db.data.config.botName,
+      chatName: 'system'
+    });
+  }
+  
+  // Sort by recency and limit the results
+  return resultMessages
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+    .slice(0, MAX_CONVERSATION_MESSAGES);
+}
+
+/**
+ * Find recent group activity messages
+ * @param {Object} db - Database object
+ * @param {string} currentChatId - Current chat ID
+ * @param {string} targetChat - Target chat name (optional)
+ * @returns {Array} - Array of relevant group activity messages
+ */
+function findGroupActivityMessages(db, currentChatId, targetChat) {
+  const resultMessages = [];
+  const MAX_GROUP_MESSAGES = 10;
+  
+  // Build a mapping of group chats for better matching
+  const groupChats = {};
+  const groupAliases = {};
+  const recentlyActiveGroups = [];
+  
+  // Compile a directory of all group chats
+  Object.entries(db.data.conversations).forEach(([chatId, chat]) => {
+    // Only consider group chats
+    if (!chatId.endsWith('@g.us')) {
+      return;
+    }
+    
+    const chatName = chat.chatName || '';
+    if (chatName) {
+      groupChats[chatId] = chat;
+      
+      // Track all possible names/aliases for this group
+      if (!groupAliases[chatId]) {
+        groupAliases[chatId] = new Set();
+      }
+      
+      // Add the full name
+      groupAliases[chatId].add(chatName.toLowerCase());
+      
+      // Add common shorthand variants
+      const words = chatName.split(/\s+/);
+      if (words.length > 1) {
+        // First word might be used as shorthand
+        groupAliases[chatId].add(words[0].toLowerCase());
+        
+        // First letter of each word (like "WA" for "WhatsApp Group")
+        const acronym = words.map(w => w[0]).join('').toLowerCase();
+        if (acronym.length > 1) {
+          groupAliases[chatId].add(acronym);
+        }
+      }
+      
+      // Check last activity time to prioritize recently active groups
+      const lastMessageTime = chat.messages && chat.messages.length > 0 
+        ? new Date(chat.messages[chat.messages.length - 1].timestamp)
+        : new Date(0);
+        
+      const hoursSinceLastActivity = (new Date() - lastMessageTime) / (1000 * 60 * 60);
+      
+      // Consider groups active in the last 24 hours as "recently active"
+      if (hoursSinceLastActivity < 24) {
+        recentlyActiveGroups.push({
+          chatId,
+          chatName,
+          hoursSinceLastActivity,
+          messageCount: chat.messages.length
+        });
+      }
+    }
+  });
+  
+  // Generate alias lookup map for efficient group search
+  const aliasToGroupId = {};
+  Object.entries(groupAliases).forEach(([chatId, aliases]) => {
+    aliases.forEach(alias => {
+      if (!aliasToGroupId[alias]) {
+        aliasToGroupId[alias] = [];
+      }
+      aliasToGroupId[alias].push(chatId);
+    });
+  });
+  
+  // Find matching groups using a scoring approach
+  const groupScores = {};
+  
+  // Skip group matching if no target chat specified and just use most active group
+  if (!targetChat || targetChat.trim().length === 0) {
+    // Most active groups get a base score
+    recentlyActiveGroups.forEach(group => {
+      // Higher score for more recently active groups with more messages
+      const activityScore = Math.max(0, 10 - group.hoursSinceLastActivity/2) + 
+                           Math.min(5, group.messageCount / 50);
+      groupScores[group.chatId] = activityScore;
+    });
+  } 
+  // Otherwise try to match the requested group name
+  else {
+    const lowerTargetChat = targetChat.toLowerCase();
+    
+    // Method 1: Direct matching with names/aliases
+    Object.entries(groupAliases).forEach(([chatId, aliases]) => {
+      aliases.forEach(alias => {
+        // Exact match gets highest score
+        if (alias === lowerTargetChat) {
+          groupScores[chatId] = (groupScores[chatId] || 0) + 10;
+        }
+        // Contains the full target name
+        else if (alias.includes(lowerTargetChat)) {
+          groupScores[chatId] = (groupScores[chatId] || 0) + 5;
+        }
+        // Target name contains this alias (might be a shorthand)
+        else if (lowerTargetChat.includes(alias) && alias.length > 2) {
+          groupScores[chatId] = (groupScores[chatId] || 0) + 3;
+        }
+      });
+    });
+    
+    // Method 2: Handle "si" or "grup/group" prefix patterns like "grup wa" or "group keluarga"
+    const groupPrefixPattern = /\b(grup|group|gc|grp)\s+(\w+)\b/i;
+    const groupPrefixMatch = lowerTargetChat.match(groupPrefixPattern);
+    
+    if (groupPrefixMatch) {
+      const extractedName = groupPrefixMatch[2]; // The name part after grup/group
+      
+      Object.entries(groupAliases).forEach(([chatId, aliases]) => {
+        aliases.forEach(alias => {
+          if (alias.includes(extractedName)) {
+            groupScores[chatId] = (groupScores[chatId] || 0) + 4;
+          }
+        });
+      });
+    }
+  }
+  
+  // Add activity-based boosting to the scores
+  recentlyActiveGroups.forEach(group => {
+    // Boost score for recently active groups
+    if (groupScores[group.chatId] !== undefined) {
+      const activityBoost = Math.max(0, 5 - group.hoursSinceLastActivity/4);
+      groupScores[group.chatId] += activityBoost;
+    }
+  });
+  
+  // Get the top matched groups or most active if no specific match
+  const matchedGroupIds = Object.entries(groupScores)
+    .sort((a, b) => b[1] - a[1])  // Sort by score descending
+    .slice(0, 2)  // Get top 2 matches
+    .filter(([_, score]) => score >= 1) // Ensure some minimum relevance
+    .map(([chatId, _]) => chatId);
+  
+  // If no groups matched or were active, use all groups
+  if (matchedGroupIds.length === 0) {
+    // Use all groups, sorting by recency
+    matchedGroupIds.push(
+      ...Object.keys(groupChats)
+        .filter(id => id !== currentChatId)
+        .sort((a, b) => {
+          const aLastMsg = groupChats[a].messages.length > 0 ? 
+            new Date(groupChats[a].messages[groupChats[a].messages.length - 1].timestamp) : 
+            new Date(0);
+          const bLastMsg = groupChats[b].messages.length > 0 ? 
+            new Date(groupChats[b].messages[groupChats[b].messages.length - 1].timestamp) : 
+            new Date(0);
+          return bLastMsg - aLastMsg;
+        })
+        .slice(0, 2) // Limit to 2 groups
+    );
+  }
+  
+  // For each matched group, get relevant messages
+  matchedGroupIds.forEach(groupId => {
+    const chat = groupChats[groupId];
+    
+    // Skip if no chat data (should never happen)
+    if (!chat) return;
+    
+    // Get recent messages from this group
+    const recentMessages = chat.messages
+      .slice(-15) // Get the 15 most recent messages
+      .filter(msg => msg.content && msg.content.trim().length > 0); // Only messages with content
+    
+    // Find the most active participants
+    const participantCounts = {};
+    recentMessages.forEach(msg => {
+      if (!participantCounts[msg.sender]) {
+        participantCounts[msg.sender] = 0;
+      }
+      participantCounts[msg.sender]++;
+    });
+    
+    // Get the most active participants (excluding the bot)
+    const mostActiveParticipants = Object.entries(participantCounts)
+      .filter(([id, _]) => id !== process.env.BOT_ID)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([id, _]) => id);
+      
+    // Identify conversation threads (consecutive messages on a topic)
+    const conversationThreads = [];
+    let currentThread = [];
+    let lastSender = null;
+    
+    recentMessages.forEach((msg, idx) => {
+      // Start a new thread if:
+      // - This is a different sender from the last message
+      // - OR this message starts with a question or seems to change topic
+      const isNewTopic = msg.content.includes('?') ||
+                         /^(btw|ngomong|bicara|ngomongin|bahas|tentang|btw|anyway)\b/i.test(msg.content);
+      
+      if (lastSender !== msg.sender || isNewTopic || currentThread.length >= 5) {
+        if (currentThread.length > 0) {
+          conversationThreads.push([...currentThread]);
+        }
+        currentThread = [msg];
+      } else {
+        currentThread.push(msg);
+      }
+      
+      lastSender = msg.sender;
+      
+      // Also end the thread at the end of the messages
+      if (idx === recentMessages.length - 1 && currentThread.length > 0) {
+        conversationThreads.push([...currentThread]);
+      }
+    });
+    
+    // Score threads by interestingness
+    const scoredThreads = conversationThreads.map(thread => {
+      let score = 0;
+      
+      // Threads with more messages are more interesting
+      score += Math.min(5, thread.length);
+      
+      // Threads with questions are more interesting
+      if (thread.some(msg => msg.content.includes('?'))) {
+        score += 3;
+      }
+      
+      // Threads with the bot participating are more interesting
+      if (thread.some(msg => msg.sender === process.env.BOT_ID)) {
+        score += 4;
+      }
+      
+      // Threads with active participants are more interesting
+      if (thread.some(msg => mostActiveParticipants.includes(msg.sender))) {
+        score += 2;
+      }
+      
+      // Threads with emotional content are more interesting
+      if (thread.some(msg => 
+        msg.content.includes('!') || 
+        /😂|😊|😢|😠|😡|❤️|👍|👎/.test(msg.content)
+      )) {
+        score += 2;
+      }
+      
+      return { thread, score };
+    });
+    
+    // Select the most interesting threads
+    const selectedThreads = scoredThreads
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 2)
+      .map(item => item.thread);
+    
+    // Add an introduction message for this group
+    resultMessages.push({
+      content: `Here's what was discussed recently in ${chat.chatName || 'the group'}:`,
+      timestamp: new Date().toISOString(),
+      name: 'system',
+      chatName: chat.chatName || 'a group chat',
+      isHeader: true
+    });
+    
+    // Add selected thread messages
+    selectedThreads.forEach(thread => {
+      thread.forEach(msg => {
+        const senderName = chat.participants[msg.sender]?.name || msg.name || 'Unknown';
+        resultMessages.push({
+          ...msg,
+          name: senderName,
+          chatName: chat.chatName || 'a group chat'
+        });
+      });
+      
+      // Add a separator between threads
+      if (selectedThreads.length > 1 && thread !== selectedThreads[selectedThreads.length - 1]) {
+        resultMessages.push({
+          content: "---",
+          timestamp: new Date().toISOString(),
+          name: 'system',
+          chatName: chat.chatName || 'a group chat',
+          isSeparator: true
+        });
+      }
+    });
+    
+    // If the bot has recently responded in this group, include that too
+    const botMessages = recentMessages
+      .filter(msg => msg.sender === process.env.BOT_ID)
+      .slice(-1); // Just the most recent bot message
+      
+    if (botMessages.length > 0 && !selectedThreads.some(thread => 
+      thread.some(msg => msg.sender === process.env.BOT_ID)
+    )) {
+      resultMessages.push({
+        content: "My last message in this group was:",
+        timestamp: new Date().toISOString(),
+        name: 'system',
+        chatName: chat.chatName || 'a group chat',
+        isHeader: true
+      });
+      
+      botMessages.forEach(msg => {
+        resultMessages.push({
+          ...msg,
+          name: db.data.config.botName,
+          chatName: chat.chatName || 'a group chat'
+        });
+      });
+    }
+  });
+  
+  // If no relevant group messages found, provide an informative response
+  if (resultMessages.length === 0) {
+    if (targetChat) {
+      resultMessages.push({
+        content: `I don't have any recent conversations from a group called "${targetChat}"`,
+        timestamp: new Date().toISOString(),
+        name: 'system',
+        chatName: 'system'
+      });
+    } else {
+      resultMessages.push({
+        content: "I don't have any recent group conversations to share",
+        timestamp: new Date().toISOString(),
+        name: 'system',
+        chatName: 'system'
+      });
+    }
+  }
+  
+  // Sort by timestamp within each group, but keep groups separated
+  const resultsByGroup = {};
+  resultMessages.forEach(msg => {
+    if (!resultsByGroup[msg.chatName]) {
+      resultsByGroup[msg.chatName] = [];
+    }
+    resultsByGroup[msg.chatName].push(msg);
+  });
+  
+  // Sort each group's messages by timestamp
+  Object.values(resultsByGroup).forEach(groupMsgs => {
+    groupMsgs.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+  });
+  
+  // Reassemble, keeping headers at the top of each group
+  const finalResults = [];
+  Object.values(resultsByGroup).forEach(groupMsgs => {
+    // Move headers to the front
+    const headers = groupMsgs.filter(msg => msg.isHeader);
+    const nonHeaders = groupMsgs.filter(msg => !msg.isHeader);
+    finalResults.push(...headers, ...nonHeaders);
+  });
+  
+  // Limit to maximum messages while trying to keep complete threads
+  return finalResults.slice(0, MAX_GROUP_MESSAGES);
+}
+
 // Get info about a group
 async function getGroupInfo(db, groupId, sock) {
   try {
@@ -774,6 +1701,257 @@ function extractTopics(content) {
   return topics;
 }
 
+/**
+ * Detect if a message is asking about the bot's behavior or conversations in other chats
+ * @param {string} content - Message content to analyze
+ * @param {string} botName - The bot's name for detection
+ * @returns {Object} Detection result with type and targets
+ */
+function detectCrossChatQuestion(content, botName) {
+  if (!content || typeof content !== 'string') {
+    return { isCrossChatQuestion: false };
+  }
+  
+  const lowerContent = content.toLowerCase();
+  const botNameLower = botName.toLowerCase();
+  
+  // Normalize content for easier pattern matching
+  const normalizedContent = lowerContent
+    .replace(/\?/g, ' ?')
+    .replace(/\s\s+/g, ' ')
+    .trim();
+  
+  // Different types of cross-chat questions to detect
+  const result = {
+    isCrossChatQuestion: false,
+    type: null,
+    targetName: null,
+    targetChat: null,
+    isAboutBot: false,
+    isAboutMood: false
+  };
+  
+  // Check if the question is asking about the bot's mood or behavior
+  const botBehaviorPatterns = [
+    new RegExp(`kenapa.*(${botNameLower}|kamu|lu|kau|lo).*(marah|kesal|emosi|bete)`, 'i'),
+    new RegExp(`(${botNameLower}|kamu|lu|kau|lo).*(kenapa).*(marah|kesal|emosi|bete)`, 'i'),
+    new RegExp(`(ada apa|kenapa).*(di grup|dalam grup|di group|digrup)`, 'i'),
+    new RegExp(`(${botNameLower}|kamu|lu|kau|lo).*(lagi).*(marah|kesal|emosi|bete)`, 'i'),
+    new RegExp(`(${botNameLower}|kamu|lu|kau|lo).*(mood).*(apa|gimana|bagaimana)`, 'i'),
+    new RegExp(`(mood).*(${botNameLower}|kamu|lu|kau|lo).*(apa|gimana|bagaimana)`, 'i'),
+    new RegExp(`(knp|kenapa).*(${botNameLower}|kamu|lu|kau|lo).*(kesal|marah)`, 'i')
+  ];
+  
+  // Check if the question is asking about conversations with specific people
+  const conversationPatterns = [
+    new RegExp(`(ada|pernah).*(obrolan|pembicaraan|ngobrol).*(tentang|dengan|sama).*(\\w+)`, 'i'),
+    new RegExp(`(\\w+).*(ngobrol|chat|bicara).*(apa|tentang apa).*(sama|dengan).*(${botNameLower}|kamu|lu|kau|lo)`, 'i'),
+    new RegExp(`(${botNameLower}|kamu|lu|kau|lo).*(ngobrol|chat|bicara).*(apa|tentang apa).*(sama|dengan).*(\\w+)`, 'i'),
+    new RegExp(`(${botNameLower}|kamu|lu|kau|lo).*(suka|sering).*(ngobrol|chat|bicara).*(sama|dengan).*(\\w+)`, 'i'),
+    new RegExp(`(\\w+).*(suka|sering).*(ngobrol|chat|bicara).*(sama|dengan).*(${botNameLower}|kamu|lu|kau|lo)`, 'i'),
+    // Enhanced patterns for more indirect references
+    new RegExp(`(\\w+).*(ngomong|ngomongin|bilang).*(apa).*(ke|sama|pada|kepada).*(${botNameLower}|kamu|lu|kau|lo)`, 'i'),
+    new RegExp(`(\\w+).*(ngomong|ngomongin|bilang|ngobrol).*(apa).*(aja|saja|di|dalam)`, 'i'),
+    new RegExp(`(apa).*(kata|ucapan|omongan).*(\\w+)`, 'i'),
+    new RegExp(`(gimana|bagaimana).*(si|pak|bu|bang|mbak|mas|kak).*(\\w+)`, 'i'),
+    // New patterns for nickname-style questions
+    new RegExp(`(si|pak|bu|bang|mbak|mas|kak)\\s+(\\w+)\\s+(ngomong|bilang|ngomongin|ngobrol)\\s+(apa)`, 'i'),
+    new RegExp(`(\\w+)\\s+(ngomong|bilang|ngomongin|ngobrol)\\s+(apa)\\s+(di grup|dalam grup|di group|digrup)`, 'i')
+  ];
+  
+  // Enhanced patterns for group activity questions
+  const groupActivityPatterns = [
+    new RegExp(`(ada apa|kenapa|apa kabar|gimana|bagaimana).*(di grup|dalam grup|di group|digrup)`, 'i'),
+    new RegExp(`(di grup|dalam grup|di group|digrup).*(\\w+).*(ada apa|kenapa|apa kabar|gimana|bagaimana)`, 'i'),
+    new RegExp(`(di grup|dalam grup|di group|digrup).*(\\w+).*(lagi|sedang).*(ngomongin|bahas|obrolan|ngobrol|ngobrolin)`, 'i'),
+    new RegExp(`(apa).*(yang|sedang|lagi).*(diobrolin|dibahas|dibicarakan).*(di grup|dalam grup|di group|digrup)`, 'i'),
+    new RegExp(`(grup|group).*(\\w+).*(lagi|pada).*(ngomongin|ngobrolin|bahas)`, 'i')
+  ];
+  
+  // Check for bot behavior/mood questions
+  for (const pattern of botBehaviorPatterns) {
+    const match = normalizedContent.match(pattern);
+    if (match) {
+      result.isCrossChatQuestion = true;
+      result.type = 'mood';
+      result.isAboutBot = true;
+      result.isAboutMood = true;
+      
+      // Try to extract which group they're asking about
+      const groupMatch = normalizedContent.match(/(di|dalam)\s+(grup|group)\s+(\w+)/i);
+      if (groupMatch && groupMatch[3]) {
+        result.targetChat = groupMatch[3];
+      }
+      
+      return result;
+    }
+  }
+  
+  // Check for group activity patterns first (more specific)
+  for (const pattern of groupActivityPatterns) {
+    const match = normalizedContent.match(pattern);
+    if (match) {
+      result.isCrossChatQuestion = true;
+      result.type = 'group_activity';
+      
+      // Try to extract which group they're asking about
+      let groupNameMatch = null;
+      
+      // Different patterns for group name extraction
+      const groupPatterns = [
+        /(di|dalam)\s+(grup|group)\s+(\w+)/i,   // "di grup xyz"
+        /(grup|group)\s+(\w+)/i,                // "grup xyz"
+        /gc\s+(\w+)/i                           // "gc xyz"
+      ];
+      
+      for (const gPattern of groupPatterns) {
+        const gMatch = normalizedContent.match(gPattern);
+        if (gMatch) {
+          // The group name will be in different capture groups depending on pattern
+          const groupNameIndex = gPattern.toString().includes('(di|dalam)') ? 3 : 2;
+          if (gMatch[groupNameIndex]) {
+            groupNameMatch = gMatch[groupNameIndex];
+            break;
+          }
+        }
+      }
+      
+      if (groupNameMatch) {
+        result.targetChat = groupNameMatch;
+      }
+      
+      return result;
+    }
+  }
+  
+  // Check for conversation questions
+  for (const pattern of conversationPatterns) {
+    const match = normalizedContent.match(pattern);
+    if (match) {
+      result.isCrossChatQuestion = true;
+      result.type = 'conversation';
+      
+      // Try to extract the name of the person they're asking about
+      // This requires checking different pattern positions based on the regex
+      let targetNameIndex = 4; // Default position in most patterns
+      
+      if (pattern.toString().includes("(\\w+).*ngomong") || 
+          pattern.toString().includes("(\\w+).*ngobrol") ||
+          pattern.toString().includes("(\\w+).*bilang") ||
+          pattern.toString().includes("(apa).*(kata|ucapan)") ||
+          pattern.toString().includes("(gimana|bagaimana).*(si|pak)")) {
+        targetNameIndex = 1;
+      }
+      
+      // Special handling for "apa kata X" pattern
+      if (pattern.toString().includes("(apa).*(kata|ucapan)")) {
+        targetNameIndex = 3;
+      }
+      
+      // Special handling for "gimana si X" pattern
+      if (pattern.toString().includes("(gimana|bagaimana).*(si|pak)")) {
+        targetNameIndex = 3;
+      }
+      
+      // Special handling for "si X ngomong apa" pattern
+      if (pattern.toString().includes("(si|pak|bu|bang|mbak|mas|kak)\\s+(\\w+)\\s+(ngomong|bilang)")) {
+        targetNameIndex = 2;
+      }
+      
+      if (match[targetNameIndex] && !['tentang', 'dengan', 'sama', 'apa', botNameLower, 'kamu', 'lo', 'lu', 'kau', 'di', 'dalam', 'group', 'grup'].includes(match[targetNameIndex].toLowerCase())) {
+        result.targetName = match[targetNameIndex];
+      }
+      
+      // Check if the question is about the bot or someone else
+      result.isAboutBot = normalizedContent.includes(botNameLower) || 
+                        normalizedContent.includes('kamu') || 
+                        normalizedContent.includes('lu') || 
+                        normalizedContent.includes('lo') || 
+                        normalizedContent.includes('kau');
+      
+      return result;
+    }
+  }
+  
+  // Additional checks for group activity questions
+  if (normalizedContent.includes('ada apa di grup') || 
+      normalizedContent.includes('ada apa dalam grup') ||
+      normalizedContent.includes('ada apa di group') ||
+      normalizedContent.includes('ada obrolan apa') ||
+      normalizedContent.includes('lagi ngomongin apa') ||
+      normalizedContent.includes('pada ngobrol apa') ||
+      normalizedContent.includes('ngomong apa aja') ||
+      normalizedContent.includes('ngomongin apa aja') ||
+      normalizedContent.includes('ngobrolin apa aja')) {
+    
+    result.isCrossChatQuestion = true;
+    result.type = 'group_activity';
+    
+    // Try to extract which group they're asking about
+    const groupMatch = normalizedContent.match(/(di|dalam)\s+(grup|group)\s+(\w+)/i);
+    if (groupMatch && groupMatch[3]) {
+      result.targetChat = groupMatch[3];
+    }
+    
+    return result;
+  }
+  
+  // Check for name-first patterns (often in Indonesian, name comes first)
+  // For example: "Si Ipe ngomong apa aja?" or "Pak Budi bilang apa ke kamu?"
+  const nameFirstPatterns = [
+    /^(si|pak|bu|mas|mbak|bang|kak)?\s*(\w+)\s+(ngomong|bilang|ngobrol|bicara|ngomongin|bahas)\s+(apa|gimana|bagaimana)/i,
+    /^(\w+)\s+(ngomong|bilang|ngobrol|bicara|ngomongin|bahas)\s+(apa|gimana|bagaimana)/i,
+    /^(apa yang|gimana)\s+(\w+)\s+(ngomong|bilang|ngobrol|bicara|ngomongin|bahas)/i
+  ];
+  
+  for (const namePattern of nameFirstPatterns) {
+    const nameMatch = normalizedContent.match(namePattern);
+    if (nameMatch) {
+      result.isCrossChatQuestion = true;
+      result.type = 'conversation';
+      
+      // The name is either in group 2 (with prefix) or group 1 (without prefix)
+      const nameIndex = namePattern.toString().includes('(si|pak|bu|mas|mbak|bang|kak)') ? 2 : 1;
+      if (namePattern.toString().includes('(apa yang|gimana)')) {
+        result.targetName = nameMatch[2]; // In this pattern, name is in group 2
+      } else {
+        result.targetName = nameMatch[nameIndex];
+      }
+      
+      return result;
+    }
+  }
+  
+  // NEW: Look for abbreviated or nickname patterns like "Si Adan ngomong apa di grup?"
+  // where "Adan" might be a nickname for "Aditya Ramadhan"
+  const nicknamePattern = /(si|pak|bu|mas|mbak|bang|kak)?\s*(\w+)\s+/i;
+  const nicknameMatch = normalizedContent.match(nicknamePattern);
+  
+  if (nicknameMatch && 
+      (normalizedContent.includes('ngomong') || 
+       normalizedContent.includes('bilang') || 
+       normalizedContent.includes('ngomongin') || 
+       normalizedContent.includes('ngobrol'))) {
+    
+    result.isCrossChatQuestion = true;
+    result.type = 'conversation';
+    
+    // Extract the potential nickname - it will be in group 2 if there was a prefix (si, pak, etc.)
+    // or group 1 if there was no prefix
+    const nameIndex = nicknameMatch[1] ? 2 : 1;
+    if (nicknameMatch[nameIndex] && 
+        !['apa', 'grup', 'group', 'kamu', 'lu', 'lo', 'kau', botNameLower].includes(nicknameMatch[nameIndex].toLowerCase())) {
+      result.targetName = nicknameMatch[nameIndex];
+      
+      console.log(`[CONTEXT] Extracted potential nickname: ${result.targetName}`);
+    }
+    
+    return result;
+  }
+  
+  return result;
+}
+
 // Find messages related to a specific message by ID
 function findRelatedMessages(messages, messageId, limit = 5) {
   const messageIndex = messages.findIndex(msg => msg.id === messageId);
@@ -795,9 +1973,194 @@ function findTopicSpecificMessages(messages, topic, limit = 5) {
     .slice(-limit);
 }
 
-export {
+/**
+ * Helper function to find user IDs based on name or nickname
+ * @param {Object} db - Database object
+ * @param {string} nameOrNickname - Name or nickname to search for
+ * @returns {Array} - Array of matching user IDs with their match score
+ */
+function findUserIdsByName(db, nameOrNickname) {
+  if (!nameOrNickname || typeof nameOrNickname !== 'string' || nameOrNickname.trim().length < 2) {
+    return [];
+  }
+  
+  const lowerName = nameOrNickname.toLowerCase().trim();
+  console.log(`[CONTEXT] Finding user IDs for name/nickname: "${lowerName}"`);
+  
+  // Store user ID matches with their scores
+  const userScores = {};
+  
+  // 1. Build a directory of all user names and aliases
+  const userAliases = {};
+  const namePartsIndex = {}; // Index to find users by parts of their names
+  
+  // From conversations participants
+  Object.entries(db.data.conversations || {}).forEach(([chatId, chat]) => {
+    Object.entries(chat.participants || {}).forEach(([userId, participant]) => {
+      if (userId === process.env.BOT_ID) return;
+      
+      const participantName = participant.name || '';
+      if (!participantName) return;
+      
+      if (!userAliases[userId]) {
+        userAliases[userId] = new Set();
+      }
+      
+      const lowerParticipantName = participantName.toLowerCase();
+      userAliases[userId].add(lowerParticipantName);
+      
+      // Index name parts for partial matching
+      const nameParts = lowerParticipantName.split(/\s+/);
+      nameParts.forEach(part => {
+        if (part.length > 2) {
+          if (!namePartsIndex[part]) {
+            namePartsIndex[part] = new Set();
+          }
+          namePartsIndex[part].add(userId);
+        }
+      });
+    });
+  });
+  
+  // From user facts
+  Object.entries(db.data.userFacts || {}).forEach(([userId, userData]) => {
+    if (userData.facts) {
+      // Direct name-related facts
+      const nameRelatedFacts = ['name', 'full_name', 'nickname', 'first_name', 'last_name', 'alias', 'called'];
+      nameRelatedFacts.forEach(factType => {
+        if (userData.facts[factType] && userData.facts[factType].value) {
+          if (!userAliases[userId]) {
+            userAliases[userId] = new Set();
+          }
+          
+          const lowerValue = userData.facts[factType].value.toLowerCase();
+          userAliases[userId].add(lowerValue);
+          
+          // Index name parts
+          const nameParts = lowerValue.split(/\s+/);
+          nameParts.forEach(part => {
+            if (part.length > 2) {
+              if (!namePartsIndex[part]) {
+                namePartsIndex[part] = new Set();
+              }
+              namePartsIndex[part].add(userId);
+            }
+          });
+        }
+      });
+      
+      // Relationship-based nickname facts
+      Object.entries(userData.facts).forEach(([factKey, factData]) => {
+        // Handle nickname facts
+        if (factKey.includes('_nickname') && factData.value) {
+          if (!userAliases[userId]) {
+            userAliases[userId] = new Set();
+          }
+          
+          const lowerValue = factData.value.toLowerCase();
+          userAliases[userId].add(lowerValue);
+          
+          // Index nickname parts
+          const nameParts = lowerValue.split(/\s+/);
+          nameParts.forEach(part => {
+            if (part.length > 2) {
+              if (!namePartsIndex[part]) {
+                namePartsIndex[part] = new Set();
+              }
+              namePartsIndex[part].add(userId);
+            }
+          });
+        }
+        
+        // Extract names from relationship fact keys
+        if (factKey.startsWith('user_relationship_')) {
+          // Try to extract a name from the key pattern
+          const relationshipMatch = factKey.match(/user_relationship_([a-z_]+)_/i);
+          if (relationshipMatch && relationshipMatch[1]) {
+            const extractedName = relationshipMatch[1].replace(/_/g, ' ');
+            
+            if (!userAliases[userId]) {
+              userAliases[userId] = new Set();
+            }
+            
+            userAliases[userId].add(extractedName);
+            
+            // Index the name parts
+            const nameParts = extractedName.split(/\s+/);
+            nameParts.forEach(part => {
+              if (part.length > 2) {
+                if (!namePartsIndex[part]) {
+                  namePartsIndex[part] = new Set();
+                }
+                namePartsIndex[part].add(userId);
+              }
+            });
+          }
+        }
+      });
+    }
+  });
+  
+  // 2. Matching strategies
+  
+  // Direct alias matching
+  Object.entries(userAliases).forEach(([userId, aliases]) => {
+    aliases.forEach(alias => {
+      // Exact match
+      if (alias === lowerName) {
+        userScores[userId] = (userScores[userId] || 0) + 10;
+      }
+      // Contains the target name
+      else if (alias.includes(lowerName)) {
+        userScores[userId] = (userScores[userId] || 0) + 5;
+      }
+      // Target name contains this alias
+      else if (lowerName.includes(alias) && alias.length > 2) {
+        userScores[userId] = (userScores[userId] || 0) + 3;
+      }
+    });
+  });
+  
+  // Name parts matching (for nicknames and abbreviated names)
+  const targetNameParts = lowerName.split(/\s+/);
+  targetNameParts.forEach(part => {
+    if (part.length > 2 && namePartsIndex[part]) {
+      namePartsIndex[part].forEach(userId => {
+        userScores[userId] = (userScores[userId] || 0) + 3;
+      });
+    }
+  });
+  
+  // Handle nicknames with prefixes (si, pak, etc.)
+  const nicknamePattern = /\b(si|pak|bu|mas|mbak|bang|kak)\s+(\w+)\b/i;
+  const nicknameMatch = lowerName.match(nicknamePattern);
+  
+  if (nicknameMatch) {
+    const extractedName = nicknameMatch[2]; // The name part after si/pak/bu/etc
+    
+    if (namePartsIndex[extractedName]) {
+      namePartsIndex[extractedName].forEach(userId => {
+        userScores[userId] = (userScores[userId] || 0) + 4;
+      });
+    }
+  }
+  
+  // 3. Return scored results
+  const results = Object.entries(userScores)
+    .filter(([_, score]) => score >= 2) // Minimum threshold for matches
+    .sort((a, b) => b[1] - a[1]) // Sort by score descending
+    .map(([userId, score]) => ({ userId, score }));
+  
+  console.log(`[CONTEXT] Found ${results.length} potential user matches for "${lowerName}"`);
+  return results;
+}
+
+export { 
   updateContext,
-  getRelevantContext,
+  getRelevantContext, 
+  detectCrossChatQuestion,
+  getCrossChatContextForQuestion,
+  findUserIdsByName,
   clearContext,
   shouldIntroduceInGroup,
   generateGroupIntroduction,
