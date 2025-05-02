@@ -1246,7 +1246,7 @@ async function enhanceWithAI(gameData, appId, options = {}) {
     
     // Prepare prompt for Gemini
     const prompt = `Anda adalah pakar game yang menyediakan informasi terperinci, terformat dengan baik, dan berwawasan luas tentang video game.
-Saya akan menyediakan data mentah tentang game dalam format JSON, dan saya ingin Anda mengubahnya menjadi respons markdown yang terstruktur dengan baik, informatif, dan menarik menggunakan bahasa Indonesia.
+Saya akan menyediakan data mentah tentang game dalam format JSON, dan saya ingin Anda mengubahnya menjadi respons teks yang terstruktur dengan baik, informatif, dan menarik menggunakan bahasa Indonesia.
 
 Ini adalah game data:
 ${gameDataJson}
@@ -1255,13 +1255,13 @@ Steam App ID: ${appId}
 Data Source: ${sourceName}
 ${options.fromSteamApi ? 'URL: https://store.steampowered.com/app/' + appId + '/' : 'URL: https://steamdb.info/app/' + appId + '/'}
 
-Harap buat respons penurunan harga komprehensif yang:
+Harap buat respons teks komprehensif yang:
 1. Memiliki struktur judul yang jelas dengan nama game dan ID aplikasi
 2. Menyoroti informasi penting seperti harga, platform, dan info rilis
 3. Mengatur metadata dalam format yang bersih dan mudah dibaca
 4. Menyertakan tag dan informasi DLC jika tersedia
 5. Menambahkan pengetahuan game ahli atau konteks tentang judul ini jika relevan
-6. Diformat dengan baik secara visual dengan penurunan harga yang sesuai (header, cetak tebal, daftar, dll.)
+6. Diformat dengan baik secara visual dengan teks yang sesuai
 7. Tandai ${sourceName} sebagai data source
 ${options.fromSteamApi ? '8. Catatan bahwa data ini berasal dari Steam Store API karena akses SteamDB diblokir oleh tindakan keamanan' : ''}
 
@@ -1353,23 +1353,23 @@ async function enhanceSearchResultsWithAI(results, query) {
     const resultsJson = JSON.stringify(results.slice(0, 20), null, 2);
     
     // Prepare prompt for Gemini
-    const prompt = `You are a gaming expert who provides well-formatted and insightful information about video games.
-I will provide you with raw search results from SteamDB in JSON format, and I want you to transform it into a well-structured, informative markdown response.
+    const prompt = `Anda adalah pakar game yang menyediakan informasi yang diformat dengan baik dan berwawasan luas tentang video game.
+Saya akan memberi Anda hasil pencarian mentah dari SteamDB dalam format JSON, dan saya ingin Anda mengubahnya menjadi respons teks yang terstruktur dengan baik dan informatif..
 
 Search Query: "${query}"
 Search Results:
 ${resultsJson}
 
-Please create a comprehensive markdown response that:
-1. Has a clear title showing these are search results for the query
-2. Lists the games in a well-formatted way with their App IDs, types, and update information
-3. Groups similar games if possible (e.g. base game and its DLCs)
-4. Highlights particularly popular or notable games if you can identify them
-5. Is visually well-formatted with appropriate markdown (headers, bold, lists, etc.)
-6. Includes a note that users can use the \`get_steam_game_data\` function with an App ID for more details
-7. Credits SteamDB as the data source
+Harap buat respons teks komprehensif yang:
+1. Memiliki judul yang jelas yang menunjukkan bahwa ini adalah hasil pencarian untuk kueri
+2. Mencantumkan game dalam format yang baik dengan ID Aplikasi, jenis, dan informasi pembaruannya
+3. Mengelompokkan game yang serupa jika memungkinkan (misalnya game dasar dan DLC-nya)
+4. Menyorot game yang sangat populer atau terkenal jika Anda dapat mengidentifikasinya
+5. Diformat secara visual dengan teks yang sesuai
+6. Menyertakan catatan bahwa pengguna dapat menggunakan fungsi \`get_steam_game_data\` dengan ID Aplikasi untuk detail lebih lanjut
+7. Menyebutkan SteamDB sebagai sumber data
 
-Keep your response concise but comprehensive, showing at most 15 games with the most relevant ones first.`;
+Buat respons Anda ringkas tetapi komprehensif, tampilkan maksimal 15 game dengan yang paling relevan terlebih dahulu.`;
 
     // Get API key from environment
     const geminiApiKey = process.env.GEMINI_API_KEY;
@@ -1440,22 +1440,22 @@ async function enhanceDealsWithAI(dealsData) {
     const dealsJson = JSON.stringify(trimmedData, null, 2);
     
     // Prepare prompt for Gemini
-    const prompt = `You are a gaming expert who provides well-formatted information about current video game deals and trends.
-I will provide you with raw data about current Steam deals in JSON format, and I want you to transform it into a well-structured, informative markdown response.
+    const prompt = `Anda adalah pakar game yang menyediakan informasi yang diformat dengan baik tentang penawaran dan tren video game terkini.
+Saya akan menyediakan data mentah tentang penawaran Steam terkini dalam format JSON, dan saya ingin Anda mengubahnya menjadi respons teks yang terstruktur dengan baik dan informatif.
 
-Current Steam Store Data:
+Data Toko Steam Terkini:
 ${dealsJson}
 
-Please create a comprehensive markdown response that:
-1. Has a clear title showing this is current Steam deals data
-2. Organizes the deals into clear sections (Specials, Top Sellers, New Releases)
-3. Highlights particularly impressive discounts or notable titles
-4. Formats game prices and discounts clearly
-5. Groups similar games together when relevant (e.g., games from the same franchise or developer)
-6. Is visually well-formatted with appropriate markdown (headers, bold, lists, etc.)
-7. Credits the Steam Store as the data source
+Harap buat respons teks komprehensif yang:
+1. Memiliki judul yang jelas yang menunjukkan bahwa ini adalah data penawaran Steam terkini
+2. Mengatur penawaran ke dalam beberapa bagian yang jelas (Promo, Produk Terlaris, Rilis Baru)
+3. Menyoroti diskon yang sangat mengesankan atau judul yang terkenal
+4. Memformat harga dan diskon game dengan jelas
+5. Mengelompokkan game yang serupa jika relevan (misalnya, game dari waralaba atau pengembang yang sama)
+6. Diformat dengan baik secara visual dengan teks yang sesuai (judul, cetak tebal, daftar, dll.)
+7. Menyebutkan Steam Store sebagai sumber data
 
-Keep your response concise but comprehensive, showing the most interesting and valuable deals first.`;
+Buat respons Anda singkat tetapi komprehensif, dengan menampilkan penawaran yang paling menarik dan berharga terlebih dahulu.`;
 
     // Get API key from environment
     const geminiApiKey = process.env.GEMINI_API_KEY;
