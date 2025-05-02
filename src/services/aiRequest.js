@@ -1,4 +1,6 @@
-import { logger } from "../utils/logger";
+import { logApiRequest } from './apiLogService.js';
+import axios from 'axios';
+import { logger } from '../utils/logger.js';
 
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1/models';
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -62,7 +64,6 @@ async function requestTogetherChat(model, apiKey, messages, params) {
   //     const currentSize = newTokenCount;
   //     const excessTokens = currentSize - targetSize;
       
-  //     if (nonSystemMsgs.length > 0 && excessTokens > 0) {
   //       // Find the last user message
   //       const lastUserIndex = nonSystemMsgs.map(msg => msg.role).lastIndexOf('user');
         
@@ -558,7 +559,6 @@ async function requestNvidiaChat(model = 'meta/llama-3.3-70b-instruct', apiKey, 
   }, 0);
   
   logger.debug(`Estimated token count for NVIDIA request: ${estimatedTokenCount}`);
-  
   // If estimated tokens exceed 7000, reduce context to stay safely under 8000 limit
   let processedMessages = messages;
   // Move requestData declaration outside the try block so it's accessible in the catch block
@@ -630,12 +630,210 @@ async function requestNvidiaChat(model = 'meta/llama-3.3-70b-instruct', apiKey, 
     // Extract response from first choice
     const messageData = responseData.choices[0].message;
     
-    // Check if there's a tool call in the response
+    // Check for standard tool calls format first
     if (messageData && messageData.tool_calls && messageData.tool_calls.length > 0) {
-      logger.debug('NVIDIA response contains tool calls', {
+      logger.debug('NVIDIA response contains standard tool calls', {
         toolCallsCount: messageData.tool_calls.length,
         firstToolCall: messageData.tool_calls[0]
       });
+    }
+    // Check for custom function call format: <function>name_of_function{"query": "harga game R.E.P.O. di internet"}<br></function>
+    else if (messageData && messageData.content && typeof messageData.content === 'string') {
+      // Log original content for debugging
+      logger.debug('Checking for NVIDIA function call in content:', {
+        contentPreview: messageData.content.substring(0, 200) + (messageData.content.length > 200 ? '...' : '')
+      });
+      
+      // 1. Check for the exact format in the user query: <function>name_of_function{"query": "value"}<br></function>
+      const exactFormatRegex = /<function>([a-zA-Z0-9_]+)({.*?})<br><\/function>/s;
+      const exactMatch = messageData.content.match(exactFormatRegex);
+      
+      if (exactMatch) {
+        logger.info('Detected exact NVIDIA function call format from the user query');
+        
+        try {
+          const functionName = exactMatch[1].trim();
+          let jsonString = exactMatch[2].trim();
+          let functionArgs = {};
+          
+          try {
+            functionArgs = JSON.parse(jsonString);
+          } catch (parseError) {
+            logger.warning(`Error parsing exact format function arguments: ${parseError.message}, attempting cleanup`);
+            
+            // Extract query parameter if it exists in the standard format
+            const queryMatch = jsonString.match(/"query"\s*:\s*"([^"]*)"/);
+            if (queryMatch) {
+              functionArgs.query = queryMatch[1];
+            } else {
+              // If still can't parse, create a simple arguments object with the raw text
+              functionArgs = { raw_arguments: jsonString };
+            }
+          }
+          
+          // Create a standard tool_calls format
+          messageData.tool_calls = [{
+            index: 0,
+            id: `nvidia_call_${Date.now()}`,
+            type: "function",
+            function: {
+              name: functionName,
+              arguments: JSON.stringify(functionArgs)
+            }
+          }];
+          
+          // Remove the function call from the content
+          messageData.content = messageData.content.replace(exactMatch[0], '').trim();
+          
+          logger.debug('Converted exact NVIDIA function call format', {
+            originalMatch: exactMatch[0],
+            functionName,
+            functionArgs: JSON.stringify(functionArgs)
+          });
+        } catch (error) {
+          logger.error('Error processing exact NVIDIA function call format', error);
+        }
+      }
+      // 2. Try more robust regex pattern if exact format isn't found
+      else {
+        // More robust regex that can handle variations in the format
+        const functionCallRegex = /<function>\s*([a-zA-Z0-9_]+)\s*({.*?})\s*(?:<br>)?\s*<\/function>/s;
+        const match = messageData.content.match(functionCallRegex);
+        
+        if (match) {
+          logger.info('Detected custom NVIDIA function call format');
+          
+          try {
+            const functionName = match[1].trim();
+            let functionArgs = {};
+            let jsonString = match[2].trim();
+            
+            // Handle case where JSON might not be properly formatted
+            try {
+              functionArgs = JSON.parse(jsonString);
+            } catch (parseError) {
+              logger.warning(`Error parsing function arguments: ${parseError.message}, trying to clean up JSON`);
+              
+              // Try to clean up potentially malformed JSON
+              const cleanedJson = jsonString
+                .replace(/,\s*}/g, '}')  // Remove trailing commas
+                .replace(/,\s*]/g, ']')  // Remove trailing commas in arrays
+                .replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g, '"$2":')  // Ensure property names are quoted
+                .replace(/\\"/g, '"')    // Fix escaped quotes
+                .replace(/"{/g, '{')     // Remove leading quotes before brackets
+                .replace(/}"/g, '}')     // Remove trailing quotes after brackets
+                .replace(/\n/g, ' ');    // Remove newlines
+                
+              try {
+                functionArgs = JSON.parse(cleanedJson);
+              } catch (secondError) {
+                // If still failing, try a more aggressive approach to extract key-value pairs
+                logger.warning(`Second attempt at parsing JSON failed: ${secondError.message}, trying advanced extraction`);
+                
+                // Extract key-value pairs manually
+                const kvPattern = /"?([a-zA-Z0-9_]+)"?\s*:\s*"([^"]*)"/g;
+                let match;
+                
+                while ((match = kvPattern.exec(jsonString)) !== null) {
+                  functionArgs[match[1]] = match[2];
+                }
+                
+                if (Object.keys(functionArgs).length === 0) {
+                  throw new Error("Could not parse function arguments");
+                }
+              }
+            }
+            
+            // Create a standard tool_calls format that our existing code can handle
+            messageData.tool_calls = [{
+              index: 0,
+              id: `nvidia_call_${Date.now()}`,
+              type: "function",
+              function: {
+                name: functionName,
+                arguments: JSON.stringify(functionArgs)
+              }
+            }];
+            
+            // Remove the function call from the content to avoid confusion
+            messageData.content = messageData.content.replace(match[0], '').trim();
+            
+            logger.debug('Converted NVIDIA custom function call to standard format', {
+              originalMatch: match[0],
+              functionName,
+              functionArgs: JSON.stringify(functionArgs)
+            });
+          } catch (error) {
+            logger.error('Error processing NVIDIA custom function call format', error);
+            logger.error('Function call pattern that failed to parse:', match ? match[0] : 'No match');
+          }
+        } else {
+          // Try an alternative format pattern that some NVIDIA models might return
+          const alternativePattern = /<function>([^<]+)<\/function>/s;
+          const altMatch = messageData.content.match(alternativePattern);
+          
+          if (altMatch) {
+            logger.info('Detected alternative NVIDIA function call format');
+            
+            try {
+              // This format might have the function name and arguments in a single string
+              const fullFunctionText = altMatch[1].trim();
+              
+              // Try to extract function name and arguments
+              const functionNameMatch = fullFunctionText.match(/^([a-zA-Z0-9_]+)/);
+              const functionName = functionNameMatch ? functionNameMatch[1] : 'unknown_function';
+              
+              // Extract anything that looks like JSON
+              const jsonMatch = fullFunctionText.match(/({.*})/);
+              let functionArgs = {};
+              
+              if (jsonMatch) {
+                try {
+                  functionArgs = JSON.parse(jsonMatch[1]);
+                } catch (parseError) {
+                  logger.warning(`Error parsing alternative function format: ${parseError.message}`);
+                  
+                  // Try to extract key-value pairs manually
+                  const kvPattern = /"?([a-zA-Z0-9_]+)"?\s*:\s*"([^"]*)"/g;
+                  let match;
+                  
+                  while ((match = kvPattern.exec(jsonMatch[1])) !== null) {
+                    functionArgs[match[1]] = match[2];
+                  }
+                }
+              } else {
+                // If no JSON-like structure is found, try to extract query parameter
+                const queryMatch = fullFunctionText.match(/query\s*[:=]\s*"([^"]*)"/);
+                if (queryMatch) {
+                  functionArgs.query = queryMatch[1];
+                }
+              }
+              
+              // Create standard tool_calls format
+              messageData.tool_calls = [{
+                index: 0,
+                id: `nvidia_call_${Date.now()}`,
+                type: "function",
+                function: {
+                  name: functionName,
+                  arguments: JSON.stringify(functionArgs)
+                }
+              }];
+              
+              // Remove the function call from the content
+              messageData.content = messageData.content.replace(altMatch[0], '').trim();
+              
+              logger.debug('Converted alternative NVIDIA function call format', {
+                originalMatch: altMatch[0],
+                functionName,
+                functionArgs: JSON.stringify(functionArgs)
+              });
+            } catch (error) {
+              logger.error('Error processing alternative NVIDIA function call format', error);
+            }
+          }
+        }
+      }
     }
     
     // Check content exists if there's no tool call
@@ -670,7 +868,7 @@ async function requestNvidiaChat(model = 'meta/llama-3.3-70b-instruct', apiKey, 
       },
       {
         executionTime: Date.now() - startTime,
-      messageCount: messages.length,
+        messageCount: messages.length,
         promptTokens: promptTokens,
         completionTokens: completionTokens,
         success: true
@@ -701,12 +899,12 @@ async function requestNvidiaChat(model = 'meta/llama-3.3-70b-instruct', apiKey, 
     // Log the failed API request
     if (!errorOccurred) {
       await logApiRequest(
-        TOGETHER_API_URL,
+        NVIDIA_API_URL, // Fixed: Changed incorrect TOGETHER_API_URL to NVIDIA_API_URL
         'nvidia',
         model,
         {
           method: 'POST',
-          url: TOGETHER_API_URL,
+          url: NVIDIA_API_URL, // Fixed: Changed incorrect TOGETHER_API_URL to NVIDIA_API_URL
           headers: {
             'Content-Type': 'application/json',
             'Authorization': 'Bearer *** REDACTED ***'

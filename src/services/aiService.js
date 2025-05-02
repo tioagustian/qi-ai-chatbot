@@ -11,6 +11,8 @@ import {
   PERSONALITIES
 } from './personalityService.js';
 import { logApiRequest } from './apiLogService.js';
+import { requestNvidiaChat } from './aiRequest.js';
+import fetchUrlContent from '../tools/fetchUrlContent.js';
 
 // Constants for API URLs
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -27,6 +29,7 @@ const TOOL_SUPPORTED_MODELS = [
   'meta-llama/Meta-Llama-3.1-405B',
   'meta-llama/Llama-3.3-70B',
   'meta-llama/Llama-3.2-3B',
+  'meta/llama-3.3-70b-instruct',
   // Qwen models
   'Qwen/Qwen2.5-7B',
   'Qwen/Qwen2.5-72B',
@@ -124,6 +127,8 @@ async function generateAnalysis(prompt, options = {}, context = []) {
       apiKey = config.geminiApiKey || process.env.GEMINI_API_KEY;
     } else if (provider === 'together') {
       apiKey = config.togetherApiKey || process.env.TOGETHER_API_KEY;
+    } else if (provider === 'nvidia') {
+      apiKey = config.nvidiaApiKey || process.env.NVIDIA_API_KEY;
     } else {
       apiKey = process.env.OPENROUTER_API_KEY;
     }
@@ -373,7 +378,6 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
       logger.info(`Making request to Together.AI API with model: ${config.model}`);
       
       try {
-        // Convert messages to Together.AI format
         const formattedMessages = formatMessagesForAPI(messages, config);
         
         // Call Together.AI API
@@ -469,84 +473,59 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
         if (isRateLimited || isContextTooLong || isModelUnavailable) {
           // Log appropriate message based on error type
           if (isRateLimited) {
-          logger.warning('Together.AI API rate limited, falling back to Gemini API');
+          logger.warning('Together.AI API rate limited, falling back to NVIDIA API');
           } else if (isContextTooLong) {
-            logger.warning(`Together.AI context too long (${errorDetail}), falling back to Gemini API`);
+            logger.warning(`Together.AI context too long (${errorDetail}), falling back to NVIDIA API`);
           } else if (isModelUnavailable) {
-            logger.warning(`Together.AI model unavailable (${errorDetail}), falling back to Gemini API`);
+            logger.warning(`Together.AI model unavailable (${errorDetail}), falling back to NVIDA API`);
           }
-          
-          // Check if Gemini API key is available
-          const geminiApiKey = config.geminiApiKey || process.env.GEMINI_API_KEY;
-          
-          if (!geminiApiKey) {
-            logger.warning('Gemini API key not configured for fallback');
-            return `Maaf, terjadi kesalahan dengan Together.AI API: ${isContextTooLong ? 'Pesan terlalu panjang' : errorMessage}. Gemini API key tidak tersedia untuk fallback. Coba lagi nanti ya~`;
-          }
+
+          const formattedMessages = formatMessagesForAPI(messages, config);
+          const nvidiaApiKey = config.nvidiaApiKey || process.env.NVIDIA_API_KEY;
+          const nvidiaModel = config.nvidiaModel || process.env.NVIDIA_MODEL;
           
           try {
-            // Convert messages to Gemini format
-            const formattedMessages = formatMessagesForAPI(messages, config);
-            
-            // For context length issues, reduce message count by truncating history
-            let truncatedMessages = formattedMessages;
-            if (isContextTooLong) {
-              // Use the context reduction function
-              truncatedMessages = reduceContextSize(formattedMessages, {
-                maxMessages: 12, // Keep reasonable number of messages
-                alwaysKeepSystemMessages: true,
-                alwaysKeepLastUserMessage: true,
-                preserveRatio: 0.6 // Slightly favor user messages
-              });
-              
-              logger.info(`Truncated context from ${formattedMessages.length} to ${truncatedMessages.length} messages for Gemini fallback`);
-            }
-            
-            // Use Gemini 2.0 Flash as fallback for most cases
-            // For context too long, try Gemini 2.0 Pro which has larger context window
-            const fallbackModel = 'gemini-2.0-flash';
-            logger.info(`Falling back to Gemini API with model: ${fallbackModel}`);
-            
-            // Call Gemini API
-            const response = await requestGeminiChat(
-              fallbackModel,
-              geminiApiKey,
-              truncatedMessages,
+            const response = await requestNvidiaChat(
+              nvidiaModel,
+              nvidiaApiKey,
+              formattedMessages,
               {
                 temperature: 0.7,
-                top_p: 0.95,
+                top_p: 0.9,
                 max_tokens: 1000,
+                stop: null,
+                stream: false,
                 tools: TOOL_SUPPORTED_MODELS.some(model => 
                   config.model.toLowerCase().includes(model.toLowerCase())
-                ) ? getTools() : null // Pass tools to Gemini fallback if supported
+                ) ? getTools() : null // Pass tools to NVIDIA API if supported
               }
             );
             
             if (!response) {
-              logger.error('Empty response from fallback Gemini API');
-              return 'Maaf, Together.AI API gagal dan Gemini API tidak memberikan respons. Coba lagi nanti ya~';
+              logger.error('Empty response from NVIDIA API');
+              return 'Maaf, NVIDIA API tidak memberikan respons. Coba lagi nanti ya~';
             }
             
-            logger.success(`Successfully processed fallback Gemini API response`);
+            logger.success(`Successfully processed NVIDIA API response`);
             
-            // Check for tool calls in Gemini fallback response
+            // Check for tool calls first
             if (response.choices && response.choices.length > 0 && 
                 response.choices[0].message && response.choices[0].message.tool_calls) {
               
-              // Handle tool calls from Gemini fallback
-              logger.info('Gemini fallback returned tool calls, processing...');
+              // Handle tool calls
+              logger.info('NVIDIA returned tool calls, processing...');
               
               try {
                 const toolCall = response.choices[0].message.tool_calls[0];
                 const result = await handleToolCall(toolCall.function);
                 return result;
               } catch (toolError) {
-                logger.error('Error handling tool calls from Gemini fallback', toolError);
+                logger.error('Error handling tool calls from NVIDIA', toolError);
                 return `Maaf, terjadi kesalahan saat memproses tool calls: ${toolError.message}`;
               }
             }
             
-            // Process normal text response from Gemini fallback
+            // If no tool calls, process as normal text response
             if (response.choices && response.choices.length > 0 && 
                 response.choices[0].message && response.choices[0].message.content) {
               
@@ -557,16 +536,138 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
                 processedContent = processedContent.replace(/^\s*\n+/, '').replace(/\n+\s*$/, '');
               }
               
-              logger.success(`Successfully processed fallback AI response (${processedContent.length} chars)`);
+              logger.success(`Successfully processed AI response (${processedContent.length} chars)`);
               return processedContent;
             } else {
-              logger.error('Invalid response format from fallback Gemini API');
-              return 'Maaf, format respons dari Gemini API fallback tidak valid. Coba lagi nanti ya~';
+              logger.error('Invalid response format from NVIDIA API');
+              return 'Maaf, format respons dari NVIDIA API tidak valid. Coba lagi nanti ya~';
             }
-          } catch (fallbackError) {
-            logger.error('Fallback to Gemini API failed', fallbackError);
-            return `Maaf, terjadi kesalahan dengan Together.AI API dan Gemini API fallback: ${fallbackError.message}. Coba lagi nanti ya~`;
+          } catch (nvidiaError) {
+            logger.error('NVIDIA API request failed', nvidiaError);
+            let errorMessage = nvidiaError.message || 'Unknown error';
+            let errorCode = nvidiaError.response?.status || 'unknown';
+            let errorDetail = '';
+            
+            if (nvidiaError.response?.data?.error?.message) {
+              errorDetail = nvidiaError.response.data.error.message;
+              logger.debug(`NVIDIA detailed error: ${errorDetail}`);
+            }
+            
+            // Check for specific error types to inform fallback decisions
+            const isRateLimited = errorCode === 429 || 
+              RATE_LIMIT_ERRORS.some(term => 
+                errorMessage.toLowerCase().includes(term) || 
+                (errorDetail && errorDetail.toLowerCase().includes(term))
+              );
+            
+            const isContextTooLong = 
+              errorCode === 422 && 
+              (errorDetail.includes('tokens + `max_new_tokens`') || 
+               errorDetail.includes('Input validation error') ||
+               errorDetail.includes('token limit'));
+               
+            const isModelUnavailable = 
+              errorCode === 404 || 
+              errorMessage.includes('not found') || 
+              errorMessage.includes('unavailable');
+            
+            // For these error types, try Gemini as fallback
+            if (isRateLimited || isContextTooLong || isModelUnavailable) {
+              // Log appropriate message based on error type
+              if (isRateLimited) {
+              logger.warning('NVIDIA API rate limited, falling back to Gemini API');
+              } else if (isContextTooLong) {
+                logger.warning(`NVIDIA context too long (${errorDetail}), falling back to Gemini API`);
+              } else if (isModelUnavailable) {
+                logger.warning(`NVIDIA model unavailable (${errorDetail}), falling back to Gemini API`);
+              }
+              // Check if Gemini API key is available
+              const geminiApiKey = config.geminiApiKey || process.env.GEMINI_API_KEY;
+              
+              if (!geminiApiKey) {
+                logger.warning('Gemini API key not configured for fallback');
+                return `Maaf, terjadi kesalahan dengan Together.AI API: ${isContextTooLong ? 'Pesan terlalu panjang' : errorMessage}. Gemini API key tidak tersedia untuk fallback. Coba lagi nanti ya~`;
+              }
+              
+              try {
+                // Convert messages to Gemini format
+                const formattedMessages = formatMessagesForAPI(messages, config);
+                
+                // For context length issues, reduce message count by truncating history
+                let truncatedMessages = formattedMessages;
+                
+                // Use Gemini 2.0 Flash as fallback for most cases
+                // For context too long, try Gemini 2.0 Pro which has larger context window
+                const fallbackModel = 'gemini-2.0-flash';
+                logger.info(`Falling back to Gemini API with model: ${fallbackModel}`);
+                
+                // Call Gemini API
+                const response = await requestGeminiChat(
+                  fallbackModel,
+                  geminiApiKey,
+                  truncatedMessages,
+                  {
+                    temperature: 0.7,
+                    top_p: 0.95,
+                    max_tokens: 1000,
+                    tools: TOOL_SUPPORTED_MODELS.some(model => 
+                      config.model.toLowerCase().includes(model.toLowerCase())
+                    ) ? getTools() : null // Pass tools to Gemini fallback if supported
+                  }
+                );
+                
+                if (!response) {
+                  logger.error('Empty response from fallback Gemini API');
+                  return 'Maaf, Together.AI API gagal dan Gemini API tidak memberikan respons. Coba lagi nanti ya~';
+                }
+                
+                logger.success(`Successfully processed fallback Gemini API response`);
+                
+                // Check for tool calls in Gemini fallback response
+                if (response.choices && response.choices.length > 0 && 
+                    response.choices[0].message && response.choices[0].message.tool_calls) {
+                  
+                  // Handle tool calls from Gemini fallback
+                  logger.info('Gemini fallback returned tool calls, processing...');
+                  
+                  try {
+                    const toolCall = response.choices[0].message.tool_calls[0];
+                    const result = await handleToolCall(toolCall.function);
+                    return result;
+                  } catch (toolError) {
+                    logger.error('Error handling tool calls from Gemini fallback', toolError);
+                    return `Maaf, terjadi kesalahan saat memproses tool calls: ${toolError.message}`;
+                  }
+                }
+                
+                // Process normal text response from Gemini fallback
+                if (response.choices && response.choices.length > 0 && 
+                    response.choices[0].message && response.choices[0].message.content) {
+                  
+                  let processedContent = response.choices[0].message.content;
+                  
+                  // Trim leading/trailing newlines
+                  if (processedContent.match(/^\s*\n+/) || processedContent.match(/\n+\s*$/)) {
+                    processedContent = processedContent.replace(/^\s*\n+/, '').replace(/\n+\s*$/, '');
+                  }
+                  
+                  logger.success(`Successfully processed fallback AI response (${processedContent.length} chars)`);
+                  return processedContent;
+                } else {
+                  logger.error('Invalid response format from fallback Gemini API');
+                  return 'Maaf, format respons dari Gemini API fallback tidak valid. Coba lagi nanti ya~';
+                }
+              } catch (fallbackError) {
+                logger.error('Fallback to Gemini API failed', fallbackError);
+                return `Maaf, terjadi kesalahan dengan Together.AI API, NVIDIA API, dan Gemini API fallback: ${fallbackError.message}. Coba lagi nanti ya~`;
+              }
+            } else {
+              const errorResponse = `Maaf, terjadi kesalahan dengan Together.AI API, NVIDIA API, dan Gemini API fallback: ${errorDetail || errorMessage}. Coba lagi nanti ya~`;
+              logger.debug('Returning error response', { errorResponse });
+              return errorResponse;
+            }
           }
+          
         } else {
           // For other errors, return a helpful message
           const errorResponse = `Maaf, terjadi kesalahan dengan Together.AI API: ${errorDetail || errorMessage}. Coba lagi nanti ya~`;
@@ -3207,294 +3308,6 @@ function formatSearchResults(results) {
   });
   
   return formattedText;
-}
-
-// Function to fetch and extract content from a URL
-async function fetchUrlContent(url, options = {}) {
-  try {
-    logger.info(`Fetching content from URL: ${url}`);
-    
-    // Get user's query/message if provided
-    const userQuery = options.userQuery || options.lastMessage || '';
-    logger.debug(`User query for content summary: "${userQuery}"`);
-    
-    // Validate URL
-    let validatedUrl;
-    try {
-      validatedUrl = new URL(url);
-    } catch (urlError) {
-      logger.error(`Invalid URL: ${url}`);
-      return {
-        success: false,
-        error: 'Invalid URL',
-        message: `URL tidak valid: ${url}`
-      };
-    }
-    
-    // Check if protocol is http or https
-    if (validatedUrl.protocol !== 'http:' && validatedUrl.protocol !== 'https:') {
-      logger.error(`Unsupported protocol: ${validatedUrl.protocol}`);
-      return {
-        success: false,
-        error: 'Unsupported protocol',
-        message: `Protocol tidak didukung: ${validatedUrl.protocol}. Hanya http dan https yang diizinkan.`
-      };
-    }
-    
-    // Check if URL is from a file hosting service (safety check)
-    const dangerousDomains = ['drive.google.com', 'docs.google.com', 'github.com', 'gitlab.com', 'amazonaws.com'];
-    if (dangerousDomains.some(domain => validatedUrl.hostname.includes(domain))) {
-      logger.warn(`Blocked file hosting domain: ${validatedUrl.hostname}`);
-      return {
-        success: false,
-        error: 'URL blocked for security reasons',
-        message: `URL dari domain ${validatedUrl.hostname} diblokir untuk alasan keamanan.`
-      };
-    }
-    
-    // Import required packages
-    const puppeteer = await import('puppeteer');
-    const turndown = await import('turndown');
-    const TurndownService = turndown.default;
-    
-    logger.info('Launching headless browser to render page');
-    
-    // Launch puppeteer for fully rendered content
-    const browser = await puppeteer.default.launch({
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
-    
-    const page = await browser.newPage();
-    
-    // Set timeout to prevent hanging on problematic sites
-    await page.setDefaultNavigationTimeout(15000);
-    
-    // Set user agent to avoid detection
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-    
-    try {
-      // Navigate to the URL
-      await page.goto(url, { waitUntil: 'networkidle2' });
-      
-      // Get page title
-      const title = await page.title();
-      
-      // Extract main content
-      let mainContent = '';
-      
-      // Try extracting from main content selectors
-      const mainSelectors = [
-        'article', 'main', '[role="main"]', '.main-content', '#main-content',
-        '.post-content', '.article-content', '.content', '#content'
-      ];
-      
-      for (const selector of mainSelectors) {
-        const element = await page.$(selector);
-        if (element) {
-          mainContent = await page.evaluate(el => el.innerText, element);
-          break;
-        }
-      }
-      
-      // If no main content found, extract from paragraphs
-      if (!mainContent) {
-        mainContent = await page.evaluate(() => {
-          const paragraphs = document.querySelectorAll('p');
-          if (paragraphs.length === 0) return document.body.innerText;
-          
-          return Array.from(paragraphs)
-            .map(p => p.innerText.trim())
-            .filter(text => text.length > 50)
-            .join('\n\n');
-        });
-      }
-      
-      // Get full HTML content
-      const fullHtml = await page.content();
-      
-      // Convert HTML to Markdown
-      const turndownService = new TurndownService({
-        headingStyle: 'atx',
-        codeBlockStyle: 'fenced'
-      });
-      
-      // Add plugins or rules to improve conversion
-      turndownService.addRule('removeEmptyParagraphs', {
-        filter: node => {
-          return node.nodeName === 'P' && node.textContent.trim() === '';
-        },
-        replacement: () => ''
-      });
-      
-      const markdown = turndownService.turndown(fullHtml);
-      
-      // Truncate markdown if too long (keep important parts)
-      const maxMarkdownLength = 5000;
-      let truncatedMarkdown = markdown;
-      if (markdown.length > maxMarkdownLength) {
-        truncatedMarkdown = markdown.substring(0, maxMarkdownLength) + '... (content truncated)';
-      }
-      
-      // Clean up content
-      mainContent = mainContent
-        .replace(/\s+/g, ' ')      // Replace multiple whitespace with single space
-        .replace(/\n\s+/g, '\n')   // Remove leading spaces after newlines
-        .trim();                   // Trim leading/trailing whitespace
-      
-      // Truncate if too long (limit to ~2000 chars for readability)
-      const maxLength = 2000;
-      let truncatedContent = mainContent;
-      if (mainContent.length > maxLength) {
-        truncatedContent = mainContent.substring(0, maxLength) + '... (content truncated)';
-      }
-      
-      // Close browser
-      await browser.close();
-      
-      logger.success(`Successfully extracted content from URL (${truncatedMarkdown.length} chars of markdown)`);
-      
-      // Use Gemini to generate a natural summary of the content
-      logger.info('Generating AI summary of web content');
-      const apiKey = process.env.GEMINI_API_KEY;
-      
-      if (!apiKey) {
-        logger.warning('No Gemini API key found, returning raw content without AI summary');
-        
-        // NEW: Save content to memory
-        try {
-          // Import the memory service function
-          const { storeWebContent } = await import('./memoryService.js');
-          
-          // Store the URL content
-          await storeWebContent(url, title, truncatedContent, {
-            fullContent: mainContent,
-            markdown: truncatedMarkdown,
-            userQuery: userQuery
-          });
-          logger.info(`Saved web content from "${url}" to memory`);
-        } catch (memoryError) {
-          logger.warning(`Failed to save URL content to memory: ${memoryError.message}`);
-        }
-        
-        return {
-          success: true,
-          title: title,
-          url: url,
-          content: truncatedContent,
-          markdown: truncatedMarkdown,
-          fullContent: mainContent,
-          message: `# ${title}\n\n${truncatedContent}\n\nSumber: ${url}`
-        };
-      }
-      
-      // Format messages for Gemini, including the user's original query if available
-      const promptContent = `Kamu adalah AI asisten yang diminta untuk meringkas konten dari halaman web.
-      
-Berikut adalah konten dalam format markdown dari halaman "${title}" (${url}):
-
-${truncatedMarkdown}
-
-${userQuery ? `Pengguna bertanya atau meminta: "${userQuery}"
-
-Berikan ringkasan yang langsung berhubungan dengan pertanyaan/permintaan pengguna, jika relevan.` : 'Berikan ringkasan umum dari konten halaman web ini.'}
-
-PENTING: Fokus HANYA pada isi substantif dan informasi utama halaman web. JANGAN meringkas atau menjelaskan:
-- Elemen navigasi (menu, link, footer)
-- UI/UX halaman (header, sidebar, layout)
-- Tema visual atau tata letak halaman
-- Komponen website seperti form login, panel pencarian, dll
-- Struktur situs (beranda, toko, dll)
-- Informasi yang tidak berkaitan dengan konten utama
-
-Tolong berikan ringkasan informatif dan natural dari konten substantif di atas. Fokus pada: 
-
-1. Informasi utama dan kunci dari konten (produk, artikel, berita, dll)
-2. Fakta-fakta relevan, harga, tanggal, dan statistik penting
-3. Kesimpulan utama atau poin penting dari artikel/halaman
-${userQuery ? `4. Informasi yang secara langsung menjawab pertanyaan pengguna: "${userQuery}"` : ''}
-
-Untuk halaman produk atau game: Fokus pada deskripsi produk, fitur, harga, spesifikasi, ulasan pengguna, dll.
-Untuk artikel/berita: Fokus pada fakta/informasi utama, penulis, tanggal, quotes penting.
-Untuk halaman informasi: Fokus pada topik, data/fakta substantif, poin-poin kunci.
-
-Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (URL). Jangan menyebutkan bahwa ini adalah ringkasan. Cukup berikan informasinya langsung dengan bahasa yang natural, seperti kamu sedang menjelaskan konten halaman ini kepada pengguna. Pastikan responsenya panjangnya tidak lebih dari 400 kata.`;
-
-      const messages = [
-        { 
-          role: 'user', 
-          content: promptContent
-        }
-      ];
-      
-      // Request AI summary from Gemini
-      const aiSummaryResponse = await requestGeminiChat(
-        'gemini-2.0-flash',
-        apiKey,
-        messages,
-        {
-          temperature: 0.3,
-          top_p: 0.85,
-          max_tokens: 1500
-        }
-      );
-      
-      // Extract summary from response
-      let aiSummary = '';
-      if (aiSummaryResponse?.choices?.[0]?.message?.content) {
-        aiSummary = aiSummaryResponse.choices[0].message.content;
-      } else {
-        // Fallback if there's an issue with AI summary
-        logger.warning('Couldn\'t get AI summary, falling back to raw content');
-        aiSummary = truncatedContent;
-      }
-      
-      // Create the final message with AI summary and source
-      const finalMessage = `# ${title}\n\n${aiSummary}\n\nSumber: ${url}`;
-      
-      // NEW: Save content to memory with AI summary
-      try {
-        // Import the memory service function
-        const { storeWebContent } = await import('./memoryService.js');
-        
-        // Store the URL content with AI summary
-        await storeWebContent(url, title, truncatedContent, {
-          fullContent: mainContent,
-          markdown: truncatedMarkdown,
-          userQuery: userQuery,
-          aiSummary: aiSummary
-        });
-        logger.info(`Saved web content from "${url}" to memory with AI summary`);
-      } catch (memoryError) {
-        logger.warning(`Failed to save URL content to memory: ${memoryError.message}`);
-      }
-      
-      return {
-        success: true,
-        title: title,
-        url: url,
-        content: truncatedContent,
-        markdown: truncatedMarkdown,
-        fullContent: mainContent,
-        aiSummary: aiSummary,
-        message: finalMessage
-      };
-    } catch (error) {
-      logger.error(`Error fetching content from URL: ${error.message}`);
-      return {
-        success: false,
-        error: error.message,
-        message: `Maaf, terjadi kesalahan saat mengambil konten dari URL: ${error.message}`
-      };
-    }
-  } catch (error) {
-    logger.error(`Error fetching content from URL: ${error.message}`);
-    return {
-      success: false,
-      error: error.message,
-      message: `Maaf, terjadi kesalahan saat mengambil konten dari URL: ${error.message}`
-    };
-  }
 }
 
 /**
