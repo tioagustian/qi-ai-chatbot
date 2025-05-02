@@ -59,14 +59,19 @@ async function fetchUrlContent(url, options = {}) {
         '--disable-setuid-sandbox',
         '--enable-javascript',
         '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process'
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-dev-shm-usage', // Helps with memory issues in Docker
+        '--disable-accelerated-2d-canvas', // Reduces CPU usage
+        '--no-first-run',
+        '--no-zygote',
+        '--disable-gpu'
       ]
     });
     
     const page = await browser.newPage();
     
-    // Set timeout to prevent hanging on problematic sites
-    await page.setDefaultNavigationTimeout(20000);
+    // Increase timeouts for better content loading
+    await page.setDefaultNavigationTimeout(30000);
     
     // Set a more modern user agent
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
@@ -74,20 +79,34 @@ async function fetchUrlContent(url, options = {}) {
     // Enable JavaScript
     await page.setJavaScriptEnabled(true);
     
-    // Set viewport for better rendering
+    // Set viewport for better rendering (larger to capture more content)
     await page.setViewport({
-      width: 1280,
-      height: 800
+      width: 1920,
+      height: 1080
+    });
+    
+    // Intercept network requests to reduce unnecessary resources
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      // Block unnecessary resources to speed up loading
+      const resourceType = req.resourceType();
+      if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+        req.abort();
+      } else {
+        req.continue();
+      }
     });
     
     try {
       // Navigate to the URL with improved waiting strategy
+      logger.info(`Navigating to URL: ${url}`);
       await page.goto(url, { 
         waitUntil: ['networkidle2', 'domcontentloaded', 'load'],
-        timeout: 20000
+        timeout: 30000
       });
       
       // Wait for common dynamic content selectors to appear
+      logger.info('Waiting for content selectors to appear');
       await Promise.race([
         page.waitForSelector('article', { timeout: 3000 }).catch(() => {}),
         page.waitForSelector('main', { timeout: 3000 }).catch(() => {}),
@@ -101,8 +120,99 @@ async function fetchUrlContent(url, options = {}) {
       // Using setTimeout with a promise instead of waitForTimeout
       await new Promise(resolve => setTimeout(resolve, 2000));
       
+      // ---- NEW: Enhanced content loading strategy ----
+      
+      // 1. Check if page has infinite scroll or lazy loading elements
+      logger.info('Checking for lazy-loaded content and performing smart scrolling');
+      const hasLazyContent = await page.evaluate(() => {
+        // Check for common lazy loading patterns
+        return document.body.innerHTML.includes('lazy') || 
+               document.body.innerHTML.includes('loading="lazy"') || 
+               document.body.innerHTML.includes('data-src') ||
+               document.body.innerHTML.includes('infinite') ||
+               document.querySelectorAll('[data-lazy], [data-load], .lazy, .lazyload').length > 0;
+      });
+      
+      // 2. Perform intelligent scrolling to trigger lazy loading
+      if (hasLazyContent) {
+        logger.info('Detected lazy loading, performing progressive scrolling');
+        await page.evaluate(async () => {
+          const scrollStep = window.innerHeight / 2;
+          const scrollDelay = 1000;
+          
+          // Get initial document height
+          let lastHeight = document.body.scrollHeight;
+          let totalScrolls = 0;
+          let noChangeCount = 0;
+          
+          function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+          }
+          
+          // Scroll down in steps, waiting for content to load
+          while (totalScrolls < 10 && noChangeCount < 3) {
+            window.scrollBy(0, scrollStep);
+            await sleep(scrollDelay);
+            
+            // Check if the page height has changed
+            if (document.body.scrollHeight > lastHeight) {
+              lastHeight = document.body.scrollHeight;
+              noChangeCount = 0;
+            } else {
+              noChangeCount++;
+            }
+            
+            totalScrolls++;
+          }
+          
+          // Scroll back to top
+          window.scrollTo(0, 0);
+        });
+        
+        // Wait for any newly loaded content
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+      
+      // 3. Click "Read More" buttons or load more content buttons if they exist
+      logger.info('Looking for and clicking "Read More" or "Load More" buttons');
+      await page.evaluate(async () => {
+        // Common button text patterns for expanding content
+        const buttonPatterns = [
+          'read more', 'load more', 'show more', 'view more', 'continue reading',
+          'baca selengkapnya', 'muat lebih banyak', 'lihat selengkapnya', 'lanjutkan membaca',
+          'more', 'expand', 'selengkapnya'
+        ];
+        
+        // Find and click buttons that match these patterns
+        const allElements = document.querySelectorAll('button, a, div, span');
+        
+        for (const element of allElements) {
+          const text = element.innerText.toLowerCase().trim();
+          const hasMatchingText = buttonPatterns.some(pattern => text.includes(pattern));
+          
+          if (hasMatchingText && element.offsetParent !== null) {
+            try {
+              element.click();
+              // Wait for content to load
+              await new Promise(r => setTimeout(r, 1000));
+            } catch (e) {
+              // Ignore click errors
+            }
+          }
+        }
+      });
+      
+      // 4. Wait after clicking buttons
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // 5. Expand all details/summary elements
+      await page.evaluate(() => {
+        document.querySelectorAll('details').forEach(detail => detail.setAttribute('open', true));
+      });
+      
       // Get page title
       const title = await page.title();
+      logger.info(`Page title: "${title}"`);
       
       // Extract main content with improved selectors
       let mainContent = '';
@@ -118,11 +228,13 @@ async function fetchUrlContent(url, options = {}) {
       ];
       
       // First attempt to find a main content container
+      logger.info('Extracting main content from selectors');
       for (const selector of mainSelectors) {
         const element = await page.$(selector);
         if (element) {
           mainContent = await page.evaluate(el => el.innerText, element);
           if (mainContent && mainContent.length > 100) {
+            logger.info(`Found content in selector: ${selector}`);
             break;
           }
         }
@@ -130,6 +242,7 @@ async function fetchUrlContent(url, options = {}) {
       
       // If no main content found or it's too short, try a more advanced extraction method
       if (!mainContent || mainContent.length < 100) {
+        logger.info('Using advanced content extraction method');
         mainContent = await page.evaluate(() => {
           // Get all text nodes in the document
           const textNodes = [];
@@ -211,20 +324,75 @@ async function fetchUrlContent(url, options = {}) {
         });
       }
       
-      // If still no content, fallback to all paragraphs
+      // If still no content, fallback to all paragraphs with improved text extraction
       if (!mainContent || mainContent.length < 100) {
+        logger.info('Using paragraph fallback extraction method');
         mainContent = await page.evaluate(() => {
-          const paragraphs = document.querySelectorAll('p');
-          if (paragraphs.length === 0) return document.body.innerText;
+          // Get all elements that typically contain text content
+          const contentElements = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, div > div, li, blockquote');
           
-          return Array.from(paragraphs)
-            .map(p => p.innerText.trim())
-            .filter(text => text.length > 20)
+          // Filter and process content
+          return Array.from(contentElements)
+            .filter(el => {
+              // Skip empty elements or those with very little content
+              if (!el.textContent || el.textContent.trim().length < 20) return false;
+              
+              // Skip hidden elements
+              if (el.offsetParent === null) return false;
+              
+              // Skip elements with certain class names
+              const classList = Array.from(el.classList).join(' ').toLowerCase();
+              if (/nav|footer|header|sidebar|comment|widget|menu/.test(classList)) return false;
+              
+              return true;
+            })
+            .map(el => el.textContent.trim())
             .join('\n\n');
         });
       }
       
+      // NEW: Try extracting content from iframes if main page content is insufficient
+      if (!mainContent || mainContent.length < 200) {
+        logger.info('Checking for content in iframes');
+        const iframes = await page.$$('iframe');
+        
+        if (iframes.length > 0) {
+          logger.info(`Found ${iframes.length} iframes, trying to extract content`);
+          
+          for (const frame of iframes) {
+            try {
+              // Get iframe source
+              const src = await page.evaluate(el => el.src, frame);
+              
+              if (src && !src.includes('ads') && !src.includes('tracker') && !src.includes('analytics')) {
+                // Navigate to iframe source
+                const iframePage = await browser.newPage();
+                await iframePage.goto(src, { waitUntil: 'networkidle2', timeout: 10000 });
+                
+                // Extract content from iframe
+                const iframeContent = await iframePage.evaluate(() => {
+                  return document.body.innerText;
+                });
+                
+                // Close iframe page
+                await iframePage.close();
+                
+                // If iframe has meaningful content, use it
+                if (iframeContent && iframeContent.length > 200) {
+                  mainContent = iframeContent;
+                  logger.info('Successfully extracted content from iframe');
+                  break;
+                }
+              }
+            } catch (e) {
+              logger.warn(`Error extracting iframe content: ${e.message}`);
+            }
+          }
+        }
+      }
+      
       // Get more structured data using schema.org metadata if available
+      logger.info('Extracting structured data');
       const structuredData = await page.evaluate(() => {
         const schemaElements = document.querySelectorAll('[itemtype*="schema.org"], script[type="application/ld+json"]');
         
@@ -293,7 +461,7 @@ async function fetchUrlContent(url, options = {}) {
         // Using setTimeout with a promise instead of waitForTimeout
         await new Promise(resolve => setTimeout(resolve, 3000));
         
-        // Try extraction again
+        // Try extraction again with broader selector range
         mainContent = await page.evaluate(() => {
           const paragraphs = document.querySelectorAll('p, h1, h2, h3, h4, h5, article, section, div > div');
           return Array.from(paragraphs)
@@ -304,6 +472,7 @@ async function fetchUrlContent(url, options = {}) {
       }
       
       // Convert HTML to Markdown with improved settings
+      logger.info('Converting HTML to Markdown');
       const turndownService = new TurndownService({
         headingStyle: 'atx',
         codeBlockStyle: 'fenced',
@@ -333,8 +502,39 @@ async function fetchUrlContent(url, options = {}) {
       
       const markdown = turndownService.turndown(fullHtml);
       
+      // NEW: Verify content quality and length
+      const contentQualityCheck = mainContent.length > 500;
+      logger.info(`Content quality check: ${contentQualityCheck ? 'PASS' : 'FAIL'} (${mainContent.length} chars)`);
+      
+      // If content quality is poor, try one more extraction approach
+      if (!contentQualityCheck) {
+        logger.info('Content quality check failed, trying final extraction approach');
+        
+        // Try an additional extraction method focusing on the densest content areas
+        mainContent = await page.evaluate(() => {
+          // Get all elements with substantial text
+          const elements = Array.from(document.querySelectorAll('*'))
+            .filter(el => {
+              const text = el.innerText || '';
+              return text.length > 100 && 
+                     !['SCRIPT', 'STYLE', 'NOSCRIPT', 'IFRAME'].includes(el.tagName);
+            })
+            .map(el => ({
+              element: el,
+              textLength: el.innerText.length,
+              childCount: el.children.length,
+              textDensity: el.innerText.length / (el.children.length || 1)
+            }))
+            .sort((a, b) => b.textDensity - a.textDensity);
+          
+          // Get the highest density elements
+          const topElements = elements.slice(0, 5);
+          return topElements.map(item => item.element.innerText).join('\n\n');
+        });
+      }
+      
       // Truncate markdown if too long (keep important parts)
-      const maxMarkdownLength = 5000;
+      const maxMarkdownLength = 8000; // Increased from 5000
       let truncatedMarkdown = markdown;
       if (markdown.length > maxMarkdownLength) {
         truncatedMarkdown = markdown.substring(0, maxMarkdownLength) + '... (content truncated)';
@@ -346,11 +546,12 @@ async function fetchUrlContent(url, options = {}) {
         .replace(/\n\s+/g, '\n')   // Remove leading spaces after newlines
         .trim();                   // Trim leading/trailing whitespace
       
-      // Truncate if too long (limit to ~2000 chars for readability)
-      const maxLength = 2000;
+      // Truncate if too long (increased limit for better completeness)
+      const maxLength = 4000; // Increased from 2000
       let truncatedContent = mainContent;
       if (mainContent.length > maxLength) {
         truncatedContent = mainContent.substring(0, maxLength) + '... (content truncated)';
+        logger.info(`Content truncated from ${mainContent.length} to ${maxLength} chars`);
       }
       
       // Close browser
