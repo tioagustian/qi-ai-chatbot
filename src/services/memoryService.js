@@ -1135,18 +1135,18 @@ async function extractGlobalKnowledgeFromRelevantFacts(relevantFacts, existingGl
         }
         
         try {
-          // Add to global facts
-          await addGlobalFact(formattedKey, factData.value, {
-            confidence: factData.confidence,
-            category: category,
-            tags: factData.tags || [],
-            factType: factData.factType || FACT_TYPES.EXPLICIT,
-            source: 'extracted_from_relevant_facts'
-          });
-          
-          globalFactsAdded++;
-          
-          logger.info(`Added global fact from relevant facts: "${formattedKey}" = "${factData.value}"`);
+        // Add to global facts
+        await addGlobalFact(formattedKey, factData.value, {
+          confidence: factData.confidence,
+          category: category,
+          tags: factData.tags || [],
+          factType: factData.factType || FACT_TYPES.EXPLICIT,
+          source: 'extracted_from_relevant_facts'
+        });
+        
+        globalFactsAdded++;
+        
+        logger.info(`Added global fact from relevant facts: "${formattedKey}" = "${factData.value}"`);
         } catch (addError) {
           logger.warning(`Failed to add global fact "${formattedKey}": ${addError.message}`);
         }

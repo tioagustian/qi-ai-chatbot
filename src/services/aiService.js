@@ -469,7 +469,7 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
         if (isRateLimited || isContextTooLong || isModelUnavailable) {
           // Log appropriate message based on error type
           if (isRateLimited) {
-            logger.warning('Together.AI API rate limited, falling back to Gemini API');
+          logger.warning('Together.AI API rate limited, falling back to Gemini API');
           } else if (isContextTooLong) {
             logger.warning(`Together.AI context too long (${errorDetail}), falling back to Gemini API`);
           } else if (isModelUnavailable) {
@@ -514,10 +514,8 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
               truncatedMessages,
               {
                 temperature: 0.7,
-                top_p: 0.9,
+                top_p: 0.95,
                 max_tokens: 1000,
-                stop: null,
-                stream: false,
                 tools: TOOL_SUPPORTED_MODELS.some(model => 
                   config.model.toLowerCase().includes(model.toLowerCase())
                 ) ? getTools() : null // Pass tools to Gemini fallback if supported
@@ -1419,7 +1417,7 @@ async function generateAIResponse2(botConfig, contextMessages, streamCallback = 
       if (provider === 'gemini') {
         // Gemini provider
         const apiKey = botConfig.geminiApiKey || process.env.GEMINI_API_KEY;
-        if (!apiKey) {
+      if (!apiKey) {
           throw new Error('Gemini API key not configured');
         }
         
@@ -1449,7 +1447,7 @@ async function generateAIResponse2(botConfig, contextMessages, streamCallback = 
       else if (provider === 'together') {
         // Together.AI provider
         const apiKey = botConfig.togetherApiKey || process.env.TOGETHER_API_KEY;
-        if (!apiKey) {
+    if (!apiKey) {
           throw new Error('Together.AI API key not configured');
         }
         
@@ -1500,7 +1498,7 @@ async function generateAIResponse2(botConfig, contextMessages, streamCallback = 
             
             const retryResponse = await requestTogetherChat(
               modelId,
-              apiKey,
+        apiKey,
               reducedMessages,
               {
                 temperature: 0.7,
@@ -1761,21 +1759,36 @@ async function requestGeminiChat(model, apiKey, messages, params) {
     // Add tools support according to the Gemini API documentation
     // https://ai.google.dev/gemini-api/docs/function-calling
     if (params.tools) {
-      requestData.tools = params.tools.map(tool => {
+      // Check if we're using a newer Gemini model (2.0+) which requires different formatting
+      if (normalizedModel.includes('gemini-2') || normalizedModel.includes('gemini-1.5')) {
+        // For Gemini 1.5/2.0, use the newer format with toolConfig
+        requestData.toolConfig = {
+          functionCallingConfig: {
+            mode: "AUTO"
+          }
+        };
+        
         // Convert OpenAI-style tools to Gemini-style tools
-        if (tool.type === 'function' && tool.function) {
-          return {
-            functionDeclarations: [
-              {
-                name: tool.function.name,
-                description: tool.function.description || '',
-                parameters: tool.function.parameters
-              }
-            ]
-          };
+        const functionDeclarations = params.tools
+          .filter(tool => tool.type === 'function' && tool.function)
+          .map(tool => ({
+            name: tool.function.name,
+            description: tool.function.description || '',
+            parameters: tool.function.parameters
+          }));
+        
+        if (functionDeclarations.length > 0) {
+          requestData.tools = [
+            {
+              functionDeclarations
+            }
+          ];
         }
-        return tool;
-      });
+      } else {
+        // Older Gemini API format
+        logger.warning('Using older Gemini model, function calling might not be supported');
+        // Don't add tools to the request for older models
+      }
     }
     
     logger.debug('Sending request to Gemini API', {
@@ -1795,6 +1808,7 @@ async function requestGeminiChat(model, apiKey, messages, params) {
       }
     };
     
+    console.log('requestData', JSON.stringify(requestData, null, 2));
     // Make request to Gemini API
     const response = await axios.post(endpoint, requestData, requestOptions);
     
@@ -3307,14 +3321,26 @@ ${userQuery ? `Pengguna bertanya atau meminta: "${userQuery}"
 
 Berikan ringkasan yang langsung berhubungan dengan pertanyaan/permintaan pengguna, jika relevan.` : 'Berikan ringkasan umum dari konten halaman web ini.'}
 
-Tolong berikan ringkasan informatif dan natural dari konten di atas. Fokus pada: 
+PENTING: Fokus HANYA pada isi substantif dan informasi utama halaman web. JANGAN meringkas atau menjelaskan:
+- Elemen navigasi (menu, link, footer)
+- UI/UX halaman (header, sidebar, layout)
+- Tema visual atau tata letak halaman
+- Komponen website seperti form login, panel pencarian, dll
+- Struktur situs (beranda, toko, dll)
+- Informasi yang tidak berkaitan dengan konten utama
 
-1. Informasi utama dan kunci dari konten
-2. Fakta-fakta relevan, tanggal, dan statistik penting
-3. Kesimpulan utama atau poin penting dari artikel
+Tolong berikan ringkasan informatif dan natural dari konten substantif di atas. Fokus pada: 
+
+1. Informasi utama dan kunci dari konten (produk, artikel, berita, dll)
+2. Fakta-fakta relevan, harga, tanggal, dan statistik penting
+3. Kesimpulan utama atau poin penting dari artikel/halaman
 ${userQuery ? `4. Informasi yang secara langsung menjawab pertanyaan pengguna: "${userQuery}"` : ''}
 
-Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (URL) karena akan ditambahkan nanti. Jangan menyebutkan bahwa ini adalah ringkasan. Cukup berikan informasinya langsung dengan bahasa yang natural, seperti kamu sedang menjelaskan isi halaman ini kepada pengguna. Pastikan responsenya panjangnya tidak lebih dari 400 kata.`;
+Untuk halaman produk atau game: Fokus pada deskripsi produk, fitur, harga, spesifikasi, ulasan pengguna, dll.
+Untuk artikel/berita: Fokus pada fakta/informasi utama, penulis, tanggal, quotes penting.
+Untuk halaman informasi: Fokus pada topik, data/fakta substantif, poin-poin kunci.
+
+Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (URL). Jangan menyebutkan bahwa ini adalah ringkasan. Cukup berikan informasinya langsung dengan bahasa yang natural, seperti kamu sedang menjelaskan konten halaman ini kepada pengguna. Pastikan responsenya panjangnya tidak lebih dari 400 kata.`;
 
       const messages = [
         { 
@@ -3331,7 +3357,7 @@ Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (
         {
           temperature: 0.3,
           top_p: 0.85,
-          max_tokens: 800
+          max_tokens: 1500
         }
       );
       
@@ -3342,25 +3368,25 @@ Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (
       } else {
         // Fallback if there's an issue with AI summary
         logger.warning('Couldn\'t get AI summary, falling back to raw content');
-        aiSummary = truncatedContent.substring(0, 500) + '...';
+        aiSummary = truncatedContent;
       }
       
       // Create the final message with AI summary and source
       const finalMessage = `# ${title}\n\n${aiSummary}\n\nSumber: ${url}`;
       
-      // NEW: Save content to memory
+      // NEW: Save content to memory with AI summary
       try {
         // Import the memory service function
         const { storeWebContent } = await import('./memoryService.js');
         
         // Store the URL content with AI summary
-        await storeWebContent(url, title, aiSummary, {
+        await storeWebContent(url, title, truncatedContent, {
           fullContent: mainContent,
           markdown: truncatedMarkdown,
-          aiSummary: true,
-          userQuery: userQuery
+          userQuery: userQuery,
+          aiSummary: aiSummary
         });
-        logger.info(`Saved web content from "${url}" to memory`);
+        logger.info(`Saved web content from "${url}" to memory with AI summary`);
       } catch (memoryError) {
         logger.warning(`Failed to save URL content to memory: ${memoryError.message}`);
       }
@@ -3370,222 +3396,21 @@ Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (
         title: title,
         url: url,
         content: truncatedContent,
-        aiSummary: aiSummary,
         markdown: truncatedMarkdown,
         fullContent: mainContent,
-        message: finalMessage,
-        userQuery: userQuery
+        aiSummary: aiSummary,
+        message: finalMessage
       };
-    } catch (navigationError) {
-      // Close browser in case of error
-      await browser.close();
-      logger.error(`Error navigating to URL: ${navigationError.message}`);
-      
-      // Fall back to regular HTTP request if puppeteer navigation fails
-      logger.info('Falling back to direct HTTP request');
-      
-      // Make request with timeout
-      const response = await axios.get(url, {
-        timeout: 10000, // 10 seconds timeout
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-      });
-      
-      // Check content type
-      const contentType = response.headers['content-type'] || '';
-      if (!contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) {
-        logger.warn(`Unsupported content type: ${contentType}`);
-        return {
-          success: false,
-          error: 'Unsupported content type',
-          message: `Tipe konten tidak didukung: ${contentType}. Hanya halaman HTML yang didukung.`
-        };
-      }
-      
-      // Use JSDOM to parse HTML
-      const { JSDOM } = await import('jsdom');
-      const dom = new JSDOM(response.data);
-      const document = dom.window.document;
-      
-      // Extract title
-      const title = document.querySelector('title')?.textContent || 'No title';
-      
-      // Extract main content - same as before
-      let mainContent = '';
-      const mainSelectors = [
-        'article', 'main', '[role="main"]', '.main-content', '#main-content',
-        '.post-content', '.article-content', '.content', '#content'
-      ];
-      
-      for (const selector of mainSelectors) {
-        const element = document.querySelector(selector);
-        if (element) {
-          mainContent = element.textContent;
-          break;
-        }
-      }
-      
-      // If no main content found, extract from body with filtering
-      if (!mainContent) {
-        // Get all paragraph elements
-        const paragraphs = document.querySelectorAll('p');
-        if (paragraphs.length > 0) {
-          // Join all paragraphs
-          mainContent = Array.from(paragraphs)
-            .map(p => p.textContent.trim())
-            .filter(text => text.length > 50) // Only paragraphs with significant text
-            .join('\n\n');
-        } else {
-          // Fallback to body content
-          mainContent = document.body.textContent;
-        }
-      }
-      
-      // Clean up content
-      mainContent = mainContent
-        .replace(/\s+/g, ' ')      // Replace multiple whitespace with single space
-        .replace(/\n\s+/g, '\n')   // Remove leading spaces after newlines
-        .trim();                   // Trim leading/trailing whitespace
-      
-      // Truncate if too long (limit to ~2000 chars for readability)
-      const maxLength = 2000;
-      let truncatedContent = mainContent;
-      if (mainContent.length > maxLength) {
-        truncatedContent = mainContent.substring(0, maxLength) + '... (content truncated)';
-      }
-      
-      // Convert HTML to Markdown
-      const turndownService = new TurndownService();
-      const markdown = turndownService.turndown(response.data);
-      
-      // Truncate markdown if too long
-      const maxMarkdownLength = 5000;
-      let truncatedMarkdown = markdown;
-      if (markdown.length > maxMarkdownLength) {
-        truncatedMarkdown = markdown.substring(0, maxMarkdownLength) + '... (content truncated)';
-      }
-      
-      logger.success(`Successfully extracted content from URL using fallback method (${truncatedContent.length} chars)`);
-      
-      // Use Gemini to generate a natural summary of the content (same as above)
-      logger.info('Generating AI summary of web content');
-      const apiKey = process.env.GEMINI_API_KEY;
-      
-      if (!apiKey) {
-        logger.warning('No Gemini API key found, returning raw content without AI summary');
-        
-        // Save content to memory
-        try {
-          // Import the memory service function
-          const { storeWebContent } = await import('./memoryService.js');
-          
-          // Store the URL content
-          await storeWebContent(url, title, truncatedContent, {
-            fullContent: mainContent,
-            markdown: truncatedMarkdown,
-            userQuery: userQuery
-          });
-          logger.info(`Saved web content from "${url}" to memory`);
-        } catch (memoryError) {
-          logger.warning(`Failed to save URL content to memory: ${memoryError.message}`);
-        }
-        
-        return {
-          success: true,
-          title: title,
-          url: url,
-          content: truncatedContent,
-          markdown: truncatedMarkdown,
-          fullContent: mainContent,
-          message: `# ${title}\n\n${truncatedContent}\n\nSumber: ${url}`,
-          userQuery: userQuery
-        };
-      }
-      
-      // Format messages for Gemini (same as above, including user query)
-      const promptContent = `Kamu adalah AI asisten yang diminta untuk meringkas konten dari halaman web.
-      
-Berikut adalah konten dalam format markdown dari halaman "${title}" (${url}):
-
-${truncatedMarkdown}
-
-${userQuery ? `Pengguna bertanya atau meminta: "${userQuery}"
-
-Berikan ringkasan yang langsung berhubungan dengan pertanyaan/permintaan pengguna, jika relevan.` : 'Berikan ringkasan umum dari konten halaman web ini.'}
-
-Tolong berikan ringkasan informatif dan natural dari konten di atas. Fokus pada: 
-
-1. Informasi utama dan kunci dari konten
-2. Fakta-fakta relevan, tanggal, dan statistik penting
-3. Kesimpulan utama atau poin penting dari artikel
-${userQuery ? `4. Informasi yang secara langsung menjawab pertanyaan pengguna: "${userQuery}"` : ''}
-
-Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (URL) karena akan ditambahkan nanti. Jangan menyebutkan bahwa ini adalah ringkasan. Cukup berikan informasinya langsung dengan bahasa yang natural, seperti kamu sedang menjelaskan isi halaman ini kepada pengguna. Pastikan responsenya panjangnya tidak lebih dari 400 kata.`;
-
-      const messages = [
-        { 
-          role: 'user', 
-          content: promptContent
-        }
-      ];
-      
-      // Request AI summary from Gemini
-      const aiSummaryResponse = await requestGeminiChat(
-        'gemini-2.0-flash',
-        apiKey,
-        messages,
-        {
-          temperature: 0.3,
-          top_p: 0.85,
-          max_tokens: 800
-        }
-      );
-      
-      // Extract summary from response
-      let aiSummary = '';
-      if (aiSummaryResponse?.choices?.[0]?.message?.content) {
-        aiSummary = aiSummaryResponse.choices[0].message.content;
-      } else {
-        // Fallback if there's an issue with AI summary
-        logger.warning('Couldn\'t get AI summary, falling back to raw content');
-        aiSummary = truncatedContent.substring(0, 500) + '...';
-      }
-      
-      // Create the final message with AI summary and source
-      const finalMessage = `# ${title}\n\n${aiSummary}\n\nSumber: ${url}`;
-      
-      // Save content to memory
-      try {
-        // Import the memory service function
-        const { storeWebContent } = await import('./memoryService.js');
-        
-        // Store the URL content with AI summary
-        await storeWebContent(url, title, aiSummary, {
-          fullContent: mainContent,
-          markdown: truncatedMarkdown,
-          aiSummary: true,
-          userQuery: userQuery
-        });
-        logger.info(`Saved web content from "${url}" to memory using fallback method`);
-      } catch (memoryError) {
-        logger.warning(`Failed to save URL content to memory: ${memoryError.message}`);
-      }
-      
+    } catch (error) {
+      logger.error(`Error fetching content from URL: ${error.message}`);
       return {
-        success: true,
-        title: title,
-        url: url,
-        content: truncatedContent,
-        aiSummary: aiSummary,
-        markdown: truncatedMarkdown,
-        fullContent: mainContent,
-        message: finalMessage,
-        userQuery: userQuery
+        success: false,
+        error: error.message,
+        message: `Maaf, terjadi kesalahan saat mengambil konten dari URL: ${error.message}`
       };
     }
   } catch (error) {
-    logger.error(`Error fetching URL content: ${error.message}`);
+    logger.error(`Error fetching content from URL: ${error.message}`);
     return {
       success: false,
       error: error.message,
