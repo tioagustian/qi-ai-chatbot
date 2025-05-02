@@ -1,6 +1,6 @@
 import { getDb } from '../database/index.js';
 import { generateAIResponseLegacy, analyzeImage, storeImageAnalysis, generateImage } from '../services/aiService.js';
-import { updateMoodAndPersonality } from '../services/personalityService.js';
+import { updateMoodAndPersonality, updateMoodAndPersonalityWithAI } from '../services/personalityService.js';
 import { detectCommand, executeCommand } from '../services/commandService.js';
 import { shouldRespond, QUESTION_INDICATORS } from '../utils/decisionMaker.js';
 import { extractMessageContent, isGroupMessage, isTaggedMessage, calculateResponseDelay, hasImage, extractImageData } from '../utils/messageUtils.js';
@@ -424,9 +424,6 @@ async function processMessage(sock, message) {
               name: 'image_request_context'
             });
             
-            // Generate AI response first to get a nice message about the image
-            logger.info('Generating AI response for image request');
-            
             // Create a function to keep the typing indicator active during API calls
             let stopTypingInterval = false;
             const keepTypingActive = async () => {
@@ -445,6 +442,28 @@ async function processMessage(sock, message) {
             
             // Start keeping typing indicator active
             const typingPromise = keepTypingActive();
+            
+            // NEW: Update bot's mood and personality based on message context using AI
+            try {
+              // Try AI-powered mood detection first
+              const messageContent = content || (containsImage ? `[User sent an image: ${imageData.caption || 'no caption'}]` : "[Empty message]");
+              const moodChanged = await updateMoodAndPersonalityWithAI(db, messageContent, contextMessages, {
+                generateAnalysis: (await import('../services/aiService.js')).generateAnalysis
+              });
+              
+              if (moodChanged) {
+                logger.info(`Bot mood/personality updated using AI analysis`);
+              } else {
+                // Fallback to keyword-based detection if AI-based detection didn't change anything
+                const keywordMoodChanged = await updateMoodAndPersonality(db, messageContent);
+                if (keywordMoodChanged) {
+                  logger.info(`Bot mood updated using keyword detection`);
+                }
+              }
+            } catch (moodError) {
+              logger.error('Error updating mood and personality', moodError);
+              // Continue with response generation even if mood update fails
+            }
             
             logger.info('AI response generated, now generating image');
             
@@ -583,6 +602,28 @@ async function processMessage(sock, message) {
         
         // Start keeping typing indicator active
         const typingPromise = keepTypingActive();
+        
+        // NEW: Update bot's mood and personality based on message context using AI
+        try {
+          // Try AI-powered mood detection first
+          const messageContent = content || (containsImage ? `[User sent an image: ${imageData.caption || 'no caption'}]` : "[Empty message]");
+          const moodChanged = await updateMoodAndPersonalityWithAI(db, messageContent, contextMessages, {
+            generateAnalysis: (await import('../services/aiService.js')).generateAnalysis
+          });
+          
+          if (moodChanged) {
+            logger.info(`Bot mood/personality updated using AI analysis`);
+          } else {
+            // Fallback to keyword-based detection if AI-based detection didn't change anything
+            const keywordMoodChanged = await updateMoodAndPersonality(db, messageContent);
+            if (keywordMoodChanged) {
+              logger.info(`Bot mood updated using keyword detection`);
+            }
+          }
+        } catch (moodError) {
+          logger.error('Error updating mood and personality', moodError);
+          // Continue with response generation even if mood update fails
+        }
         
         // Generate response
         const aiResponse = await generateAIResponseLegacy(content || (containsImage ? `[User sent an image: ${imageData.caption || 'no caption'}]` : "[Empty message]"), contextMessages, db.data, senderName);

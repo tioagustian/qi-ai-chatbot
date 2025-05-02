@@ -217,6 +217,67 @@ async function executeCommand(sock, message, commandData, db) {
       case 'apilogs':
         return await handleApiLogsCommand(sock, message, args, db);
         
+      case 'getapikey':
+        if (!process.env.OPENROUTER_API_KEY) {
+          return 'API key belum dikonfigurasi di environment variables.';
+        }
+        return `API key: ${process.env.OPENROUTER_API_KEY.substring(0, 5)}...${process.env.OPENROUTER_API_KEY.substring(process.env.OPENROUTER_API_KEY.length - 5)}`;
+        
+      case 'testmood':
+        if (args.length === 0) {
+          return 'Gunakan format: !testmood [pesan_uji]\nContoh: !testmood Hari ini aku sangat senang sekali!';
+        }
+        
+        // Get the test message
+        const testMessage = args.join(' ');
+        
+        // Import the necessary functions
+        const { updateMoodAndPersonalityWithAI } = await import('./personalityService.js');
+        const { generateAnalysis } = await import('./aiService.js');
+        
+        // Log current mood and personality
+        const currentMood = db.data.state.currentMood;
+        const currentPersonality = db.data.config.personality;
+        
+        // Create some dummy context
+        const dummyContext = [
+          { role: 'system', content: 'This is a test conversation.' },
+          { role: 'user', content: testMessage }
+        ];
+        
+        // Run the AI mood detection
+        const aiResult = await updateMoodAndPersonalityWithAI(db, testMessage, dummyContext, { generateAnalysis });
+        
+        // Get updated mood and personality
+        const newMood = db.data.state.currentMood;
+        const newPersonality = db.data.config.personality;
+        
+        // Get descriptions
+        const moodDesc = getMoodDescription(newMood, db);
+        const personalityDesc = getPersonalityDescription(newPersonality, db);
+        
+        let response = '';
+        
+        if (aiResult) {
+          response = `✅ AI mood detection berhasil mendeteksi mood/personality!\n\n`;
+          response += `Pesan uji: "${testMessage}"\n\n`;
+          response += `Sebelum: Mood=${currentMood}, Personality=${currentPersonality}\n`;
+          response += `Sesudah: Mood=${newMood}, Personality=${newPersonality}\n\n`;
+          response += `Deskripsi mood saat ini: ${moodDesc}\n`;
+          response += `Deskripsi personality saat ini: ${personalityDesc}`;
+        } else {
+          response = `❌ AI mood detection tidak mendeteksi perubahan mood/personality untuk pesan: "${testMessage}"\n\n`;
+          response += `Mood tetap: ${newMood} - ${moodDesc}\n`;
+          response += `Personality tetap: ${newPersonality} - ${personalityDesc}`;
+        }
+        
+        return response;
+        
+      case 'resetmood':
+        await setMood(db, 'happy');
+        await setPersonality(db, 'friendly');
+        return 'Mood dan personality di-reset ke default (happy & friendly).';
+        
       default:
         return `Perintah tidak dikenal: ${command}. Gunakan !help untuk bantuan.`;
     }
@@ -437,6 +498,8 @@ function getHelpText() {
 !moodinfo [mood] - Info detail tentang mood
 !addmood [nama] [deskripsi] - Menambah mood kustom
 !removemood [nama] - Menghapus mood kustom
+!testmood [pesan_uji] - Uji deteksi mood AI
+!resetmood - Reset mood dan personality ke default
 
 *Pengaturan Personality:*
 !setpersonality [personality] - Mengatur personality bot
