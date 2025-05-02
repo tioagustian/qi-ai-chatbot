@@ -1120,21 +1120,26 @@ async function extractGlobalKnowledgeFromRelevantFacts(relevantFacts, existingGl
           else if (/person|people|born|died/.test(normalizedKey)) category = 'biographical';
           else if (/company|organization|corporation|business/.test(normalizedKey)) category = 'organizational';
           else if (/technology|software|programming|computer|game/.test(normalizedKey)) category = 'technological';
+          else if (/hobby|interest|likes to|enjoys|passion|activity/.test(normalizedKey)) category = 'interest';
           else category = 'general_knowledge';
         }
         
-        // Add to global facts
-        await addGlobalFact(formattedKey, factData.value, {
-          confidence: factData.confidence,
-          category: category,
-          tags: factData.tags || [],
-          factType: factData.factType || FACT_TYPES.EXPLICIT,
-          source: 'extracted_from_relevant_facts'
-        });
-        
-        globalFactsAdded++;
-        
-        logger.info(`Added global fact from relevant facts: "${formattedKey}" = "${factData.value}"`);
+        try {
+          // Add to global facts
+          await addGlobalFact(formattedKey, factData.value, {
+            confidence: factData.confidence,
+            category: category,
+            tags: factData.tags || [],
+            factType: factData.factType || FACT_TYPES.EXPLICIT,
+            source: 'extracted_from_relevant_facts'
+          });
+          
+          globalFactsAdded++;
+          
+          logger.info(`Added global fact from relevant facts: "${formattedKey}" = "${factData.value}"`);
+        } catch (addError) {
+          logger.warning(`Failed to add global fact "${formattedKey}": ${addError.message}`);
+        }
       }
     }
     
@@ -1846,6 +1851,12 @@ async function addGlobalFact(factKey, factValue, options = {}) {
     
     // Add to category registry
     if (category) {
+      // Ensure categories object exists
+      if (!db.data.globalFacts.categories) {
+        db.data.globalFacts.categories = {};
+      }
+      
+      // Create category array if it doesn't exist
       if (!db.data.globalFacts.categories[category]) {
         db.data.globalFacts.categories[category] = [];
       }

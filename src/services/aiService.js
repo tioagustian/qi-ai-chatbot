@@ -341,6 +341,8 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
           try {
             const toolCall = response.choices[0].message.tool_calls[0];
             const result = await handleToolCall(toolCall.function);
+            console.log('Message Content', response.choices[0].message.content);
+            console.log('Tool call result', result);
             return result;
           } catch (toolError) {
             logger.error('Error handling tool calls from Gemini', toolError);
@@ -410,6 +412,8 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
           try {
             const toolCall = response.choices[0].message.tool_calls[0];
             const result = await handleToolCall(toolCall.function);
+            console.log('Message Content', response.choices[0].message.content);
+            console.log('Tool call result', result);
             return result;
           } catch (toolError) {
             logger.error('Error handling tool calls from Together.AI', toolError);
@@ -437,31 +441,81 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
       } catch (togetherError) {
         logger.error('Together.AI API request failed', togetherError);
         
-        // Check for rate limit error (429) and try Gemini as fallback
-        if (togetherError.response && togetherError.response.status === 429) {
-          logger.warning('Together.AI API rate limited, falling back to Gemini API');
+        // Prepare a readable error message
+        let errorMessage = togetherError.message || 'Unknown error';
+        let errorCode = togetherError.response?.status || 'unknown';
+        let errorDetail = '';
+        
+        if (togetherError.response?.data?.error?.message) {
+          errorDetail = togetherError.response.data.error.message;
+          logger.debug(`Together.AI detailed error: ${errorDetail}`);
+        }
+        
+        // Check for specific error types to inform fallback decisions
+        const isRateLimited = errorCode === 429 || 
+          RATE_LIMIT_ERRORS.some(term => 
+            errorMessage.toLowerCase().includes(term) || 
+            (errorDetail && errorDetail.toLowerCase().includes(term))
+          );
+        
+        const isContextTooLong = 
+          errorCode === 422 && 
+          (errorDetail.includes('tokens + `max_new_tokens`') || 
+           errorDetail.includes('Input validation error') ||
+           errorDetail.includes('token limit'));
+           
+        const isModelUnavailable = 
+          errorCode === 404 || 
+          errorMessage.includes('not found') || 
+          errorMessage.includes('unavailable');
+        
+        // For these error types, try Gemini as fallback
+        if (isRateLimited || isContextTooLong || isModelUnavailable) {
+          // Log appropriate message based on error type
+          if (isRateLimited) {
+            logger.warning('Together.AI API rate limited, falling back to Gemini API');
+          } else if (isContextTooLong) {
+            logger.warning(`Together.AI context too long (${errorDetail}), falling back to Gemini API`);
+          } else if (isModelUnavailable) {
+            logger.warning(`Together.AI model unavailable (${errorDetail}), falling back to Gemini API`);
+          }
           
           // Check if Gemini API key is available
           const geminiApiKey = config.geminiApiKey || process.env.GEMINI_API_KEY;
           
           if (!geminiApiKey) {
             logger.warning('Gemini API key not configured for fallback');
-            return `Gagal terhubung ke Together.AI API: ${togetherError.message}. Gemini API key tidak tersedia untuk fallback. Coba lagi nanti ya~`;
+            return `Maaf, terjadi kesalahan dengan Together.AI API: ${isContextTooLong ? 'Pesan terlalu panjang' : errorMessage}. Gemini API key tidak tersedia untuk fallback. Coba lagi nanti ya~`;
           }
           
           try {
             // Convert messages to Gemini format
             const formattedMessages = formatMessagesForAPI(messages, config);
             
-            // Use Gemini 2.0 Flash as fallback
-            const fallbackModel = 'gemini-2.0-flash';
+            // For context length issues, reduce message count by truncating history
+            let truncatedMessages = formattedMessages;
+            if (isContextTooLong) {
+              // Use the context reduction function
+              truncatedMessages = reduceContextSize(formattedMessages, {
+                maxMessages: 12, // Keep reasonable number of messages
+                alwaysKeepSystemMessages: true,
+                alwaysKeepLastUserMessage: true,
+                preserveRatio: 0.6 // Slightly favor user messages
+              });
+              
+              logger.info(`Truncated context from ${formattedMessages.length} to ${truncatedMessages.length} messages for Gemini fallback`);
+            }
+            
+            // Use Gemini 2.0 Flash as fallback for most cases
+            // For context too long, try Gemini 2.0 Pro which has larger context window
+            const fallbackModel = isContextTooLong ? 'gemini-2.0-pro' : 'gemini-2.0-flash';
             logger.info(`Falling back to Gemini API with model: ${fallbackModel}`);
             
             // Call Gemini API
             const response = await requestGeminiChat(
               fallbackModel,
               geminiApiKey,
-              formattedMessages,
+              truncatedMessages,
               {
                 temperature: 0.7,
                 top_p: 0.9,
@@ -476,7 +530,7 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
             
             if (!response) {
               logger.error('Empty response from fallback Gemini API');
-              return 'Maaf, Together.AI API rate limited dan Gemini API tidak memberikan respons. Coba lagi nanti ya~';
+              return 'Maaf, Together.AI API gagal dan Gemini API tidak memberikan respons. Coba lagi nanti ya~';
             }
             
             logger.success(`Successfully processed fallback Gemini API response`);
@@ -491,6 +545,9 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
               try {
                 const toolCall = response.choices[0].message.tool_calls[0];
                 const result = await handleToolCall(toolCall.function);
+                
+                console.log('Message Content', response.choices[0].message.content);
+                console.log('Tool call result', result);
                 return result;
               } catch (toolError) {
                 logger.error('Error handling tool calls from Gemini fallback', toolError);
@@ -517,11 +574,14 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
             }
           } catch (fallbackError) {
             logger.error('Fallback to Gemini API failed', fallbackError);
-            return `Gagal terhubung ke Together.AI API (rate limited) dan Gemini API fallback: ${fallbackError.message}. Coba lagi nanti ya~`;
+            return `Maaf, terjadi kesalahan dengan Together.AI API dan Gemini API fallback: ${fallbackError.message}. Coba lagi nanti ya~`;
           }
+        } else {
+          // For other errors, return a helpful message
+          const errorResponse = `Maaf, terjadi kesalahan dengan Together.AI API: ${errorDetail || errorMessage}. Coba lagi nanti ya~`;
+          logger.debug('Returning error response', { errorResponse });
+          return errorResponse;
         }
-        
-        return `Gagal terhubung ke Together.AI API: ${togetherError.message}. Coba lagi nanti ya~`;
       }
     } else {
       // OpenRouter implementation
@@ -1328,332 +1388,265 @@ async function getAvailableModels() {
  * @returns {Promise<object>} Response and rate limit info
  */
 async function generateAIResponse2(botConfig, contextMessages, streamCallback = null, chatId = null, messageId = null) {
-  let streaming = !!streamCallback;
-  const startTime = Date.now();
-  let rateLimitInfo = {
-    isLimited: false,
-    limitReachedAt: null,
-    resetTime: null,
-    error: null
-  };
-  
   try {
-    // Get database
-    const db = getDb();
+    logger.info(`Generating AI response with ${contextMessages.length} context messages`);
     
-    // Initialize API provider and key
-    let apiProvider = API_PROVIDERS.OPENROUTER;
-    let apiKey = botConfig.openrouterApiKey || process.env.OPENROUTER_API_KEY;
+    // Get current provider from config
+    const provider = botConfig.defaultProvider || 'openrouter';
+    const modelId = botConfig.model || (provider === 'gemini' ? 'gemini-2.0-pro' : 'meta-llama/Llama-3.3-70B-Instruct-Turbo-Free');
     
-    // Determine if we should use Gemini API based on provider or model name
-    const isGeminiModel = botConfig.defaultProvider === 'gemini' ||
-                          (botConfig.model && (
-                           botConfig.model.startsWith('google/') || 
-                           botConfig.model.startsWith('gemini')
-                          ));
+    // Log what we're using
+    logger.info(`Using provider: ${provider}, model: ${modelId}`);
     
-    // Determine if we should use Together.AI API based on provider or model name
-    const isTogetherModel = botConfig.defaultProvider === 'together' ||
-                           (botConfig.model && TOGETHER_MODELS.includes(botConfig.model));
+    // Convert format if needed
+    const formattedMessages = formatMessagesForAPI(contextMessages, botConfig);
     
-    if (isGeminiModel) {
-      apiProvider = API_PROVIDERS.GEMINI;
-      apiKey = botConfig.geminiApiKey || process.env.GEMINI_API_KEY;
-      
-      if (!apiKey) {
-        console.error(chalk.red(`[AI Service] No Gemini API key provided for model ${botConfig.model}`));
-        throw new Error('Gemini API key is required for Gemini models. Use !setgeminikey to set it.');
-      }
-    } else if (isTogetherModel) {
-      apiProvider = API_PROVIDERS.TOGETHER;
-      apiKey = botConfig.togetherApiKey || process.env.TOGETHER_API_KEY;
-      
-      if (!apiKey) {
-        console.error(chalk.red(`[AI Service] No Together.AI API key provided for model ${botConfig.model}`));
-        throw new Error('Together.AI API key is required for Together models. Use !settogetherkey to set it.');
-      }
-    }
+    // Check if context is too large for the model
+    let isContextTooLarge = formattedMessages.reduce((total, msg) => total + (msg.content?.length || 0), 0) > 32000;
     
-    // Check if API key is configured
-    if (!apiKey) {
-      if (isGeminiModel) {
-        throw new Error('Gemini API key is not configured. Please set it using !setgeminikey command.');
-      } else if (isTogetherModel) {
-        throw new Error('Together.AI API key is not configured. Please set it using !settogetherkey command.');
-      } else {
-        throw new Error('OpenRouter API key is not configured. Please set it using !setapikey command.');
-      }
-    }
-    
-    // Ensure we have the current mood and personality in the context
-    // First, get the system message at the beginning if available
-    let systemMessage = '';
-    let updatedContextMessages = [...contextMessages]; // Create a copy
-    
-    // Check if there's already a system message
-    const hasSystemMessage = updatedContextMessages.some(msg => msg.role === 'system');
-    
-    if (!hasSystemMessage) {
-      // Create a system message for the AI with current mood and personality
-      systemMessage = createSystemMessage(botConfig, db.data.state);
-      updatedContextMessages.unshift({ role: 'system', content: systemMessage });
-    }
-    
-    // Format messages for API with enhanced context handling
-    const formattedMessages = formatMessagesForAPI(updatedContextMessages, botConfig);
-    
-    // Log context information for debugging
-    logger.debug(`Sending ${formattedMessages.length} messages to API`);
-    
-    // Check if this is an image-related query
-    const isImageRelated = updatedContextMessages.some(msg => 
-      (msg.role === 'system' && msg.content && msg.content.includes('user mengirim gambar')) ||
-      (msg.metadata && msg.metadata.hasImage) ||
-      (msg.content && msg.content.match(/gambar|foto|image|picture/i))
-    );
-    
-    if (isImageRelated) {
-      logger.info('Detected image-related query, adding extra context instructions');
-      
-      // Add special instruction for image-related queries
-      formattedMessages.unshift({
-        role: 'system',
-        content: 'Pengguna sedang bertanya tentang gambar. Berikan jawaban yang detail dan deskriptif tentang gambar tersebut. Jika ada pertanyaan lanjutan tentang gambar, pastikan untuk menghubungkan dengan analisis gambar sebelumnya.'
+    // If context seems too large, preemptively reduce it
+    let messagesToUse = formattedMessages;
+    if (isContextTooLarge) {
+      logger.warning('Context is likely too large, preemptively reducing');
+      messagesToUse = reduceContextSize(formattedMessages, {
+        maxMessages: 15,
+        alwaysKeepSystemMessages: true,
+        alwaysKeepLastUserMessage: true
       });
     }
     
-    let response;
-    // Choose API provider based on the model
-    if (apiProvider === API_PROVIDERS.GEMINI) {
-      if (streaming) {
-        console.log(chalk.yellow('[AI Service] Streaming not yet supported for Gemini API, using normal request'));
-        streaming = false;
-      }
-      
-      response = await requestGeminiChat(
-        botConfig.model,
-        apiKey,
-        formattedMessages,
-        {
-          temperature: botConfig.temperature || 0.7,
-          top_p: botConfig.top_p || 0.95,
-          max_tokens: botConfig.max_tokens || 4096,
-          stop: botConfig.stop || null,
-          stream: false // Streaming not supported yet
+    // Main API request logic with error handling and fallbacks
+    try {
+      if (provider === 'gemini') {
+        // Gemini provider
+        const apiKey = botConfig.geminiApiKey || process.env.GEMINI_API_KEY;
+        if (!apiKey) {
+          throw new Error('Gemini API key not configured');
         }
-      );
-    } else if (apiProvider === API_PROVIDERS.TOGETHER) {
-      if (streaming) {
-        console.log(chalk.yellow('[AI Service] Streaming not yet supported for Together.AI API, using normal request'));
-        streaming = false;
-      }
-      
-      try {
-        response = await requestTogetherChat(
-          botConfig.model,
+        
+        const response = await requestGeminiChat(
+          modelId,
           apiKey,
-          formattedMessages,
+          messagesToUse,
           {
-            temperature: botConfig.temperature || 0.7,
-            top_p: botConfig.top_p || 0.95,
-            max_tokens: botConfig.max_tokens || 2048,
-            stop: botConfig.stop || null,
-            stream: false // Streaming not supported yet
+            temperature: 0.7,
+            top_p: 0.95,
+            max_tokens: 1000,
+            tools: TOOL_SUPPORTED_MODELS.some(model => 
+              modelId.toLowerCase().includes(model.toLowerCase())
+            ) ? getTools() : null
           }
         );
-      } catch (togetherError) {
-        logger.error(`[AI Service] Together.AI API error: ${togetherError.message}`);
         
-        // Check for rate limit error (429) and try Gemini as fallback
-        if (togetherError.response && togetherError.response.status === 429) {
-          logger.warning('Together.AI API rate limited, falling back to Gemini API');
-          
-          // Check if Gemini API key is available
-          const geminiApiKey = botConfig.geminiApiKey || process.env.GEMINI_API_KEY;
-          
-          if (!geminiApiKey) {
-            logger.warning('Gemini API key not configured for fallback');
-            throw new Error(`Together.AI API rate limited and Gemini API key not available for fallback: ${togetherError.message}`);
-          }
-          
-          // Use Gemini 2.0 Flash as fallback
-          const fallbackModel = 'gemini-2.0-flash';
-          logger.info(`Falling back to Gemini API with model: ${fallbackModel}`);
-          
-          // Call Gemini API
-          response = await requestGeminiChat(
-            fallbackModel,
-            geminiApiKey,
-            formattedMessages,
+        // Check for function calls
+        if (response.choices?.[0]?.message?.tool_calls?.length > 0) {
+          const toolCall = response.choices[0].message.tool_calls[0];
+          const result = await handleToolCall(toolCall.function);
+          return result;
+        }
+        
+        return response.choices[0].message.content;
+      } 
+      else if (provider === 'together') {
+        // Together.AI provider
+        const apiKey = botConfig.togetherApiKey || process.env.TOGETHER_API_KEY;
+        if (!apiKey) {
+          throw new Error('Together.AI API key not configured');
+        }
+        
+        try {
+          const response = await requestTogetherChat(
+            modelId,
+            apiKey,
+            messagesToUse,
             {
-              temperature: botConfig.temperature || 0.7,
-              top_p: botConfig.top_p || 0.95,
-              max_tokens: botConfig.max_tokens || 2048,
-              stop: botConfig.stop || null,
-              stream: false
+              temperature: 0.7,
+              top_p: 0.95,
+              max_tokens: 1000,
+              tools: TOOL_SUPPORTED_MODELS.some(model => 
+                modelId.toLowerCase().includes(model.toLowerCase())
+              ) ? getTools() : null
             }
           );
           
-          logger.success(`Successfully processed fallback Gemini API response`);
-        } else {
-          // If not a rate limit error or no Gemini fallback available, rethrow
-          throw togetherError;
+          // Check for function calls
+          if (response.choices?.[0]?.message?.tool_calls?.length > 0) {
+            const toolCall = response.choices[0].message.tool_calls[0];
+            const result = await handleToolCall(toolCall.function);
+            return result;
+          }
+          
+          return response.choices[0].message.content;
+        }
+        catch (togetherError) {
+          // Check for context too long errors
+          let errorDetail = togetherError.response?.data?.error?.message || '';
+          let errorCode = togetherError.response?.status || 'unknown';
+          
+          const isContextTooLong = 
+            errorCode === 422 && 
+            (errorDetail.includes('tokens + `max_new_tokens`') || 
+             errorDetail.includes('Input validation error') ||
+             errorDetail.includes('token limit'));
+             
+          if (isContextTooLong) {
+            logger.warning(`Together.AI context too long (${errorDetail}), reducing context and retrying`);
+            
+            // Try with reduced context
+            const reducedMessages = reduceContextSize(messagesToUse, {
+              maxMessages: 8, // More aggressive reduction
+              alwaysKeepSystemMessages: true,
+              alwaysKeepLastUserMessage: true,
+            });
+            
+            const retryResponse = await requestTogetherChat(
+              modelId,
+              apiKey,
+              reducedMessages,
+              {
+                temperature: 0.7,
+                top_p: 0.95,
+                max_tokens: 1000,
+                tools: TOOL_SUPPORTED_MODELS.some(model => 
+                  modelId.toLowerCase().includes(model.toLowerCase())
+                ) ? getTools() : null
+              }
+            );
+            
+            // Check for function calls in retry
+            if (retryResponse.choices?.[0]?.message?.tool_calls?.length > 0) {
+              const toolCall = retryResponse.choices[0].message.tool_calls[0];
+              const result = await handleToolCall(toolCall.function);
+              return result;
+            }
+            
+            return retryResponse.choices[0].message.content;
+          }
+          
+          // If error is not about context length, or retry also failed, fall back to Gemini
+          logger.warning(`Together.AI error (${togetherError.message}), falling back to Gemini`);
+          
+          // Check if Gemini API key is available for fallback
+          const geminiApiKey = botConfig.geminiApiKey || process.env.GEMINI_API_KEY;
+          if (!geminiApiKey) {
+            throw new Error('Together.AI failed and Gemini API key not configured for fallback');
+          }
+          
+          // Use reduced context for fallback
+          const fallbackMessages = isContextTooLong ? 
+            reduceContextSize(messagesToUse, { maxMessages: 10 }) : 
+            messagesToUse;
+          
+          const geminiResponse = await requestGeminiChat(
+            'gemini-2.0-pro', // Use a reliable model for fallback
+            geminiApiKey,
+            fallbackMessages,
+            {
+              temperature: 0.7,
+              top_p: 0.95,
+              max_tokens: 1000,
+              tools: TOOL_SUPPORTED_MODELS.some(model => 
+                modelId.toLowerCase().includes(model.toLowerCase())
+              ) ? getTools() : null
+            }
+          );
+          
+          // Check for function calls in Gemini fallback
+          if (geminiResponse.choices?.[0]?.message?.tool_calls?.length > 0) {
+            const toolCall = geminiResponse.choices[0].message.tool_calls[0];
+            const result = await handleToolCall(toolCall.function);
+            return result;
+          }
+          
+          return geminiResponse.choices[0].message.content;
         }
       }
-    } else {
-      // OpenRouter implementation
-      const endpoint = OPENROUTER_API_URL;
-      const headers = {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://github.com/qi-ai-chatbot',
-        'X-Title': 'Qi AI WhatsApp Chatbot'
-      };
-      
-      const requestData = {
-        model: botConfig.model,
-        messages: formattedMessages,
-        temperature: botConfig.temperature || 0.7,
-        max_tokens: botConfig.max_tokens || 1024,
-        top_p: botConfig.top_p || 0.95,
-        stream: streaming
-      };
-      
-      // Check if model supports tools
-      const supportsTools = TOOL_SUPPORTED_MODELS.some(model => 
-        botConfig.model.toLowerCase().includes(model.toLowerCase())
-      );
-      
-      // Add tools if supported
-      if (supportsTools) {
-        requestData.tools = getTools();
-        requestData.tool_choice = 'auto';
-      }
-      
-      if (streaming) {
-        // Implement streaming logic here
-        // ... existing streaming code ...
-      } else {
-        // Regular request
-        const axiosResponse = await axios.post(endpoint, requestData, { headers });
-        response = axiosResponse.data;
+      else {
+        // OpenRouter provider (default)
+        const apiKey = process.env.OPENROUTER_API_KEY;
+        if (!apiKey) {
+          throw new Error('OpenRouter API key not configured');
+        }
         
-        // Log the API request and response
-        await logApiRequest(
+        const endpoint = OPENROUTER_API_URL;
+        
+        const response = await axios.post(
           endpoint,
-          API_PROVIDERS.OPENROUTER,
-          botConfig.model,
           {
-            method: 'POST',
-            url: endpoint,
+            model: modelId,
+            messages: messagesToUse,
+            temperature: 0.7,
+            max_tokens: 1000,
+            top_p: 0.95,
+            tools: TOOL_SUPPORTED_MODELS.some(model => 
+              modelId.toLowerCase().includes(model.toLowerCase())
+            ) ? getTools() : null,
+            tool_choice: 'auto'
+          },
+          {
             headers: {
-              'Authorization': 'Bearer *** REDACTED ***',
               'Content-Type': 'application/json',
-              'HTTP-Referer': 'https://github.com/qi-ai-chatbot',
-              'X-Title': 'Qi AI WhatsApp Chatbot'
-            },
-            data: requestData
-          },
-          {
-            status: axiosResponse.status,
-            statusText: axiosResponse.statusText,
-            data: response
-          },
-          {
-            executionTime: Date.now() - startTime,
-            messageCount: formattedMessages.length,
-            chatId: chatId,
-            messageId: messageId,
-            promptTokens: response.usage?.prompt_tokens || 0,
-            completionTokens: response.usage?.completion_tokens || 0,
-            success: true
+              'Authorization': `Bearer ${apiKey}`,
+              'HTTP-Referer': 'https://github.com/Qi-Blockchain/qi-ai-chatbot',
+              'X-Title': 'Qi AI Chatbot'
+            }
           }
         );
-      }
-    }
-    
-    // Process the response
-    if (!response) {
-      throw new Error('Empty response from API');
-    }
-    
-    let aiMessage;
-    if (response.choices && response.choices.length > 0) {
-      // Check if response is a tool call
-      const firstChoice = response.choices[0];
-      if (firstChoice.message && firstChoice.message.tool_calls && firstChoice.message.tool_calls.length > 0) {
-        // Process tool call
-        const toolCall = firstChoice.message.tool_calls[0];
-        aiMessage = handleToolCall(toolCall.function);
-      } else {
-        // Regular message
-        aiMessage = firstChoice.message.content;
-      }
-    } else {
-      throw new Error('Invalid response format from API');
-    }
-    
-    return {
-      success: true,
-      message: aiMessage,
-      rateLimitInfo
-    };
-  } catch (error) {
-    console.error(chalk.red(`[AI Service] Error: ${error.message}`));
-    
-    // Check for rate limit errors
-    if (error.response && error.response.status === 429) {
-      rateLimitInfo = {
-        isLimited: true,
-        limitReachedAt: new Date().toISOString(),
-        resetTime: null, // This should be extracted from response headers if available
-        error: error.message
-      };
-    }
-    
-    // Log failed API request if it's from OpenRouter
-    if (botConfig.defaultProvider !== API_PROVIDERS.GEMINI && botConfig.defaultProvider !== API_PROVIDERS.TOGETHER) {
-      await logApiRequest(
-        OPENROUTER_API_URL,
-        API_PROVIDERS.OPENROUTER,
-        botConfig.model,
-        {
-          method: 'POST',
-          url: OPENROUTER_API_URL,
-          headers: {
-            'Authorization': 'Bearer *** REDACTED ***',
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'https://github.com/qi-ai-chatbot',
-            'X-Title': 'Qi AI WhatsApp Chatbot'
-          },
-          data: {
-            model: botConfig.model,
-            messages: contextMessages,
-            temperature: botConfig.temperature || 0.7,
-            max_tokens: botConfig.max_tokens || 1024
-          }
-        },
-        error.response ? {
-          status: error.response.status,
-          statusText: error.response.statusText,
-          data: error.response.data
-        } : { error: error.message },
-        {
-          executionTime: Date.now() - startTime,
-          messageCount: contextMessages.length,
-          chatId: chatId,
-          messageId: messageId,
-          success: false,
-          error: error.message
+        
+        // Check for function calls in OpenRouter response
+        if (response.data.choices?.[0]?.message?.tool_calls?.length > 0) {
+          const toolCall = response.data.choices[0].message.tool_calls[0];
+          const result = await handleToolCall(toolCall.function);
+          return result;
         }
-      );
+        
+        return response.data.choices[0].message.content;
+      }
     }
-    
-    return {
-      success: false,
-      error: error.message,
-      rateLimitInfo
-    };
+    catch (mainError) {
+      // Common fallback mechanism for all providers
+      logger.error('Main AI request failed, attempting fallback', mainError);
+      
+      // First check if we have a Gemini key as a universal fallback
+      const geminiApiKey = botConfig.geminiApiKey || process.env.GEMINI_API_KEY;
+      
+      if (geminiApiKey && provider !== 'gemini') {
+        logger.warning('Falling back to Gemini due to error in primary provider');
+        
+        try {
+          // Use reduced context for fallback
+          const fallbackMessages = reduceContextSize(messagesToUse, { 
+            maxMessages: 10,
+            alwaysKeepSystemMessages: true,
+            alwaysKeepLastUserMessage: true 
+          });
+          
+          const geminiResponse = await requestGeminiChat(
+            'gemini-2.0-pro', // Use a reliable model for fallback
+            geminiApiKey,
+            fallbackMessages,
+            {
+              temperature: 0.7,
+              top_p: 0.95,
+              max_tokens: 1000
+            }
+          );
+          
+          return geminiResponse.choices[0].message.content;
+        }
+        catch (geminiError) {
+          logger.error('Gemini fallback also failed', geminiError);
+          throw new Error(`Primary AI request failed: ${mainError.message}. Gemini fallback also failed: ${geminiError.message}`);
+        }
+      }
+      
+      // If no fallback available, rethrow the original error
+      throw mainError;
+    }
+  }
+  catch (error) {
+    logger.error('AI generation failed with all providers', error);
+    return `Maaf, terjadi kesalahan saat berkomunikasi dengan API AI: ${error.message}. Coba lagi nanti ya~`;
   }
 }
 
@@ -2876,7 +2869,8 @@ export {
   fetchUrlContent,
   getTools,
   handleToolCall,
-  TOOL_SUPPORTED_MODELS
+  TOOL_SUPPORTED_MODELS,
+  reduceContextSize
 };
 
 // New web search function
@@ -3093,4 +3087,109 @@ async function fetchUrlContent(url) {
       message: `Maaf, terjadi kesalahan saat mengambil konten dari URL: ${error.message}`
     };
   }
+}
+
+/**
+ * Reduce context size by keeping only the most important messages
+ * @param {Array} messages - Original message array
+ * @param {Object} options - Options for context reduction
+ * @returns {Array} - Reduced message array
+ */
+function reduceContextSize(messages, options = {}) {
+  const {
+    maxMessages = 8,
+    alwaysKeepSystemMessages = true,
+    alwaysKeepLastUserMessage = true,
+    preserveRatio = 0.5 // Try to keep 50% of messages as assistant's responses
+  } = options;
+  
+  logger.info(`Reducing context size from ${messages.length} messages to max ${maxMessages}`);
+  
+  // If we're already under the max, just return the original
+  if (messages.length <= maxMessages) {
+    return messages;
+  }
+  
+  // Separate messages by role
+  const systemMessages = messages.filter(msg => msg.role === 'system');
+  const userMessages = messages.filter(msg => msg.role === 'user');
+  const assistantMessages = messages.filter(msg => msg.role === 'assistant');
+  
+  logger.debug('Context reduction - message counts', {
+    total: messages.length,
+    system: systemMessages.length,
+    user: userMessages.length,
+    assistant: assistantMessages.length
+  });
+  
+  // Calculate how many messages to keep
+  let remainingSlots = maxMessages;
+  
+  // Always keep system messages if specified
+  let resultMessages = [];
+  if (alwaysKeepSystemMessages) {
+    resultMessages = [...systemMessages];
+    remainingSlots -= systemMessages.length;
+  }
+  
+  // If no slots remain, return what we have
+  if (remainingSlots <= 0) {
+    logger.warning('No slots remain after keeping system messages, context will be incomplete');
+    return resultMessages;
+  }
+  
+  // Handle the last user message specially if specified
+  let lastUserMessage = null;
+  if (alwaysKeepLastUserMessage && userMessages.length > 0) {
+    lastUserMessage = userMessages.pop(); // Remove and save the last message
+    remainingSlots--;
+  }
+  
+  // Calculate how many of each type to keep based on preserveRatio
+  const userToAssistantRatio = preserveRatio;
+  const userMessagesToKeep = Math.floor(remainingSlots * userToAssistantRatio);
+  const assistantMessagesToKeep = remainingSlots - userMessagesToKeep;
+  
+  // Keep the most recent messages of each type
+  const recentUserMessages = userMessages.slice(-userMessagesToKeep);
+  const recentAssistantMessages = assistantMessages.slice(-assistantMessagesToKeep);
+  
+  logger.debug('Keeping messages', {
+    userToKeep: recentUserMessages.length,
+    assistantToKeep: recentAssistantMessages.length,
+    lastUserMessage: lastUserMessage ? 'yes' : 'no'
+  });
+  
+  // Combine messages, trying to maintain conversation flow
+  // This interleaves user and assistant messages as much as possible
+  let interleaved = [];
+  const maxInterleaveLength = Math.max(recentUserMessages.length, recentAssistantMessages.length);
+  
+  for (let i = 0; i < maxInterleaveLength; i++) {
+    // Add user message if available
+    if (i < recentUserMessages.length) {
+      interleaved.push(recentUserMessages[i]);
+    }
+    
+    // Add assistant message if available
+    if (i < recentAssistantMessages.length) {
+      interleaved.push(recentAssistantMessages[i]);
+    }
+  }
+  
+  // Combine everything, adding the last user message at the end
+  resultMessages = [...resultMessages, ...interleaved];
+  if (lastUserMessage) {
+    resultMessages.push(lastUserMessage);
+  }
+  
+  // If we still somehow have too many messages, just take the most recent ones
+  if (resultMessages.length > maxMessages) {
+    logger.warning(`Still have too many messages (${resultMessages.length}), truncating to ${maxMessages}`);
+    resultMessages = resultMessages.slice(-maxMessages);
+  }
+  
+  logger.info(`Context reduced from ${messages.length} to ${resultMessages.length} messages`);
+  
+  return resultMessages;
 }
