@@ -1531,7 +1531,7 @@ async function generateAIResponse2(botConfig, contextMessages, streamCallback = 
             messagesToUse;
           
           const geminiResponse = await requestGeminiChat(
-            'gemini-2.0-pro', // Use a reliable model for fallback
+            'gemini-2.0-flash', // Use a reliable model for fallback
             geminiApiKey,
             fallbackMessages,
             {
@@ -1615,7 +1615,7 @@ async function generateAIResponse2(botConfig, contextMessages, streamCallback = 
           });
           
           const geminiResponse = await requestGeminiChat(
-            'gemini-2.0-pro', // Use a reliable model for fallback
+            'gemini-2.0-flash', // Use a reliable model for fallback
             geminiApiKey,
             fallbackMessages,
             {
