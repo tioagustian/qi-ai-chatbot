@@ -14,6 +14,7 @@ import { logApiRequest } from './apiLogService.js';
 import { requestNvidiaChat } from './aiRequest.js';
 import fetchUrlContent from '../tools/fetchUrlContent.js';
 import { searchWeb } from '../tools/searchWeb.js';
+import { getSteamGameData, searchSteamGames, getSteamDeals } from '../tools/steamDBTools.js';
 
 // Constants for API URLs
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -1252,6 +1253,52 @@ function getTools() {
           required: ["url"]
         }
       }
+    },
+    {
+      type: "function",
+      function: {
+        name: "get_steam_game_data",
+        description: "Get detailed information about a specific game from SteamDB including player count, price, metadata, and update history",
+        parameters: {
+          type: "object",
+          properties: {
+            app_id: {
+              type: "string",
+              description: "The Steam App ID of the game to look up (a numeric identifier)"
+            }
+          },
+          required: ["app_id"]
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "search_steam_games",
+        description: "Search for games on SteamDB by name",
+        parameters: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description: "The name or partial name of the game to search for"
+            }
+          },
+          required: ["query"]
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "get_steam_deals",
+        description: "Get the latest deals, top sellers, and new releases from the Steam store",
+        parameters: {
+          type: "object",
+          properties: {},
+          required: []
+        }
+      }
     }
   ];
 }
@@ -1359,6 +1406,55 @@ async function handleToolCall(functionCall) {
         
         console.log(`Tool ${name} successfully fetched content from URL`);
         return contentResult.message;
+        
+      case 'get_steam_game_data':
+        if (!parsedArgs.app_id) {
+          console.log(`Tool ${name} failed: Missing app_id parameter`);
+          return 'Error: Missing app_id parameter. Please provide a valid Steam App ID.';
+        }
+        
+        console.log(`Tool ${name} executing with app_id: ${parsedArgs.app_id}`);
+        // Pass useAI option to enable AI enhancement by default
+        const steamGameDataResult = await getSteamGameData(parsedArgs.app_id, { useAI: true });
+        
+        if (!steamGameDataResult.success) {
+          console.log(`Tool ${name} failed: ${steamGameDataResult.error}`);
+          return `Error getting Steam game data: ${steamGameDataResult.message}`;
+        }
+        
+        console.log(`Tool ${name} successfully fetched Steam game data`);
+        return steamGameDataResult.message;
+        
+      case 'search_steam_games':
+        if (!parsedArgs.query) {
+          console.log(`Tool ${name} failed: Missing query parameter`);
+          return 'Error: Missing query parameter. Please provide a search query.';
+        }
+        
+        console.log(`Tool ${name} executing with query: ${parsedArgs.query}`);
+        // Pass useAI option to enable AI enhancement by default
+        const steamGamesResult = await searchSteamGames(parsedArgs.query, { useAI: true });
+        
+        if (!steamGamesResult.success) {
+          console.log(`Tool ${name} failed: ${steamGamesResult.error}`);
+          return `Error searching Steam games: ${steamGamesResult.message}`;
+        }
+        
+        console.log(`Tool ${name} returned ${steamGamesResult.results?.length || 0} results`);
+        return steamGamesResult.message;
+        
+      case 'get_steam_deals':
+        console.log(`Tool ${name} executing`);
+        // Pass useAI option to enable AI enhancement by default
+        const steamDealsResult = await getSteamDeals({ useAI: true });
+        
+        if (!steamDealsResult.success) {
+          console.log(`Tool ${name} failed: ${steamDealsResult.error}`);
+          return `Error getting Steam deals: ${steamDealsResult.message}`;
+        }
+        
+        console.log(`Tool ${name} successfully fetched Steam deals`);
+        return steamDealsResult.message;
         
       default:
         console.log(`Unknown tool: ${name}`);
@@ -2764,7 +2860,10 @@ export {
   getTools,
   handleToolCall,
   TOOL_SUPPORTED_MODELS,
-  reduceContextSize
+  reduceContextSize,
+  getSteamGameData,
+  searchSteamGames,
+  getSteamDeals
 };
 
 /**
