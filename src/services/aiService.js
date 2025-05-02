@@ -1172,6 +1172,10 @@ function getTools() {
             url: {
               type: "string",
               description: "The URL to fetch content from (must be a valid HTTP or HTTPS URL)"
+            },
+            user_query: {
+              type: "string",
+              description: "The user's original question or request that led to fetching this URL (optional, helps make the summary more relevant)"
             }
           },
           required: ["url"]
@@ -1273,7 +1277,9 @@ async function handleToolCall(functionCall) {
         }
         
         console.log(`Tool ${name} executing with URL: ${parsedArgs.url}`);
-        const contentResult = await fetchUrlContent(parsedArgs.url);
+        // Pass the original user query to the fetchUrlContent function
+        const userQuery = parsedArgs.user_query || parsedArgs.query || '';
+        const contentResult = await fetchUrlContent(parsedArgs.url, { userQuery });
         
         if (!contentResult.success) {
           console.log(`Tool ${name} failed: ${contentResult.error}`);
@@ -2964,9 +2970,13 @@ function formatSearchResults(results) {
 }
 
 // Function to fetch and extract content from a URL
-async function fetchUrlContent(url) {
+async function fetchUrlContent(url, options = {}) {
   try {
     logger.info(`Fetching content from URL: ${url}`);
+    
+    // Get user's query/message if provided
+    const userQuery = options.userQuery || options.lastMessage || '';
+    logger.debug(`User query for content summary: "${userQuery}"`);
     
     // Validate URL
     let validatedUrl;
@@ -3119,7 +3129,8 @@ async function fetchUrlContent(url) {
           // Store the URL content
           await storeWebContent(url, title, truncatedContent, {
             fullContent: mainContent,
-            markdown: truncatedMarkdown
+            markdown: truncatedMarkdown,
+            userQuery: userQuery
           });
           logger.info(`Saved web content from "${url}" to memory`);
         } catch (memoryError) {
@@ -3137,23 +3148,30 @@ async function fetchUrlContent(url) {
         };
       }
       
-      // Format messages for Gemini
-      const messages = [
-        { 
-          role: 'user', 
-          content: `Kamu adalah AI asisten yang diminta untuk meringkas konten dari halaman web.
-          
+      // Format messages for Gemini, including the user's original query if available
+      const promptContent = `Kamu adalah AI asisten yang diminta untuk meringkas konten dari halaman web.
+      
 Berikut adalah konten dalam format markdown dari halaman "${title}" (${url}):
 
 ${truncatedMarkdown}
+
+${userQuery ? `Pengguna bertanya atau meminta: "${userQuery}"
+
+Berikan ringkasan yang langsung berhubungan dengan pertanyaan/permintaan pengguna, jika relevan.` : 'Berikan ringkasan umum dari konten halaman web ini.'}
 
 Tolong berikan ringkasan informatif dan natural dari konten di atas. Fokus pada: 
 
 1. Informasi utama dan kunci dari konten
 2. Fakta-fakta relevan, tanggal, dan statistik penting
 3. Kesimpulan utama atau poin penting dari artikel
+${userQuery ? `4. Informasi yang secara langsung menjawab pertanyaan pengguna: "${userQuery}"` : ''}
 
-Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (URL) karena akan ditambahkan nanti. Jangan menyebutkan bahwa ini adalah ringkasan. Cukup berikan informasinya langsung dengan bahasa yang natural, seperti kamu sedang menjelaskan isi halaman ini kepada pengguna. Pastikan responsenya panjangnya tidak lebih dari 400 kata.`
+Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (URL) karena akan ditambahkan nanti. Jangan menyebutkan bahwa ini adalah ringkasan. Cukup berikan informasinya langsung dengan bahasa yang natural, seperti kamu sedang menjelaskan isi halaman ini kepada pengguna. Pastikan responsenya panjangnya tidak lebih dari 400 kata.`;
+
+      const messages = [
+        { 
+          role: 'user', 
+          content: promptContent
         }
       ];
       
@@ -3191,7 +3209,8 @@ Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (
         await storeWebContent(url, title, aiSummary, {
           fullContent: mainContent,
           markdown: truncatedMarkdown,
-          aiSummary: true
+          aiSummary: true,
+          userQuery: userQuery
         });
         logger.info(`Saved web content from "${url}" to memory`);
       } catch (memoryError) {
@@ -3206,7 +3225,8 @@ Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (
         aiSummary: aiSummary,
         markdown: truncatedMarkdown,
         fullContent: mainContent,
-        message: finalMessage
+        message: finalMessage,
+        userQuery: userQuery
       };
     } catch (navigationError) {
       // Close browser in case of error
@@ -3315,7 +3335,8 @@ Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (
           // Store the URL content
           await storeWebContent(url, title, truncatedContent, {
             fullContent: mainContent,
-            markdown: truncatedMarkdown
+            markdown: truncatedMarkdown,
+            userQuery: userQuery
           });
           logger.info(`Saved web content from "${url}" to memory`);
         } catch (memoryError) {
@@ -3329,27 +3350,35 @@ Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (
           content: truncatedContent,
           markdown: truncatedMarkdown,
           fullContent: mainContent,
-          message: `# ${title}\n\n${truncatedContent}\n\nSumber: ${url}`
+          message: `# ${title}\n\n${truncatedContent}\n\nSumber: ${url}`,
+          userQuery: userQuery
         };
       }
       
-      // Format messages for Gemini (same as above)
-      const messages = [
-        { 
-          role: 'user', 
-          content: `Kamu adalah AI asisten yang diminta untuk meringkas konten dari halaman web.
-          
+      // Format messages for Gemini (same as above, including user query)
+      const promptContent = `Kamu adalah AI asisten yang diminta untuk meringkas konten dari halaman web.
+      
 Berikut adalah konten dalam format markdown dari halaman "${title}" (${url}):
 
 ${truncatedMarkdown}
+
+${userQuery ? `Pengguna bertanya atau meminta: "${userQuery}"
+
+Berikan ringkasan yang langsung berhubungan dengan pertanyaan/permintaan pengguna, jika relevan.` : 'Berikan ringkasan umum dari konten halaman web ini.'}
 
 Tolong berikan ringkasan informatif dan natural dari konten di atas. Fokus pada: 
 
 1. Informasi utama dan kunci dari konten
 2. Fakta-fakta relevan, tanggal, dan statistik penting
 3. Kesimpulan utama atau poin penting dari artikel
+${userQuery ? `4. Informasi yang secara langsung menjawab pertanyaan pengguna: "${userQuery}"` : ''}
 
-Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (URL) karena akan ditambahkan nanti. Jangan menyebutkan bahwa ini adalah ringkasan. Cukup berikan informasinya langsung dengan bahasa yang natural, seperti kamu sedang menjelaskan isi halaman ini kepada pengguna. Pastikan responsenya panjangnya tidak lebih dari 400 kata.`
+Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (URL) karena akan ditambahkan nanti. Jangan menyebutkan bahwa ini adalah ringkasan. Cukup berikan informasinya langsung dengan bahasa yang natural, seperti kamu sedang menjelaskan isi halaman ini kepada pengguna. Pastikan responsenya panjangnya tidak lebih dari 400 kata.`;
+
+      const messages = [
+        { 
+          role: 'user', 
+          content: promptContent
         }
       ];
       
@@ -3387,7 +3416,8 @@ Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (
         await storeWebContent(url, title, aiSummary, {
           fullContent: mainContent,
           markdown: truncatedMarkdown,
-          aiSummary: true
+          aiSummary: true,
+          userQuery: userQuery
         });
         logger.info(`Saved web content from "${url}" to memory using fallback method`);
       } catch (memoryError) {
@@ -3402,7 +3432,8 @@ Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (
         aiSummary: aiSummary,
         markdown: truncatedMarkdown,
         fullContent: mainContent,
-        message: finalMessage
+        message: finalMessage,
+        userQuery: userQuery
       };
     }
   } catch (error) {

@@ -15,21 +15,31 @@ async function testFetchUrlContent() {
     await setupDatabase();
     console.log('Database initialized successfully.');
     
-    // Test URLs to fetch content from
-    const testUrls = [
-      'https://www.bbc.com/news/world',
-      'https://en.wikipedia.org/wiki/Artificial_intelligence',
-      'https://medium.com/topics/artificial-intelligence'
+    // Test URLs with user queries
+    const testCases = [
+      {
+        url: 'https://www.bbc.com/news/world',
+        userQuery: 'What are the major world events happening right now?'
+      },
+      {
+        url: 'https://en.wikipedia.org/wiki/Artificial_intelligence',
+        userQuery: 'What are the current applications of AI in healthcare?'
+      },
+      {
+        url: 'https://medium.com/topics/artificial-intelligence',
+        userQuery: 'What are the latest trends in AI development?'
+      }
     ];
     
-    for (const url of testUrls) {
-      console.log(`\nFetching content from: ${url}`);
+    for (const testCase of testCases) {
+      console.log(`\nFetching content from: ${testCase.url}`);
+      console.log(`User query: "${testCase.userQuery}"`);
       
-      // Test fetchUrlContent function
-      const result = await fetchUrlContent(url);
+      // Test fetchUrlContent function with user query
+      const result = await fetchUrlContent(testCase.url, { userQuery: testCase.userQuery });
       
       if (result.success) {
-        console.log(`✓ Successfully fetched content from: ${url}`);
+        console.log(`✓ Successfully fetched content from: ${testCase.url}`);
         console.log(`Title: ${result.title}`);
         
         // Log information about the results
@@ -37,7 +47,7 @@ async function testFetchUrlContent() {
         console.log(`Markdown content length: ${result.markdown.length} characters`);
         
         if (result.aiSummary) {
-          console.log('\nAI Summary:');
+          console.log('\nAI Summary (targeting user query):');
           console.log('-'.repeat(50));
           console.log(result.aiSummary);
           console.log('-'.repeat(50));
@@ -51,7 +61,7 @@ async function testFetchUrlContent() {
         console.log(result.markdown.substring(0, 500) + '...');
         console.log('-'.repeat(50));
       } else {
-        console.error(`✗ Failed to fetch content from: ${url}`);
+        console.error(`✗ Failed to fetch content from: ${testCase.url}`);
         console.error(`Error: ${result.error}`);
       }
     }
