@@ -1419,11 +1419,13 @@ async function handleToolCall(functionCall) {
         
         if (!steamGameDataResult.success) {
           console.log(`Tool ${name} failed: ${steamGameDataResult.error}`);
-          return `Error getting Steam game data: ${steamGameDataResult.message}`;
+          return `Error getting Steam game data: ${steamGameDataResult.message || steamGameDataResult.error || 'Unknown error'}`;
         }
         
         console.log(`Tool ${name} successfully fetched Steam game data`);
-        return steamGameDataResult.message;
+        // Ensure we have a message to return
+        return steamGameDataResult.message || 
+               `Information about Steam App ID ${parsedArgs.app_id}: ${steamGameDataResult.gameInfo?.title || 'Game information'}\n\nView on Steam: https://store.steampowered.com/app/${parsedArgs.app_id}/`;
         
       case 'search_steam_games':
         if (!parsedArgs.query) {
@@ -1437,11 +1439,13 @@ async function handleToolCall(functionCall) {
         
         if (!steamGamesResult.success) {
           console.log(`Tool ${name} failed: ${steamGamesResult.error}`);
-          return `Error searching Steam games: ${steamGamesResult.message}`;
+          return `Error searching Steam games: ${steamGamesResult.message || steamGamesResult.error || 'Unknown error'}`;
         }
         
         console.log(`Tool ${name} returned ${steamGamesResult.results?.length || 0} results`);
-        return steamGamesResult.message;
+        // Ensure we have a message to return
+        return steamGamesResult.message || 
+               `Search results for "${parsedArgs.query}" on Steam: Found ${steamGamesResult.results?.length || 0} games`;
         
       case 'get_steam_deals':
         console.log(`Tool ${name} executing`);
@@ -1450,11 +1454,13 @@ async function handleToolCall(functionCall) {
         
         if (!steamDealsResult.success) {
           console.log(`Tool ${name} failed: ${steamDealsResult.error}`);
-          return `Error getting Steam deals: ${steamDealsResult.message}`;
+          return `Error getting Steam deals: ${steamDealsResult.message || steamDealsResult.error || 'Unknown error'}`;
         }
         
         console.log(`Tool ${name} successfully fetched Steam deals`);
-        return steamDealsResult.message;
+        // Ensure we have a message to return
+        return steamDealsResult.message || 
+               `Current Steam Deals: Found ${steamDealsResult.specials?.length || 0} special offers and ${steamDealsResult.topSellers?.length || 0} top sellers`;
         
       default:
         console.log(`Unknown tool: ${name}`);

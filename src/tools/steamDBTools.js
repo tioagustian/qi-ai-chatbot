@@ -120,6 +120,14 @@ async function getSteamGameData(appId, options = {}) {
       const passedSecurity = await handleSecurityChecks(page, steamDBUrl);
       if (!passedSecurity) {
         await browser.close();
+        logger.warning('Access blocked by SteamDB security checks, falling back to Steam Store API');
+        
+        // Use Steam Store API as fallback
+        const steamStoreData = await getSteamStoreData(steamAppId, options);
+        if (steamStoreData.success) {
+          return steamStoreData;
+        }
+        
         return {
           success: false,
           error: 'Access blocked by SteamDB security checks',
@@ -152,6 +160,14 @@ async function getSteamGameData(appId, options = {}) {
         const secondPassedSecurity = await handleSecurityChecks(newPage, steamDBUrl);
         if (!secondPassedSecurity) {
           await browser.close();
+          logger.warning('Access blocked by SteamDB security checks on retry, falling back to Steam Store API');
+          
+          // Use Steam Store API as fallback
+          const steamStoreData = await getSteamStoreData(steamAppId, options);
+          if (steamStoreData.success) {
+            return steamStoreData;
+          }
+          
           return {
             success: false,
             error: 'Access blocked by SteamDB security checks on retry',
@@ -440,10 +456,14 @@ async function searchSteamGames(gameName, options = {}) {
       const passedSecurity = await handleSecurityChecks(page, searchUrl);
       if (!passedSecurity) {
         await browser.close();
+        logger.warning('Access blocked by SteamDB security checks, attempting to use Steam Store search');
+        
+        // Unfortunately, Steam Store doesn't provide a direct search API
+        // We'll return a more helpful error message
         return {
           success: false,
           error: 'Access blocked by SteamDB security checks',
-          message: 'The request was blocked by SteamDB security checks. Please try again later.'
+          message: 'SteamDB access is currently blocked by security measures. Try using the specific Steam App ID if you know it, or try searching on Steam Store directly at https://store.steampowered.com/'
         };
       }
       
@@ -472,10 +492,11 @@ async function searchSteamGames(gameName, options = {}) {
         const secondPassedSecurity = await handleSecurityChecks(newPage, searchUrl);
         if (!secondPassedSecurity) {
           await browser.close();
+          logger.warning('Access blocked by SteamDB security checks on retry, no fallback available');
           return {
             success: false,
             error: 'Access blocked by SteamDB security checks on retry',
-            message: 'The request was blocked by SteamDB security checks. Please try again later.'
+            message: 'SteamDB access is currently blocked by security measures. Try using the specific Steam App ID if you know it, or try searching on Steam Store directly at https://store.steampowered.com/'
           };
         }
         
@@ -810,10 +831,69 @@ async function getSteamDeals(options = {}) {
       const passedSecurity = await handleSecurityChecks(page, 'https://store.steampowered.com/');
       if (!passedSecurity) {
         await browser.close();
+        logger.warning('Access blocked by Steam security checks, trying alternative approach');
+        
+        // Try a simple API-based approach as fallback
+        try {
+          // Make a direct request to the Steam API for top sellers
+          const response = await axios.get('https://store.steampowered.com/api/featuredcategories', {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+              'Accept': 'application/json',
+              'Accept-Language': 'en-US,en;q=0.9'
+            }
+          });
+          
+          if (response.data && response.data.specials && response.data.top_sellers) {
+            // Format the API response to match our expected structure
+            const formattedData = {
+              topSellers: response.data.top_sellers.items.map(item => ({
+                title: item.name,
+                price: item.final_price ? `$${(item.final_price/100).toFixed(2)}` : 'N/A',
+                discount: item.discount_percent ? `-${item.discount_percent}%` : null,
+                originalPrice: item.original_price ? `$${(item.original_price/100).toFixed(2)}` : null,
+                appId: item.id.toString(),
+                url: `https://store.steampowered.com/app/${item.id}/`
+              })),
+              specials: response.data.specials.items.map(item => ({
+                title: item.name,
+                price: item.final_price ? `$${(item.final_price/100).toFixed(2)}` : 'N/A',
+                discount: item.discount_percent ? `-${item.discount_percent}%` : null,
+                originalPrice: item.original_price ? `$${(item.original_price/100).toFixed(2)}` : null,
+                appId: item.id.toString(),
+                url: `https://store.steampowered.com/app/${item.id}/`
+              })),
+              newReleases: response.data.new_releases ? response.data.new_releases.items.map(item => ({
+                title: item.name,
+                price: item.final_price ? `$${(item.final_price/100).toFixed(2)}` : 'N/A',
+                discount: item.discount_percent ? `-${item.discount_percent}%` : null,
+                originalPrice: item.original_price ? `$${(item.original_price/100).toFixed(2)}` : null,
+                appId: item.id.toString(),
+                url: `https://store.steampowered.com/app/${item.id}/`
+              })) : []
+            };
+            
+            // Format message and return
+            const formattedMessage = options.useAI && process.env.GEMINI_API_KEY ? 
+              await enhanceDealsWithAI(formattedData) : 
+              formatSteamDealsMessage(formattedData);
+              
+            return {
+              success: true,
+              topSellers: formattedData.topSellers,
+              specials: formattedData.specials,
+              newReleases: formattedData.newReleases,
+              message: formattedMessage
+            };
+          }
+        } catch (apiError) {
+          logger.error(`Error with Steam API fallback: ${apiError.message}`);
+        }
+        
         return {
           success: false,
           error: 'Access blocked by Steam security checks',
-          message: 'The request was blocked by Steam security checks. Please try again later.'
+          message: 'Access to Steam Store was blocked by security checks. Please try again later or visit the Steam Store directly at https://store.steampowered.com/'
         };
       }
       
@@ -1031,6 +1111,119 @@ function formatSteamDealsMessage(dealsData) {
 }
 
 /**
+ * Fetch game information from Steam Store API as fallback
+ * @param {number|string} appId - The Steam App ID to look up
+ * @param {Object} options - Additional options for the request
+ * @returns {Promise<Object>} - Information about the game
+ */
+async function getSteamStoreData(appId, options = {}) {
+  try {
+    logger.info(`Falling back to Steam Store API for app ID: ${appId}`);
+    
+    // Steam Store API endpoint
+    const steamApiUrl = `https://store.steampowered.com/api/appdetails?appids=${appId}&cc=us&l=en`;
+    
+    // Setup browser-like headers
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+      'Accept': 'application/json',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Referer': 'https://store.steampowered.com/',
+      'Cache-Control': 'no-cache'
+    };
+    
+    // Make a direct API request
+    const response = await axios.get(steamApiUrl, { headers });
+    
+    // Check if the API returned valid data
+    if (!response.data || !response.data[appId] || !response.data[appId].success) {
+      logger.error(`Steam Store API returned no data for app ID: ${appId}`);
+      return {
+        success: false,
+        error: 'No data found',
+        message: `No data found for app ID ${appId} on Steam Store.`
+      };
+    }
+    
+    // Extract game data from response
+    const gameData = response.data[appId].data;
+    
+    // Format the data for our needs
+    const formattedData = {
+      title: gameData.name || '',
+      price: gameData.price_overview ? 
+        `${gameData.price_overview.final_formatted} ${gameData.price_overview.discount_percent > 0 ? 
+          `(${gameData.price_overview.discount_percent}% off)` : ''}` : 
+        (gameData.is_free ? 'Free to Play' : 'Not Available'),
+      metadata: {
+        'Developer': Array.isArray(gameData.developers) ? gameData.developers.join(', ') : (gameData.developers || 'Unknown'),
+        'Publisher': Array.isArray(gameData.publishers) ? gameData.publishers.join(', ') : (gameData.publishers || 'Unknown'),
+        'Release Date': gameData.release_date ? gameData.release_date.date : 'Unknown',
+        'Type': gameData.type || 'Unknown',
+        'Metacritic Score': gameData.metacritic ? gameData.metacritic.score : 'N/A'
+      },
+      tags: gameData.categories ? gameData.categories.map(cat => cat.description) : [],
+      platforms: [],
+      dlcData: [],
+      currentPlayers: 'Data not available from Steam API',
+      historicalPeakPlayers: 'Data not available from Steam API',
+      updates: [] // Ensure this is defined as an empty array
+    };
+    
+    // Add platform support information
+    if (gameData.platforms) {
+      if (gameData.platforms.windows) formattedData.platforms.push('Windows');
+      if (gameData.platforms.mac) formattedData.platforms.push('macOS');
+      if (gameData.platforms.linux) formattedData.platforms.push('Linux');
+    }
+    
+    // Add genres as tags
+    if (gameData.genres) {
+      formattedData.tags = [...formattedData.tags, ...gameData.genres.map(genre => genre.description)];
+    }
+    
+    // Get DLC info if available
+    if (gameData.dlc && Array.isArray(gameData.dlc)) {
+      // We can't get DLC prices directly from this API
+      // Just add the DLC IDs we know exist
+      formattedData.dlcData = gameData.dlc.map(dlcId => ({
+        title: `DLC (ID: ${dlcId})`,
+        price: 'Check Steam Store'
+      }));
+    }
+    
+    logger.success(`Successfully fetched Steam Store data for game: ${formattedData.title}`);
+    
+    // Check if AI enhancement is requested
+    const useAI = options.useAI !== false && process.env.GEMINI_API_KEY;
+    
+    let formattedMessage;
+    if (useAI) {
+      formattedMessage = await enhanceWithAI(formattedData, appId, { fromSteamApi: true });
+    } else {
+      formattedMessage = formatSteamApiGameInfoMessage(formattedData, appId);
+    }
+    
+    return {
+      success: true,
+      appId: appId,
+      url: `https://store.steampowered.com/app/${appId}/`,
+      gameInfo: formattedData,
+      message: formattedMessage,
+      fromSteamApi: true // Flag to indicate this came from Steam API not SteamDB
+    };
+  } catch (error) {
+    logger.error(`Error fetching Steam Store data: ${error.message}`);
+    
+    return {
+      success: false,
+      error: error.message,
+      message: `Failed to get game data from Steam Store: ${error.message}`
+    };
+  }
+}
+
+/**
  * Enhance the SteamDB results with AI generated formatting and insights
  * @param {Object} gameData - Raw game data from SteamDB
  * @param {number} appId - Steam App ID
@@ -1039,42 +1232,49 @@ function formatSteamDealsMessage(dealsData) {
  */
 async function enhanceWithAI(gameData, appId, options = {}) {
   try {
-    logger.info(`Enhancing game data with AI for app ID: ${appId}`);
+    const sourceName = options.fromSteamApi ? "Steam Store API" : "SteamDB";
+    logger.info(`Enhancing game data from ${sourceName} with AI for app ID: ${appId}`);
     
     if (!gameData || !gameData.title) {
-      return formatGameInfoMessage(gameData, appId);
+      return options.fromSteamApi ? 
+        formatSteamApiGameInfoMessage(gameData, appId) : 
+        formatGameInfoMessage(gameData, appId);
     }
     
     // Prepare the raw data as structured JSON for the AI
     const gameDataJson = JSON.stringify(gameData, null, 2);
     
     // Prepare prompt for Gemini
-    const prompt = `You are a gaming expert who provides detailed, well-formatted, and insightful information about video games.
-I will provide you with raw data about a game from SteamDB in JSON format, and I want you to transform it into a well-structured, informative, and engaging markdown response.
+    const prompt = `Anda adalah pakar game yang menyediakan informasi terperinci, terformat dengan baik, dan berwawasan luas tentang video game.
+Saya akan menyediakan data mentah tentang game dalam format JSON, dan saya ingin Anda mengubahnya menjadi respons markdown yang terstruktur dengan baik, informatif, dan menarik menggunakan bahasa Indonesia.
 
-Here's the game data:
+Ini adalah game data:
 ${gameDataJson}
 
 Steam App ID: ${appId}
-SteamDB URL: https://steamdb.info/app/${appId}/
+Data Source: ${sourceName}
+${options.fromSteamApi ? 'URL: https://store.steampowered.com/app/' + appId + '/' : 'URL: https://steamdb.info/app/' + appId + '/'}
 
-Please create a comprehensive markdown response that:
-1. Has a clear title structure with the game name and app ID
-2. Highlights key information like player count, price, platforms, and release info
-3. Organizes metadata in a clean, readable format
-4. Includes tags, DLC information, and recent updates when available
-5. Adds your expert gaming knowledge or context about this title if relevant
-6. Is visually well-formatted with appropriate markdown (headers, bold, lists, etc.)
-7. Credits SteamDB as the data source
+Harap buat respons penurunan harga komprehensif yang:
+1. Memiliki struktur judul yang jelas dengan nama game dan ID aplikasi
+2. Menyoroti informasi penting seperti harga, platform, dan info rilis
+3. Mengatur metadata dalam format yang bersih dan mudah dibaca
+4. Menyertakan tag dan informasi DLC jika tersedia
+5. Menambahkan pengetahuan game ahli atau konteks tentang judul ini jika relevan
+6. Diformat dengan baik secara visual dengan penurunan harga yang sesuai (header, cetak tebal, daftar, dll.)
+7. Tandai ${sourceName} sebagai data source
+${options.fromSteamApi ? '8. Catatan bahwa data ini berasal dari Steam Store API karena akses SteamDB diblokir oleh tindakan keamanan' : ''}
 
-Keep your response concise but comprehensive.`;
+Jaga agar respons Anda tetap ringkas namun komprehensif.`;
 
     // Get API key from environment
     const geminiApiKey = process.env.GEMINI_API_KEY;
     
     if (!geminiApiKey) {
       logger.warning('Gemini API key not found, falling back to standard formatting');
-      return formatGameInfoMessage(gameData, appId);
+      return options.fromSteamApi ? 
+        formatSteamApiGameInfoMessage(gameData, appId) : 
+        formatGameInfoMessage(gameData, appId);
     }
     
     // Request AI enhancement using Gemini
@@ -1096,21 +1296,42 @@ Keep your response concise but comprehensive.`;
       const enhancedContent = response.choices[0].message.content;
       logger.success(`Successfully enhanced game data with AI for: ${gameData.title}`);
       
-      // Make sure the SteamDB credit is present
-      if (!enhancedContent.includes('SteamDB')) {
-        return enhancedContent + `\n\nData from [SteamDB](https://steamdb.info/app/${appId}/)`;
+      // Make sure the end message mentions where the data came from
+      if (options.fromSteamApi) {
+        // Make sure both data source credits are present
+        if (!enhancedContent.toLowerCase().includes('steam store')) {
+          return enhancedContent + 
+            `\n\nData from [Steam Store](https://store.steampowered.com/app/${appId}/)` +
+            `\n\n*Note: This data was fetched from Steam Store API because SteamDB access was blocked by security measures.*`;
+        }
+        
+        // Add the note about SteamDB access if not already present
+        if (!enhancedContent.toLowerCase().includes('steamdb') && 
+            !enhancedContent.toLowerCase().includes('security')) {
+          return enhancedContent + 
+            `\n\n*Note: This data was fetched from Steam Store API because SteamDB access was blocked by security measures.*`;
+        }
+      } else {
+        // For SteamDB data
+        if (!enhancedContent.includes('SteamDB')) {
+          return enhancedContent + `\n\nData from [SteamDB](https://steamdb.info/app/${appId}/)`;
+        }
       }
       
       return enhancedContent;
     } else {
       // Fall back to standard formatting
       logger.warning('AI enhancement failed, falling back to standard formatting');
-      return formatGameInfoMessage(gameData, appId);
+      return options.fromSteamApi ? 
+        formatSteamApiGameInfoMessage(gameData, appId) : 
+        formatGameInfoMessage(gameData, appId);
     }
   } catch (error) {
     logger.error(`Error enhancing game data with AI: ${error.message}`);
     // Fall back to standard formatting
-    return formatGameInfoMessage(gameData, appId);
+    return options.fromSteamApi ? 
+      formatSteamApiGameInfoMessage(gameData, appId) : 
+      formatGameInfoMessage(gameData, appId);
   }
 }
 
@@ -1362,11 +1583,78 @@ async function handleSecurityChecks(page, url) {
   }
 }
 
+/**
+ * Format game information from Steam API for display
+ * @param {Object} gameData - Game information from Steam API
+ * @param {number} appId - Steam App ID
+ * @returns {string} - Formatted message
+ */
+function formatSteamApiGameInfoMessage(gameData, appId) {
+  if (!gameData || !gameData.title) {
+    return `No information found for Steam App ID: ${appId}`;
+  }
+  
+  let message = `# ${gameData.title} (App ID: ${appId})\n\n`;
+  
+  // Add price information
+  if (gameData.price) {
+    message += `**Price:** ${gameData.price}\n`;
+  }
+  
+  message += '\n';
+  
+  // Add platforms
+  if (gameData.platforms && gameData.platforms.length > 0) {
+    message += `**Platforms:** ${gameData.platforms.join(', ')}\n\n`;
+  }
+  
+  // Add metadata with key information
+  if (gameData.metadata) {
+    message += '## Game Information\n\n';
+    
+    Object.entries(gameData.metadata).forEach(([key, value]) => {
+      if (value) {
+        message += `**${key}:** ${value}\n`;
+      }
+    });
+    
+    message += '\n';
+  }
+  
+  // Add tags
+  if (gameData.tags && gameData.tags.length > 0) {
+    message += `**Tags:** ${gameData.tags.join(', ')}\n\n`;
+  }
+  
+  // Add DLC information
+  if (gameData.dlcData && gameData.dlcData.length > 0) {
+    message += `## DLC (${gameData.dlcData.length})\n\n`;
+    
+    // Only show first 5 DLCs if there are too many
+    const dlcToShow = gameData.dlcData.slice(0, 5);
+    dlcToShow.forEach(dlc => {
+      message += `- **${dlc.title}** ${dlc.price ? `- ${dlc.price}` : ''}\n`;
+    });
+    
+    if (gameData.dlcData.length > 5) {
+      message += `- *(and ${gameData.dlcData.length - 5} more...)*\n`;
+    }
+    
+    message += '\n';
+  }
+  
+  message += `\nData from [Steam Store](https://store.steampowered.com/app/${appId}/)\n`;
+  message += `\n*Note: This data was fetched from Steam Store API because SteamDB access was blocked by security measures.*`;
+  
+  return message;
+}
+
 export {
   getSteamGameData,
   searchSteamGames,
   getSteamDeals,
   enhanceWithAI,
   enhanceSearchResultsWithAI,
-  enhanceDealsWithAI
+  enhanceDealsWithAI,
+  getSteamStoreData
 }; 
