@@ -341,8 +341,6 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
           try {
             const toolCall = response.choices[0].message.tool_calls[0];
             const result = await handleToolCall(toolCall.function);
-            console.log('Message Content', response.choices[0].message.content);
-            console.log('Tool call result', result);
             return result;
           } catch (toolError) {
             logger.error('Error handling tool calls from Gemini', toolError);
@@ -412,8 +410,6 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
           try {
             const toolCall = response.choices[0].message.tool_calls[0];
             const result = await handleToolCall(toolCall.function);
-            console.log('Message Content', response.choices[0].message.content);
-            console.log('Tool call result', result);
             return result;
           } catch (toolError) {
             logger.error('Error handling tool calls from Together.AI', toolError);
@@ -545,9 +541,6 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
               try {
                 const toolCall = response.choices[0].message.tool_calls[0];
                 const result = await handleToolCall(toolCall.function);
-                
-                console.log('Message Content', response.choices[0].message.content);
-                console.log('Tool call result', result);
                 return result;
               } catch (toolError) {
                 logger.error('Error handling tool calls from Gemini fallback', toolError);
