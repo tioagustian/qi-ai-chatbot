@@ -113,6 +113,16 @@ function ensureMemoryStructure(db) {
     };
   }
   
+  // Ensure web search history structure exists
+  if (!db.data.webSearchHistory) {
+    db.data.webSearchHistory = {};
+  }
+  
+  // Ensure web content structure exists
+  if (!db.data.webContent) {
+    db.data.webContent = {};
+  }
+  
   // Update existing userFacts with enhanced structure if needed
   Object.entries(db.data.userFacts).forEach(([userId, userData]) => {
     Object.entries(userData.facts || {}).forEach(([factKey, fact]) => {
@@ -1167,13 +1177,18 @@ function getRelevantFactsForMessage(userId, chatId, relevantFactsObj) {
   // Get global facts that might be relevant
   const relevantGlobalFacts = getRelevantGlobalFacts(relevantFactsObj);
   
+  // NEW: Get relevant web search results and content
+  const relevantKeywords = extractKeywordsFromRelevantFacts(relevantFactsObj);
+  const relevantWebResults = getRelevantWebResults(relevantKeywords);
+  const relevantWebContent = getRelevantWebContent(relevantKeywords);
+  
   // Update usage metrics for relevant facts
   updateRelevanceMetrics(userId, relevantFactsObj);
   
   // Find related facts based on the relevant facts
   let relatedFacts = [];
   Object.keys(relevantFactsObj).forEach(factKey => {
-    const related = findRelatedFacts(userId, factKey, 0.5, 2);
+    const related = findRelatedFacts(userId, factKey);
     if (related.length > 0) {
       relatedFacts = [...relatedFacts, ...related.map(fact => {
         const reasoning = fact.reasoning ? ` (${fact.reasoning})` : ` (related to ${factKey})`;
@@ -1206,9 +1221,15 @@ function getRelevantFactsForMessage(userId, chatId, relevantFactsObj) {
     return factStr;
   });
   
-  // For private chats, just return the primary user's facts, related facts, and global facts
+  // For private chats, just return the primary user's facts, related facts, global facts, and web results
   if (!chatId.endsWith('@g.us')) {
-    return [...enhancedFacts, ...relatedFacts, ...relevantGlobalFacts];
+    return [
+      ...enhancedFacts, 
+      ...relatedFacts, 
+      ...relevantGlobalFacts,
+      ...relevantWebResults,
+      ...relevantWebContent
+    ];
   }
   
   // For group chats, include relevant facts from other participants
@@ -1294,12 +1315,269 @@ function getRelevantFactsForMessage(userId, chatId, relevantFactsObj) {
     });
   }
   
-  // Analyze fact relationships if we haven't done so recently
-  analyzeFactRelationships(userId, chatId).catch(error => {
-    logger.warning('Error analyzing fact relationships', error);
+  // Return combined facts from all sources, prioritizing facts from primary user
+  return [
+    ...enhancedFacts,
+    ...relevantGlobalFacts,
+    ...relatedFacts,
+    ...otherParticipantsFacts,
+    ...relevantWebResults,
+    ...relevantWebContent
+  ];
+}
+
+/**
+ * Extract keywords from relevant facts for web search context retrieval
+ * @param {Object} relevantFactsObj - Relevant facts object 
+ * @returns {Array} - Array of keywords for searching
+ */
+function extractKeywordsFromRelevantFacts(relevantFactsObj) {
+  const keywords = new Set();
+  
+  // Extract keywords from fact keys and values
+  Object.entries(relevantFactsObj).forEach(([key, fact]) => {
+    // Extract from key
+    const keyWords = key.toLowerCase().split(/[_\s]+/).filter(word => word.length > 3);
+    keyWords.forEach(word => keywords.add(word));
+    
+    // Extract from value
+    if (fact.value) {
+      const valueWords = fact.value.toLowerCase().split(/\s+/).filter(word => word.length > 3);
+      valueWords.forEach(word => keywords.add(word));
+    }
+    
+    // Add categories and tags if available
+    if (fact.category) {
+      keywords.add(fact.category);
+    }
+    
+    if (fact.tags && Array.isArray(fact.tags)) {
+      fact.tags.forEach(tag => keywords.add(tag));
+    }
   });
   
-  return [...enhancedFacts, ...relatedFacts, ...relevantGlobalFacts, ...otherParticipantsFacts];
+  // Remove common stop words
+  const stopWords = [
+    'the', 'and', 'that', 'have', 'this', 'from', 'with', 'but', 'not', 'atau',
+    'dan', 'yang', 'untuk', 'dari', 'pada', 'dengan', 'tetapi', 'tidak'
+  ];
+  
+  return [...keywords].filter(word => !stopWords.includes(word));
+}
+
+/**
+ * Get relevant web search results based on keywords
+ * @param {Array} keywords - Keywords to match against stored search results
+ * @param {Object} options - Additional options for retrieval
+ * @returns {Array} - Formatted relevant web search results
+ */
+function getRelevantWebResults(keywords, options = {}) {
+  try {
+    const db = getDb();
+    const {
+      maxResults = 3,
+      maxAgeDays = 7
+    } = options;
+    
+    if (!db.data.webSearchHistory || Object.keys(db.data.webSearchHistory).length === 0) {
+      return [];
+    }
+    
+    // Convert keywords to array if needed
+    const keywordArray = Array.isArray(keywords) ? keywords : [keywords];
+    if (keywordArray.length === 0) return [];
+    
+    // Get timestamp for age filtering
+    const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
+    const oldestAllowed = Date.now() - maxAgeMs;
+    
+    // Create a simple scoring system
+    const scoredResults = [];
+    
+    // Score each search result based on keyword matches
+    Object.entries(db.data.webSearchHistory).forEach(([searchId, searchData]) => {
+      // Skip old search results
+      const searchTime = new Date(searchData.timestamp).getTime();
+      if (searchTime < oldestAllowed) return;
+      
+      let score = 0;
+      let matchCount = 0;
+      
+      // Score based on the search query
+      const queryWords = searchData.query.toLowerCase().split(/\s+/);
+      keywordArray.forEach(keyword => {
+        if (queryWords.includes(keyword.toLowerCase())) {
+          score += 3; // Higher score for matching the query directly
+          matchCount++;
+        }
+      });
+      
+      // Score based on search results content
+      if (searchData.results && Array.isArray(searchData.results)) {
+        searchData.results.forEach((result, index) => {
+          // First results are more relevant, so give higher score
+          const positionMultiplier = 1 - (index * 0.1);
+          
+          keywordArray.forEach(keyword => {
+            const lowerKeyword = keyword.toLowerCase();
+            // Check title
+            if (result.title && result.title.toLowerCase().includes(lowerKeyword)) {
+              score += 2 * positionMultiplier;
+              matchCount++;
+            }
+            
+            // Check snippet
+            if (result.snippet && result.snippet.toLowerCase().includes(lowerKeyword)) {
+              score += 1 * positionMultiplier;
+              matchCount++;
+            }
+          });
+        });
+      }
+      
+      // Only include if there's at least one match
+      if (matchCount > 0) {
+        scoredResults.push({
+          id: searchId,
+          score,
+          searchData,
+          matchCount,
+          recency: searchTime
+        });
+      }
+    });
+    
+    // Sort by score (higher first) and recency (newer first)
+    scoredResults.sort((a, b) => {
+      // Score is primary factor
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      // Recency is secondary factor
+      return b.recency - a.recency;
+    });
+    
+    // Get top results and format for context
+    const topResults = scoredResults.slice(0, maxResults);
+    
+    // Format the results for inclusion in the context
+    return topResults.map(result => {
+      const searchData = result.searchData;
+      const formattedDate = new Date(searchData.timestamp).toLocaleDateString();
+      
+      // Format the top 3 results
+      const topSearchResults = (searchData.results || []).slice(0, 3).map((searchResult, index) => {
+        return `  ${index+1}. ${searchResult.title}`;
+      }).join('\n');
+      
+      return `WEB SEARCH (${formattedDate}): "${searchData.query}" found:\n${topSearchResults}`;
+    });
+  } catch (error) {
+    logger.error('Error getting relevant web search results', error);
+    return [];
+  }
+}
+
+/**
+ * Get relevant web content based on keywords
+ * @param {Array} keywords - Keywords to match against stored web content
+ * @param {Object} options - Additional options for retrieval
+ * @returns {Array} - Formatted relevant web content
+ */
+function getRelevantWebContent(keywords, options = {}) {
+  try {
+    const db = getDb();
+    const {
+      maxResults = 2,
+      maxAgeDays = 14
+    } = options;
+    
+    if (!db.data.webContent || Object.keys(db.data.webContent).length === 0) {
+      return [];
+    }
+    
+    // Convert keywords to array if needed
+    const keywordArray = Array.isArray(keywords) ? keywords : [keywords];
+    if (keywordArray.length === 0) return [];
+    
+    // Get timestamp for age filtering
+    const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
+    const oldestAllowed = Date.now() - maxAgeMs;
+    
+    // Create a simple scoring system
+    const scoredContent = [];
+    
+    // Score each web content based on keyword matches
+    Object.entries(db.data.webContent).forEach(([contentId, contentData]) => {
+      // Skip old content
+      const contentTime = new Date(contentData.timestamp).getTime();
+      if (contentTime < oldestAllowed) return;
+      
+      let score = 0;
+      let matchCount = 0;
+      
+      // Score based on title
+      keywordArray.forEach(keyword => {
+        if (contentData.title && contentData.title.toLowerCase().includes(keyword.toLowerCase())) {
+          score += 3; // Higher score for matching the title
+          matchCount++;
+        }
+      });
+      
+      // Score based on content 
+      if (contentData.truncatedContent) {
+        const contentText = contentData.truncatedContent.toLowerCase();
+        keywordArray.forEach(keyword => {
+          // Count occurrences (more occurrences = higher score)
+          const regex = new RegExp(keyword.toLowerCase(), 'g');
+          const occurrences = (contentText.match(regex) || []).length;
+          if (occurrences > 0) {
+            // Score increases with more occurrences but with diminishing returns
+            score += Math.min(occurrences, 5);
+            matchCount++;
+          }
+        });
+      }
+      
+      // Only include if there's at least one match
+      if (matchCount > 0) {
+        scoredContent.push({
+          id: contentId,
+          score,
+          contentData,
+          matchCount,
+          recency: contentTime
+        });
+      }
+    });
+    
+    // Sort by score (higher first) and recency (newer first)
+    scoredContent.sort((a, b) => {
+      // Score is primary factor
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      // Recency is secondary factor
+      return b.recency - a.recency;
+    });
+    
+    // Get top results and format for context
+    const topContent = scoredContent.slice(0, maxResults);
+    
+    // Format the results for inclusion in the context
+    return topContent.map(result => {
+      const contentData = result.contentData;
+      const formattedDate = new Date(contentData.timestamp).toLocaleDateString();
+      
+      // Create a brief excerpt from the content (first 150 chars)
+      const excerpt = contentData.truncatedContent?.substring(0, 150) + '...';
+      
+      return `WEB CONTENT (${formattedDate}): ${contentData.title}\nExcerpt: ${excerpt}\nSource: ${contentData.url}`;
+    });
+  } catch (error) {
+    logger.error('Error getting relevant web content', error);
+    return [];
+  }
 }
 
 /**
@@ -1933,6 +2211,348 @@ async function addGlobalFact(factKey, factValue, options = {}) {
 }
 
 /**
+ * Store web search results in the memory system
+ * This makes search results available for future queries
+ * 
+ * @param {string} query - The search query
+ * @param {Array} results - The search results
+ * @param {Object} options - Additional options
+ * @returns {Promise<boolean>} - Success status
+ */
+async function storeWebSearchResults(query, results, options = {}) {
+  try {
+    const db = getDb();
+    
+    // Ensure memory structure exists
+    ensureMemoryStructure(db);
+    
+    // Create an ID for the search based on the query
+    const searchId = `search_${Date.now()}`;
+    const timestamp = new Date().toISOString();
+    
+    // Ensure web search structure exists
+    if (!db.data.webSearchHistory) {
+      db.data.webSearchHistory = {};
+    }
+    
+    // Store the full search results
+    db.data.webSearchHistory[searchId] = {
+      query,
+      results,
+      timestamp,
+      formattedResults: options.formattedText || null
+    };
+    
+    logger.info(`Stored web search results for query: "${query}" with ID: ${searchId}`);
+    
+    // Extract key facts from search results
+    if (Array.isArray(results) && results.length > 0) {
+      // Process each result into facts
+      for (let i = 0; i < Math.min(results.length, 5); i++) {
+        const result = results[i];
+        
+        // Create a normalized key from the query
+        const normalizedQuery = query.toLowerCase().trim().replace(/\s+/g, '_');
+        
+        // Add main fact about the search result
+        const factKey = `search_result_${i+1}_for_${normalizedQuery}`;
+        const factValue = `${result.title}: ${result.snippet}`;
+        
+        // Calculate confidence based on result position (first results have higher confidence)
+        const confidence = 0.95 - (i * 0.05);
+        
+        // Extract keywords for tags
+        const keywords = extractKeywordsFromQuery(query);
+        
+        // Add the fact
+        await addGlobalFact(factKey, factValue, {
+          confidence,
+          category: 'web_search',
+          tags: [...keywords, 'web_search', 'search_result'],
+          factType: 'EXPLICIT',
+          source: 'web_search',
+          metadata: {
+            searchId,
+            resultIndex: i,
+            originalQuery: query,
+            url: result.link,
+            timestamp
+          }
+        });
+        
+        // Also store the URL as a separate fact for possible retrieval
+        const urlFactKey = `url_for_${normalizedQuery}_result_${i+1}`;
+        await addGlobalFact(urlFactKey, result.link, {
+          confidence,
+          category: 'web_search',
+          tags: [...keywords, 'web_search', 'url'],
+          factType: 'EXPLICIT'
+        });
+      }
+      
+      // Add a summary fact with a timestamp
+      const summaryFactKey = `search_summary_for_${query.toLowerCase().trim().replace(/\s+/g, '_')}`;
+      const summaryValue = `Search for "${query}" (${new Date().toLocaleString()}) found ${results.length} results: ${results.slice(0, 3).map(r => r.title).join(', ')}${results.length > 3 ? '...' : ''}`;
+      
+      await addGlobalFact(summaryFactKey, summaryValue, {
+        confidence: 0.98,
+        category: 'web_search',
+        tags: ['web_search', 'summary', ...extractKeywordsFromQuery(query)],
+        factType: 'EXPLICIT'
+      });
+      
+      logger.success(`Extracted ${Math.min(results.length, 5)} facts from search results for "${query}"`);
+    }
+    
+    // Save database
+    await db.write();
+    return true;
+  } catch (error) {
+    logger.error('Error storing web search results:', error);
+    return false;
+  }
+}
+
+/**
+ * Store web content from a URL in the memory system
+ * This makes the content available for future queries
+ * 
+ * @param {string} url - The URL of the content
+ * @param {string} title - The page title
+ * @param {string} content - The page content
+ * @param {Object} options - Additional options
+ * @returns {Promise<boolean>} - Success status
+ */
+async function storeWebContent(url, title, content, options = {}) {
+  try {
+    const db = getDb();
+    
+    // Ensure memory structure exists
+    ensureMemoryStructure(db);
+    
+    // Create ID for the content
+    const contentId = `content_${Date.now()}`;
+    const timestamp = new Date().toISOString();
+    
+    // Ensure web content structure exists
+    if (!db.data.webContent) {
+      db.data.webContent = {};
+    }
+    
+    // Store the full content
+    db.data.webContent[contentId] = {
+      url,
+      title,
+      content: content,
+      timestamp,
+      truncatedContent: content.length > 2000 ? content.substring(0, 2000) + '...' : content
+    };
+    
+    logger.info(`Stored web content from URL: "${url}" with ID: ${contentId}`);
+    
+    // Extract domain for categorization
+    let domain = '';
+    try {
+      const urlObj = new URL(url);
+      domain = urlObj.hostname.replace('www.', '');
+    } catch (error) {
+      logger.warning(`Could not parse domain from URL: ${url}`);
+      domain = 'unknown_domain';
+    }
+    
+    // Create a normalized key from the URL
+    const normalizedUrl = url.toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/^www\./, '')
+      .replace(/[^\w]/g, '_')
+      .substring(0, 50); // Limit length
+    
+    // Add main fact about the content
+    const factKey = `web_content_from_${normalizedUrl}`;
+    
+    // Create a summary of the content
+    const contentSummary = `${title}: ${content.substring(0, 200)}${content.length > 200 ? '...' : ''}`;
+    
+    // Extract topics and entities from the content
+    const topics = extractTopicsFromContent(content);
+    const entities = extractEntitiesFromContent(content);
+    
+    // Add the content as a fact
+    await addGlobalFact(factKey, contentSummary, {
+      confidence: 0.9,
+      category: 'web_content',
+      tags: ['web_content', domain, ...topics],
+      factType: 'EXPLICIT',
+      source: 'web_content',
+      metadata: {
+        contentId,
+        url,
+        title,
+        timestamp,
+        topics,
+        entities
+      }
+    });
+    
+    // Add title as a separate fact
+    const titleFactKey = `title_of_${normalizedUrl}`;
+    await addGlobalFact(titleFactKey, title, {
+      confidence: 0.95,
+      category: 'web_content',
+      tags: ['web_content', 'title', domain],
+      factType: 'EXPLICIT'
+    });
+    
+    // For each main topic/entity, add a specific fact relating it to this content
+    const importantTerms = [...new Set([...topics, ...entities])].slice(0, 5);
+    for (const term of importantTerms) {
+      const termFactKey = `${term}_mentioned_in_${normalizedUrl}`;
+      await addGlobalFact(termFactKey, `${term} is discussed in "${title}" (${url})`, {
+        confidence: 0.85,
+        category: 'web_content',
+        tags: ['web_content', term, domain],
+        factType: 'EXPLICIT'
+      });
+    }
+    
+    // Save database
+    await db.write();
+    logger.success(`Extracted ${importantTerms.length + 2} facts from web content at "${url}"`);
+    return true;
+  } catch (error) {
+    logger.error('Error storing web content:', error);
+    return false;
+  }
+}
+
+/**
+ * Extract keywords from a search query for improved retrieval
+ * @param {string} query - The search query
+ * @returns {Array} - Array of keywords
+ */
+function extractKeywordsFromQuery(query) {
+  // Remove common stop words and punctuation
+  const stopWords = [
+    'a', 'an', 'the', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 
+    'in', 'on', 'at', 'to', 'for', 'with', 'by', 'about', 'of', 'from',
+    'yang', 'adalah', 'dan', 'atau', 'tetapi', 'di', 'ke', 'dari', 'pada',
+    'untuk', 'dengan', 'tentang'
+  ];
+  
+  // Clean and tokenize the query
+  const cleanQuery = query.toLowerCase().replace(/[^\w\s]/g, ' ');
+  const words = cleanQuery.split(/\s+/).filter(word => word.length > 1);
+  
+  // Filter out stop words
+  const keywords = words.filter(word => !stopWords.includes(word));
+  
+  // Return unique keywords
+  return [...new Set(keywords)];
+}
+
+/**
+ * Extract topics from web content for improved retrieval
+ * @param {string} content - The web content
+ * @returns {Array} - Array of topics
+ */
+function extractTopicsFromContent(content) {
+  // Similar to extractTopicsFromAnalysis in aiService.js
+  const topics = [];
+  
+  // Common topic categories to extract
+  const topicPatterns = {
+    'technology': /\b(?:teknologi|technology|software|programming|komputer|computer|aplikasi|application|digital|internet|online)\b/gi,
+    'business': /\b(?:bisnis|business|ekonomi|economy|perusahaan|company|keuangan|finance|investasi|investment|pasar|market)\b/gi,
+    'science': /\b(?:sains|science|penelitian|research|ilmiah|scientific|eksperimen|experiment|pengetahuan|knowledge)\b/gi,
+    'health': /\b(?:kesehatan|health|medis|medical|dokter|doctor|penyakit|disease|obat|medicine|vaksin|vaccine)\b/gi,
+    'education': /\b(?:pendidikan|education|sekolah|school|universitas|university|belajar|learning|mengajar|teaching|siswa|student)\b/gi,
+    'politics': /\b(?:politik|politics|pemerintah|government|negara|country|presiden|president|menteri|minister|kebijakan|policy)\b/gi,
+    'entertainment': /\b(?:hiburan|entertainment|film|movie|musik|music|seni|art|konser|concert|bioskop|cinema)\b/gi,
+    'sports': /\b(?:olahraga|sports|sepak bola|football|basket|basketball|tenis|tennis|pertandingan|match|pemain|player)\b/gi,
+    'travel': /\b(?:perjalanan|travel|wisata|tourism|liburan|vacation|hotel|penginapan|accommodation|pesawat|flight)\b/gi,
+    'food': /\b(?:makanan|food|minuman|drink|resep|recipe|restoran|restaurant|masakan|cuisine|kuliner|culinary)\b/gi
+  };
+  
+  // Extract topics based on patterns
+  Object.entries(topicPatterns).forEach(([topic, pattern]) => {
+    if (pattern.test(content)) {
+      topics.push(topic);
+    }
+  });
+  
+  // Add additional topics based on clues in the content
+  if (/\b\d{4}-\d{2}-\d{2}\b/.test(content) || /\b\d{1,2}\/\d{1,2}\/\d{4}\b/.test(content)) {
+    topics.push('date');
+  }
+  
+  if (/\$\d+|\d+ dollars|Rp\d+|\d+ rupiah/i.test(content)) {
+    topics.push('money');
+  }
+  
+  if (/\b\d{1,2}:\d{2}\b/.test(content)) {
+    topics.push('time');
+  }
+  
+  // Finally add a general 'web_content' topic
+  topics.push('web_content');
+  
+  // Return unique topics
+  return [...new Set(topics)];
+}
+
+/**
+ * Extract entities from web content for improved retrieval
+ * @param {string} content - The web content
+ * @returns {Array} - Array of entities
+ */
+function extractEntitiesFromContent(content) {
+  // Similar to extractEntitiesFromAnalysis in aiService.js
+  const entities = [];
+  
+  // Common entity patterns to look for
+  const patterns = [
+    // People
+    /\b(?:orang|seseorang|pria|wanita|laki-laki|perempuan|anak|person|man|woman|child|people)\b/gi,
+    // Organizations
+    /\b(?:perusahaan|organisasi|lembaga|institusi|yayasan|company|organization|institution|foundation)\b/gi,
+    // Places
+    /\b(?:tempat|lokasi|kota|desa|negara|provinsi|jalan|place|location|city|village|country|province|street)\b/gi,
+    // Products
+    /\b(?:produk|barang|layanan|jasa|product|service|item)\b/gi,
+    // Events
+    /\b(?:acara|kegiatan|festival|konferensi|seminar|event|activity|conference|meeting)\b/gi
+  ];
+  
+  // Extract entities using patterns
+  patterns.forEach(pattern => {
+    const matches = content.match(pattern);
+    if (matches) {
+      // Convert to lowercase and remove duplicates
+      const uniqueMatches = [...new Set(matches.map(m => m.toLowerCase()))];
+      entities.push(...uniqueMatches);
+    }
+  });
+  
+  // Check for proper nouns (simplified)
+  const sentences = content.split(/[.!?]+/).filter(s => s.trim().length > 0);
+  const properNounPattern = /\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b/g;
+  
+  for (const sentence of sentences) {
+    const matches = sentence.match(properNounPattern);
+    if (matches) {
+      // Filter out common capitalized words that aren't proper nouns
+      const properNouns = matches.filter(word => 
+        !['I', 'A', 'The', 'It', 'This', 'That', 'These', 'Those'].includes(word)
+      );
+      entities.push(...properNouns);
+    }
+  }
+  
+  // Return unique entities (limited to prevent excessive data)
+  return [...new Set(entities)].slice(0, 15);
+}
+
+/**
  * Get facts for other participants in the same chat
  * @param {Object} db - Database instance
  * @param {string} chatId - Chat ID
@@ -2456,5 +3076,10 @@ export {
   consolidateUserFacts,
   getRelevantGlobalFacts,
   updateRelevanceMetrics,
-  extractGlobalKnowledgeFromRelevantFacts
+  extractGlobalKnowledgeFromRelevantFacts,
+  storeWebSearchResults,
+  storeWebContent,
+  getRelevantWebResults,
+  getRelevantWebContent,
+  extractKeywordsFromRelevantFacts
 }; 

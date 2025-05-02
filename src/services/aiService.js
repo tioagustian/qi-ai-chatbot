@@ -2914,6 +2914,19 @@ async function searchWeb(query) {
     // Format results for readable output
     const formattedText = formatSearchResults(results);
     
+    // NEW: Save search results to memory
+    try {
+      // Import the memory service function
+      const { storeWebSearchResults } = await import('./memoryService.js');
+      
+      // Store the search results
+      await storeWebSearchResults(query, results, { formattedText });
+      logger.info(`Saved search results for "${query}" to memory`);
+    } catch (memoryError) {
+      logger.warning(`Failed to save search results to memory: ${memoryError.message}`);
+      // Continue with the operation even if saving to memory fails
+    }
+    
     return {
       success: true,
       results: results,
@@ -3062,6 +3075,22 @@ async function fetchUrlContent(url) {
     }
     
     logger.success(`Successfully extracted content from URL (${truncatedContent.length} chars)`);
+    
+    // NEW: Save content to memory
+    try {
+      // Import the memory service function
+      const { storeWebContent } = await import('./memoryService.js');
+      
+      // Store the URL content
+      await storeWebContent(url, title, truncatedContent, {
+        fullContent: mainContent,
+        contentType: contentType
+      });
+      logger.info(`Saved web content from "${url}" to memory`);
+    } catch (memoryError) {
+      logger.warning(`Failed to save URL content to memory: ${memoryError.message}`);
+      // Continue with the operation even if saving to memory fails
+    }
     
     return {
       success: true,
