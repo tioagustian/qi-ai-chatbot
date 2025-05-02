@@ -278,6 +278,31 @@ async function executeCommand(sock, message, commandData, db) {
         await setPersonality(db, 'friendly');
         return 'Mood dan personality di-reset ke default (happy & friendly).';
         
+      case 'newmoods':
+        // Get all available moods and personalities
+        const allMoods = getAvailableMoods(db);
+        const allPersonalities = getAvailablePersonalities(db);
+        
+        // Filter to only show new ones
+        const newMoods = ['nostalgic', 'proud', 'anxious', 'relaxed', 'flirty', 'confused'];
+        const newPersonalities = ['intellectual', 'poetic', 'playful', 'mysterious', 'supportive', 'professional'];
+        
+        // Get their descriptions
+        const moodDescriptions = newMoods.map(mood => {
+          return `• ${mood}: ${getMoodDescription(mood, db).substring(0, 50)}...`;
+        });
+        
+        const personalityDescriptions = newPersonalities.map(personality => {
+          return `• ${personality}: ${getPersonalityDescription(personality, db)}`;
+        });
+        
+        return `*New Moods & Personalities Update*\n\n` +
+               `Bot sekarang memiliki 15 mood dan 15 personality, dengan 6 mood baru dan 6 personality baru!\n\n` +
+               `*Mood Baru:*\n${moodDescriptions.join('\n')}\n\n` +
+               `*Personality Baru:*\n${personalityDescriptions.join('\n')}\n\n` +
+               `Coba gunakan !setmood atau !setpersonality untuk mencoba mood dan personality baru ini!\n` +
+               `Atau biarkan bot mengubah mood secara dinamis berdasarkan percakapan.`;
+        
       default:
         return `Perintah tidak dikenal: ${command}. Gunakan !help untuk bantuan.`;
     }
@@ -493,16 +518,17 @@ function getHelpText() {
 !removecharacter - Menghapus pengetahuan karakter
 
 *Pengaturan Mood:*
-!setmood [mood] - Mengatur mood bot
+!setmood [mood] - Mengatur mood bot (sekarang tersedia 15 mood!)
 !listmoods - Menampilkan daftar mood
 !moodinfo [mood] - Info detail tentang mood
 !addmood [nama] [deskripsi] - Menambah mood kustom
 !removemood [nama] - Menghapus mood kustom
 !testmood [pesan_uji] - Uji deteksi mood AI
 !resetmood - Reset mood dan personality ke default
+!newmoods - Lihat info tentang mood dan personality baru
 
 *Pengaturan Personality:*
-!setpersonality [personality] - Mengatur personality bot
+!setpersonality [personality] - Mengatur personality bot (sekarang tersedia 15 personality!)
 !listpersonalities - Menampilkan daftar personality
 !personalityinfo [personality] - Info detail tentang personality
 !addpersonality [nama] [deskripsi] - Menambah personality kustom
