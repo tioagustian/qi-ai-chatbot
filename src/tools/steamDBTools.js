@@ -1261,7 +1261,7 @@ Harap buat respons teks komprehensif yang:
 3. Mengatur metadata dalam format yang bersih dan mudah dibaca
 4. Menyertakan tag dan informasi DLC jika tersedia
 5. Menambahkan pengetahuan game ahli atau konteks tentang judul ini jika relevan
-6. Diformat dengan baik secara visual dengan teks yang sesuai
+6. Diformat dengan baik secara baik dan jelas
 7. Tandai ${sourceName} sebagai data source
 ${options.fromSteamApi ? '8. Catatan bahwa data ini berasal dari Steam Store API karena akses SteamDB diblokir oleh tindakan keamanan' : ''}
 
@@ -1365,7 +1365,7 @@ Harap buat respons teks komprehensif yang:
 2. Mencantumkan game dalam format yang baik dengan ID Aplikasi, jenis, dan informasi pembaruannya
 3. Mengelompokkan game yang serupa jika memungkinkan (misalnya game dasar dan DLC-nya)
 4. Menyorot game yang sangat populer atau terkenal jika Anda dapat mengidentifikasinya
-5. Diformat secara visual dengan teks yang sesuai
+5. Diformat secara baik dan jelas
 6. Menyertakan catatan bahwa pengguna dapat menggunakan fungsi \`get_steam_game_data\` dengan ID Aplikasi untuk detail lebih lanjut
 7. Menyebutkan SteamDB sebagai sumber data
 
@@ -1452,7 +1452,7 @@ Harap buat respons teks komprehensif yang:
 3. Menyoroti diskon yang sangat mengesankan atau judul yang terkenal
 4. Memformat harga dan diskon game dengan jelas
 5. Mengelompokkan game yang serupa jika relevan (misalnya, game dari waralaba atau pengembang yang sama)
-6. Diformat dengan baik secara visual dengan teks yang sesuai (judul, cetak tebal, daftar, dll.)
+6. Diformat dengan baik secara baik dan jelas (judul, cetak tebal, daftar, dll.)
 7. Menyebutkan Steam Store sebagai sumber data
 
 Buat respons Anda singkat tetapi komprehensif, dengan menampilkan penawaran yang paling menarik dan berharga terlebih dahulu.`;
