@@ -40,33 +40,131 @@ async function getSteamGameData(appId, options = {}) {
     
     logger.info('Launching headless browser to scrape SteamDB page');
     
+    // Configure advanced browser settings to better mimic a real user
     const browser = await puppeteer.default.launch({
       headless: 'new',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-features=IsolateOrigins,site-per-process',
-        '--disable-web-security'
+        '--disable-web-security',
+        '--disable-blink-features=AutomationControlled', // Hide automation
+        '--disable-blink-features',
+        '--window-size=1920,1080', // Use a common resolution
+        '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36', // More realistic UA
+        '--lang=en-US,en' // Set language
       ]
     });
     
     const page = await browser.newPage();
     
-    // Set a realistic user agent
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    // Set extra headers to look more like a real browser
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+      'Cache-Control': 'max-age=0',
+      'Connection': 'keep-alive',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+      'Upgrade-Insecure-Requests': '1',
+      'Referer': 'https://www.google.com/',
+      'sec-ch-ua': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Windows"'
+    });
     
-    // Set extra headers
-    await page.setExtraHTTPHeaders(headers);
+    // Modify the WebDriver flags to prevent detection
+    await page.evaluateOnNewDocument(() => {
+      // Overwrite the automation flags
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => false
+      });
+      
+      // Overwrite the plugins
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [1, 2, 3, 4, 5]
+      });
+      
+      // Overwrite the languages
+      Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-US', 'en']
+      });
+      
+      // Remove the automation controller
+      delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+      delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+      delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+    });
+    
+    // Randomize viewport dimensions slightly to avoid detection
+    await page.setViewport({
+      width: 1920 - Math.floor(Math.random() * 100),
+      height: 1080 - Math.floor(Math.random() * 100),
+      deviceScaleFactor: 1,
+      hasTouch: false,
+      isLandscape: true,
+      isMobile: false
+    });
     
     try {
       // Navigate to SteamDB page with extended timeout
       await page.goto(steamDBUrl, { 
-        waitUntil: 'networkidle2',
-        timeout: 30000
+        waitUntil: ['networkidle2', 'domcontentloaded'],
+        timeout: 40000 // Extend timeout for slower connections
       });
       
+      // Handle potential security checks
+      const passedSecurity = await handleSecurityChecks(page, steamDBUrl);
+      if (!passedSecurity) {
+        await browser.close();
+        return {
+          success: false,
+          error: 'Access blocked by SteamDB security checks',
+          message: 'The request was blocked by SteamDB security checks. Please try again later.'
+        };
+      }
+      
+      // Retry once with a different approach if needed
+      let pageContent = await page.content();
+      if (pageContent.includes('App not found') || pageContent.includes('404 Not Found') || !pageContent.includes('steamdb')) {
+        logger.warning('Initial page load failed or incorrect page loaded, retrying with different approach');
+        
+        // Close current page and open a new one with different settings
+        await page.close();
+        const newPage = await browser.newPage();
+        
+        // Use a different user agent for the retry
+        await newPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0');
+        
+        // Wait a moment before retrying
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // Retry the navigation with different settings
+        await newPage.goto(steamDBUrl, { 
+          waitUntil: 'networkidle0', 
+          timeout: 50000 
+        });
+        
+        // Check if retry was successful
+        const secondPassedSecurity = await handleSecurityChecks(newPage, steamDBUrl);
+        if (!secondPassedSecurity) {
+          await browser.close();
+          return {
+            success: false,
+            error: 'Access blocked by SteamDB security checks on retry',
+            message: 'The request was blocked by SteamDB security checks. Please try again later.'
+          };
+        }
+        
+        // Update the page reference to use the new page
+        page = newPage;
+        pageContent = await page.content();
+      }
+      
       // Check if we hit any error (like a rate limit or missing page)
-      const pageContent = await page.content();
       if (pageContent.includes('Rate limited') || pageContent.includes('429 Too Many Requests')) {
         await browser.close();
         return {
@@ -262,33 +360,131 @@ async function searchSteamGames(gameName, options = {}) {
     
     logger.info('Launching headless browser to search SteamDB');
     
+    // Configure advanced browser settings to better mimic a real user
     const browser = await puppeteer.default.launch({
       headless: 'new',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-features=IsolateOrigins,site-per-process',
-        '--disable-web-security'
+        '--disable-web-security',
+        '--disable-blink-features=AutomationControlled', // Hide automation
+        '--disable-blink-features',
+        '--window-size=1920,1080', // Use a common resolution
+        '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36', // More realistic UA
+        '--lang=en-US,en' // Set language
       ]
     });
     
     const page = await browser.newPage();
     
-    // Set a realistic user agent
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    // Set extra headers to look more like a real browser
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+      'Cache-Control': 'max-age=0',
+      'Connection': 'keep-alive',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+      'Upgrade-Insecure-Requests': '1',
+      'Referer': 'https://www.google.com/',
+      'sec-ch-ua': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Windows"'
+    });
     
-    // Set extra headers
-    await page.setExtraHTTPHeaders(headers);
+    // Modify the WebDriver flags to prevent detection
+    await page.evaluateOnNewDocument(() => {
+      // Overwrite the automation flags
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => false
+      });
+      
+      // Overwrite the plugins
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [1, 2, 3, 4, 5]
+      });
+      
+      // Overwrite the languages
+      Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-US', 'en']
+      });
+      
+      // Remove the automation controller
+      delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+      delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+      delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+    });
+    
+    // Randomize viewport dimensions slightly to avoid detection
+    await page.setViewport({
+      width: 1920 - Math.floor(Math.random() * 100),
+      height: 1080 - Math.floor(Math.random() * 100),
+      deviceScaleFactor: 1,
+      hasTouch: false,
+      isLandscape: true,
+      isMobile: false
+    });
     
     try {
       // Navigate to search page
       await page.goto(searchUrl, { 
-        waitUntil: 'networkidle2',
-        timeout: 30000
+        waitUntil: ['networkidle2', 'domcontentloaded'],
+        timeout: 40000 // Extend timeout for slower connections
       });
       
+      // Handle potential security checks
+      const passedSecurity = await handleSecurityChecks(page, searchUrl);
+      if (!passedSecurity) {
+        await browser.close();
+        return {
+          success: false,
+          error: 'Access blocked by SteamDB security checks',
+          message: 'The request was blocked by SteamDB security checks. Please try again later.'
+        };
+      }
+      
+      // Retry once with a different approach if needed
+      let pageContent = await page.content();
+      if (!pageContent.includes('steamdb') || pageContent.includes('error')) {
+        logger.warning('Initial page load failed or incorrect page loaded, retrying with different approach');
+        
+        // Close current page and open a new one with different settings
+        await page.close();
+        const newPage = await browser.newPage();
+        
+        // Use a different user agent for the retry
+        await newPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0');
+        
+        // Wait a moment before retrying
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // Retry the navigation with different settings
+        await newPage.goto(searchUrl, { 
+          waitUntil: 'networkidle0', 
+          timeout: 50000 
+        });
+        
+        // Check if retry was successful
+        const secondPassedSecurity = await handleSecurityChecks(newPage, searchUrl);
+        if (!secondPassedSecurity) {
+          await browser.close();
+          return {
+            success: false,
+            error: 'Access blocked by SteamDB security checks on retry',
+            message: 'The request was blocked by SteamDB security checks. Please try again later.'
+          };
+        }
+        
+        // Update the page reference to use the new page
+        page = newPage;
+        pageContent = await page.content();
+      }
+      
       // Check if we hit a rate limit
-      const pageContent = await page.content();
       if (pageContent.includes('Rate limited') || pageContent.includes('429 Too Many Requests')) {
         await browser.close();
         return {
@@ -534,30 +730,128 @@ async function getSteamDeals(options = {}) {
     
     logger.info('Launching headless browser to fetch Steam deals');
     
+    // Configure advanced browser settings to better mimic a real user
     const browser = await puppeteer.default.launch({
       headless: 'new',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-features=IsolateOrigins,site-per-process',
-        '--disable-web-security'
+        '--disable-web-security',
+        '--disable-blink-features=AutomationControlled', // Hide automation
+        '--disable-blink-features',
+        '--window-size=1920,1080', // Use a common resolution
+        '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36', // More realistic UA
+        '--lang=en-US,en' // Set language
       ]
     });
     
     const page = await browser.newPage();
     
-    // Set a realistic user agent
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    // Set extra headers to look more like a real browser
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+      'Cache-Control': 'max-age=0',
+      'Connection': 'keep-alive',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+      'Upgrade-Insecure-Requests': '1',
+      'Referer': 'https://www.google.com/',
+      'sec-ch-ua': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Windows"'
+    });
     
-    // Set extra headers
-    await page.setExtraHTTPHeaders(headers);
+    // Modify the WebDriver flags to prevent detection
+    await page.evaluateOnNewDocument(() => {
+      // Overwrite the automation flags
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => false
+      });
+      
+      // Overwrite the plugins
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [1, 2, 3, 4, 5]
+      });
+      
+      // Overwrite the languages
+      Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-US', 'en']
+      });
+      
+      // Remove the automation controller
+      delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+      delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+      delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+    });
+    
+    // Randomize viewport dimensions slightly to avoid detection
+    await page.setViewport({
+      width: 1920 - Math.floor(Math.random() * 100),
+      height: 1080 - Math.floor(Math.random() * 100),
+      deviceScaleFactor: 1,
+      hasTouch: false,
+      isLandscape: true,
+      isMobile: false
+    });
     
     try {
       // Navigate to Steam store page
       await page.goto('https://store.steampowered.com/', { 
-        waitUntil: 'networkidle2',
-        timeout: 30000
+        waitUntil: ['networkidle2', 'domcontentloaded'],
+        timeout: 40000 // Extend timeout for slower connections
       });
+      
+      // Handle potential security checks
+      const passedSecurity = await handleSecurityChecks(page, 'https://store.steampowered.com/');
+      if (!passedSecurity) {
+        await browser.close();
+        return {
+          success: false,
+          error: 'Access blocked by Steam security checks',
+          message: 'The request was blocked by Steam security checks. Please try again later.'
+        };
+      }
+      
+      // Retry once with a different approach if needed
+      let pageContent = await page.content();
+      if (!pageContent.includes('store.steampowered.com') || pageContent.includes('error')) {
+        logger.warning('Initial page load failed or incorrect page loaded, retrying with different approach');
+        
+        // Close current page and open a new one with different settings
+        await page.close();
+        const newPage = await browser.newPage();
+        
+        // Use a different user agent for the retry
+        await newPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0');
+        
+        // Wait a moment before retrying
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // Retry the navigation with different settings
+        await newPage.goto('https://store.steampowered.com/', { 
+          waitUntil: 'networkidle0', 
+          timeout: 50000 
+        });
+        
+        // Check if retry was successful
+        const secondPassedSecurity = await handleSecurityChecks(newPage, 'https://store.steampowered.com/');
+        if (!secondPassedSecurity) {
+          await browser.close();
+          return {
+            success: false,
+            error: 'Access blocked by Steam security checks on retry',
+            message: 'The request was blocked by Steam security checks. Please try again later.'
+          };
+        }
+        
+        // Update the page reference to use the new page
+        page = newPage;
+      }
       
       // Wait for content to load
       await page.waitForSelector('#tab_topsellers_content, #tab_specials_content', { timeout: 10000 }).catch(() => {});
@@ -984,6 +1278,87 @@ Keep your response concise but comprehensive, showing the most interesting and v
     logger.error(`Error enhancing deals data with AI: ${error.message}`);
     // Fall back to standard formatting
     return formatSteamDealsMessage(dealsData);
+  }
+}
+
+/**
+ * Detect and handle security checks or captchas on SteamDB
+ * @param {Page} page - Puppeteer page object
+ * @param {string} url - The URL being accessed
+ * @returns {Promise<boolean>} - True if page was successfully navigated, false if blocked
+ */
+async function handleSecurityChecks(page, url) {
+  try {
+    logger.info('Checking for security challenges or captchas');
+    
+    // Check for various security indicators in the page content
+    const content = await page.content();
+    
+    // List of possible security check indicators
+    const securityIndicators = [
+      'checking if the site connection is secure',
+      'security check',
+      'cloudflare',
+      'ddos protection',
+      'captcha',
+      'please wait',
+      'please prove you are human',
+      'verify you are a human',
+      'bot protection',
+      'automated access',
+      'challenge page'
+    ];
+    
+    // Check if any security indicators are present
+    const isSecurityCheck = securityIndicators.some(indicator => 
+      content.toLowerCase().includes(indicator.toLowerCase())
+    );
+    
+    if (isSecurityCheck) {
+      logger.warning('Security check or captcha detected');
+      
+      // Try to take a screenshot for debugging if needed
+      try {
+        await page.screenshot({ path: 'security_check.png' });
+        logger.info('Saved screenshot of security check page for debugging');
+      } catch (screenshotError) {
+        logger.error('Failed to save security check screenshot', screenshotError);
+      }
+      
+      // Try to wait longer to see if the challenge resolves automatically
+      logger.info('Waiting for security check to resolve...');
+      await new Promise(resolve => setTimeout(resolve, 8000));
+      
+      // Check page content again after waiting
+      const newContent = await page.content();
+      const stillBlocked = securityIndicators.some(indicator => 
+        newContent.toLowerCase().includes(indicator.toLowerCase())
+      );
+      
+      if (stillBlocked) {
+        logger.error('Still blocked by security check after waiting');
+        return false;
+      } else {
+        logger.success('Security check appears to be resolved');
+        return true;
+      }
+    }
+    
+    // Check page title for security indications
+    const pageTitle = await page.title();
+    if (pageTitle.includes('Security Check') || 
+        pageTitle.includes('Checking') || 
+        pageTitle.includes('Captcha') ||
+        pageTitle.includes('DDoS protection')) {
+      logger.warning(`Security check detected in page title: "${pageTitle}"`);
+      return false;
+    }
+    
+    // If we get here, no security checks were detected
+    return true;
+  } catch (error) {
+    logger.error('Error while checking for security challenges', error);
+    return false;
   }
 }
 
