@@ -5,8 +5,8 @@ const defaultConfig = {
   sessionName: 'qi-ai-session',
   
   // AI configuration
-  defaultProvider: 'openrouter', // 'openrouter', 'gemini', or 'together'
-  model: 'anthropic/claude-3-haiku', // Default model
+  defaultProvider: 'together', // 'openrouter', 'gemini', or 'together'
+  model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo-Free', // Default model
   
   // Mood and personality settings
   personality: 'friendly',
@@ -33,7 +33,7 @@ const defaultConfig = {
   groupIntroductionEnabled: true, // Enable introduction when added to new groups
   
   // System settings
-  debugMode: false, // Enable detailed debug logging
+  debugMode: true, // Enable detailed debug logging
   apiLogRetentionDays: 7, // Number of days to keep API logs
 };
 

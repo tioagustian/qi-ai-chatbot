@@ -178,7 +178,7 @@ async function updateContext(db, chatId, sender, content, message, sock) {
 }
 
 // Get relevant context for a given message
-async function getRelevantContext(db, chatId, message) {
+async function getRelevantContext(db, chatId, message, sock) {
   try {
     console.log(`[CONTEXT] Getting context for chat: ${chatId}, BOT_ID: ${process.env.BOT_ID || 'Not set'}`);
     
@@ -460,7 +460,7 @@ async function getRelevantContext(db, chatId, message) {
     let contextPrefix = [];
     
     if (isGroup) {
-      const groupInfo = getGroupInfo(db, chatId);
+      const groupInfo = await getGroupInfo(db, chatId, sock);
       console.log(`[CONTEXT] Group info: ${groupInfo.name}, Members: ${groupInfo.memberCount}`);
       
       contextPrefix.push({
@@ -595,7 +595,7 @@ function getCrossContextFromPrivateChats(db, message, currentChatId, participant
             .slice(-3)
             .map(msg => ({
               role: msg.role,
-              content: `${chat.participants[participantId].name}: ${msg.content}`,
+              content: `source: private chat; sender: ${msg.name}; recipient name: ${chat.participants[participantId].name}; message: ${msg.content}; time: ${msg.timestamp}`,
               name: msg.name,
               timestamp: msg.timestamp
             }));
@@ -616,17 +616,29 @@ function getCrossContextFromPrivateChats(db, message, currentChatId, participant
 }
 
 // Get info about a group
-function getGroupInfo(db, groupId) {
+async function getGroupInfo(db, groupId, sock) {
   try {
-    const conversation = db.data.conversations[groupId];
-    if (!conversation) {
-      return {
-        name: 'Unknown Group',
-        memberCount: 0,
-        recentActiveMembers: 'No active members'
+    const groupInfo = await sock.groupMetadata(groupId);
+    let conversation = db.data.conversations[groupId];
+    if (!db.data.conversations[groupId]) {
+      db.data.conversations[groupId] = {
+        messages: [],
+        participants: {},
+        lastActive: new Date().toISOString(),
+        chatType: 'group',
+        chatName: groupInfo.subject,
+        hasIntroduced: false,
+        lastIntroduction: null,
+        joinedAt: new Date().toISOString()
       };
+    } else {
+      // Update existing entry
+      db.data.conversations[groupId].chatName = groupInfo.subject;
+      db.data.conversations[groupId].joinedAt = new Date().toISOString();
+      db.data.conversations[groupId].hasIntroduced = false; // Reset introduction state
     }
-    
+    await db.write();
+    conversation = db.data.conversations[groupId];
     const participants = Object.values(conversation.participants);
     
     // Get info about active members (excluding the bot)
@@ -650,7 +662,6 @@ function getGroupInfo(db, groupId) {
     };
   }
 }
-
 // Check if bot should introduce itself (for new groups or after long inactivity)
 async function shouldIntroduceInGroup(db, groupId) {
   try {
@@ -703,7 +714,7 @@ async function shouldIntroduceInGroup(db, groupId) {
 // Generate introduction message for a group
 async function generateGroupIntroduction(db, groupId) {
   try {
-    const groupInfo = getGroupInfo(db, groupId);
+    const groupInfo = await getGroupInfo(db, groupId, sock);
     const botName = db.data.config.botName;
     
     return `Halo semuanya! Aku ${botName}, AI asisten yang bisa bantu kalian dalam percakapan ini. 
