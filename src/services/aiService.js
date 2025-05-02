@@ -413,8 +413,11 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
           
           try {
             const toolCall = response.choices[0].message.tool_calls[0];
-            const result = await handleToolCall(toolCall.function);
-            return result;
+            if (toolCall?.function) {
+              const result = await handleToolCall(toolCall.function);
+              return result;
+            }
+            
           } catch (toolError) {
             logger.error('Error handling tool calls from Together.AI', toolError);
             return `Maaf, terjadi kesalahan saat memproses tool calls: ${toolError.message}`;
@@ -467,7 +470,9 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
         const isModelUnavailable = 
           errorCode === 404 || 
           errorMessage.includes('not found') || 
-          errorMessage.includes('unavailable');
+          errorMessage.includes('unavailable') ||
+          errorCode === 503 ||
+          errorCode === 500;
         
         // For these error types, try Gemini as fallback
         if (isRateLimited || isContextTooLong || isModelUnavailable) {
@@ -517,8 +522,10 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
               
               try {
                 const toolCall = response.choices[0].message.tool_calls[0];
-                const result = await handleToolCall(toolCall.function);
-                return result;
+                if (toolCall?.function) {
+                  const result = await handleToolCall(toolCall.function);
+                  return result;
+                }
               } catch (toolError) {
                 logger.error('Error handling tool calls from NVIDIA', toolError);
                 return `Maaf, terjadi kesalahan saat memproses tool calls: ${toolError.message}`;
