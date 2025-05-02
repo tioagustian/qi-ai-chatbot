@@ -3002,105 +3002,409 @@ async function fetchUrlContent(url) {
       };
     }
     
-    // Make request with timeout
-    const response = await axios.get(url, {
-      timeout: 10000, // 10 seconds timeout
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-      }
+    // Import required packages
+    const puppeteer = await import('puppeteer');
+    const turndown = await import('turndown');
+    const TurndownService = turndown.default;
+    
+    logger.info('Launching headless browser to render page');
+    
+    // Launch puppeteer for fully rendered content
+    const browser = await puppeteer.default.launch({
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
     });
     
-    // Check content type
-    const contentType = response.headers['content-type'] || '';
-    if (!contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) {
-      logger.warn(`Unsupported content type: ${contentType}`);
+    const page = await browser.newPage();
+    
+    // Set timeout to prevent hanging on problematic sites
+    await page.setDefaultNavigationTimeout(15000);
+    
+    // Set user agent to avoid detection
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+    
+    try {
+      // Navigate to the URL
+      await page.goto(url, { waitUntil: 'networkidle2' });
+      
+      // Get page title
+      const title = await page.title();
+      
+      // Extract main content
+      let mainContent = '';
+      
+      // Try extracting from main content selectors
+      const mainSelectors = [
+        'article', 'main', '[role="main"]', '.main-content', '#main-content',
+        '.post-content', '.article-content', '.content', '#content'
+      ];
+      
+      for (const selector of mainSelectors) {
+        const element = await page.$(selector);
+        if (element) {
+          mainContent = await page.evaluate(el => el.innerText, element);
+          break;
+        }
+      }
+      
+      // If no main content found, extract from paragraphs
+      if (!mainContent) {
+        mainContent = await page.evaluate(() => {
+          const paragraphs = document.querySelectorAll('p');
+          if (paragraphs.length === 0) return document.body.innerText;
+          
+          return Array.from(paragraphs)
+            .map(p => p.innerText.trim())
+            .filter(text => text.length > 50)
+            .join('\n\n');
+        });
+      }
+      
+      // Get full HTML content
+      const fullHtml = await page.content();
+      
+      // Convert HTML to Markdown
+      const turndownService = new TurndownService({
+        headingStyle: 'atx',
+        codeBlockStyle: 'fenced'
+      });
+      
+      // Add plugins or rules to improve conversion
+      turndownService.addRule('removeEmptyParagraphs', {
+        filter: node => {
+          return node.nodeName === 'P' && node.textContent.trim() === '';
+        },
+        replacement: () => ''
+      });
+      
+      const markdown = turndownService.turndown(fullHtml);
+      
+      // Truncate markdown if too long (keep important parts)
+      const maxMarkdownLength = 5000;
+      let truncatedMarkdown = markdown;
+      if (markdown.length > maxMarkdownLength) {
+        truncatedMarkdown = markdown.substring(0, maxMarkdownLength) + '... (content truncated)';
+      }
+      
+      // Clean up content
+      mainContent = mainContent
+        .replace(/\s+/g, ' ')      // Replace multiple whitespace with single space
+        .replace(/\n\s+/g, '\n')   // Remove leading spaces after newlines
+        .trim();                   // Trim leading/trailing whitespace
+      
+      // Truncate if too long (limit to ~2000 chars for readability)
+      const maxLength = 2000;
+      let truncatedContent = mainContent;
+      if (mainContent.length > maxLength) {
+        truncatedContent = mainContent.substring(0, maxLength) + '... (content truncated)';
+      }
+      
+      // Close browser
+      await browser.close();
+      
+      logger.success(`Successfully extracted content from URL (${truncatedMarkdown.length} chars of markdown)`);
+      
+      // Use Gemini to generate a natural summary of the content
+      logger.info('Generating AI summary of web content');
+      const apiKey = process.env.GEMINI_API_KEY;
+      
+      if (!apiKey) {
+        logger.warning('No Gemini API key found, returning raw content without AI summary');
+        
+        // NEW: Save content to memory
+        try {
+          // Import the memory service function
+          const { storeWebContent } = await import('./memoryService.js');
+          
+          // Store the URL content
+          await storeWebContent(url, title, truncatedContent, {
+            fullContent: mainContent,
+            markdown: truncatedMarkdown
+          });
+          logger.info(`Saved web content from "${url}" to memory`);
+        } catch (memoryError) {
+          logger.warning(`Failed to save URL content to memory: ${memoryError.message}`);
+        }
+        
+        return {
+          success: true,
+          title: title,
+          url: url,
+          content: truncatedContent,
+          markdown: truncatedMarkdown,
+          fullContent: mainContent,
+          message: `# ${title}\n\n${truncatedContent}\n\nSumber: ${url}`
+        };
+      }
+      
+      // Format messages for Gemini
+      const messages = [
+        { 
+          role: 'user', 
+          content: `Kamu adalah AI asisten yang diminta untuk meringkas konten dari halaman web.
+          
+Berikut adalah konten dalam format markdown dari halaman "${title}" (${url}):
+
+${truncatedMarkdown}
+
+Tolong berikan ringkasan informatif dan natural dari konten di atas. Fokus pada: 
+
+1. Informasi utama dan kunci dari konten
+2. Fakta-fakta relevan, tanggal, dan statistik penting
+3. Kesimpulan utama atau poin penting dari artikel
+
+Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (URL) karena akan ditambahkan nanti. Jangan menyebutkan bahwa ini adalah ringkasan. Cukup berikan informasinya langsung dengan bahasa yang natural, seperti kamu sedang menjelaskan isi halaman ini kepada pengguna. Pastikan responsenya panjangnya tidak lebih dari 400 kata.`
+        }
+      ];
+      
+      // Request AI summary from Gemini
+      const aiSummaryResponse = await requestGeminiChat(
+        'gemini-2.0-flash',
+        apiKey,
+        messages,
+        {
+          temperature: 0.3,
+          top_p: 0.85,
+          max_tokens: 800
+        }
+      );
+      
+      // Extract summary from response
+      let aiSummary = '';
+      if (aiSummaryResponse?.choices?.[0]?.message?.content) {
+        aiSummary = aiSummaryResponse.choices[0].message.content;
+      } else {
+        // Fallback if there's an issue with AI summary
+        logger.warning('Couldn\'t get AI summary, falling back to raw content');
+        aiSummary = truncatedContent.substring(0, 500) + '...';
+      }
+      
+      // Create the final message with AI summary and source
+      const finalMessage = `# ${title}\n\n${aiSummary}\n\nSumber: ${url}`;
+      
+      // NEW: Save content to memory
+      try {
+        // Import the memory service function
+        const { storeWebContent } = await import('./memoryService.js');
+        
+        // Store the URL content with AI summary
+        await storeWebContent(url, title, aiSummary, {
+          fullContent: mainContent,
+          markdown: truncatedMarkdown,
+          aiSummary: true
+        });
+        logger.info(`Saved web content from "${url}" to memory`);
+      } catch (memoryError) {
+        logger.warning(`Failed to save URL content to memory: ${memoryError.message}`);
+      }
+      
       return {
-        success: false,
-        error: 'Unsupported content type',
-        message: `Tipe konten tidak didukung: ${contentType}. Hanya halaman HTML yang didukung.`
+        success: true,
+        title: title,
+        url: url,
+        content: truncatedContent,
+        aiSummary: aiSummary,
+        markdown: truncatedMarkdown,
+        fullContent: mainContent,
+        message: finalMessage
+      };
+    } catch (navigationError) {
+      // Close browser in case of error
+      await browser.close();
+      logger.error(`Error navigating to URL: ${navigationError.message}`);
+      
+      // Fall back to regular HTTP request if puppeteer navigation fails
+      logger.info('Falling back to direct HTTP request');
+      
+      // Make request with timeout
+      const response = await axios.get(url, {
+        timeout: 10000, // 10 seconds timeout
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+      });
+      
+      // Check content type
+      const contentType = response.headers['content-type'] || '';
+      if (!contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) {
+        logger.warn(`Unsupported content type: ${contentType}`);
+        return {
+          success: false,
+          error: 'Unsupported content type',
+          message: `Tipe konten tidak didukung: ${contentType}. Hanya halaman HTML yang didukung.`
+        };
+      }
+      
+      // Use JSDOM to parse HTML
+      const { JSDOM } = await import('jsdom');
+      const dom = new JSDOM(response.data);
+      const document = dom.window.document;
+      
+      // Extract title
+      const title = document.querySelector('title')?.textContent || 'No title';
+      
+      // Extract main content - same as before
+      let mainContent = '';
+      const mainSelectors = [
+        'article', 'main', '[role="main"]', '.main-content', '#main-content',
+        '.post-content', '.article-content', '.content', '#content'
+      ];
+      
+      for (const selector of mainSelectors) {
+        const element = document.querySelector(selector);
+        if (element) {
+          mainContent = element.textContent;
+          break;
+        }
+      }
+      
+      // If no main content found, extract from body with filtering
+      if (!mainContent) {
+        // Get all paragraph elements
+        const paragraphs = document.querySelectorAll('p');
+        if (paragraphs.length > 0) {
+          // Join all paragraphs
+          mainContent = Array.from(paragraphs)
+            .map(p => p.textContent.trim())
+            .filter(text => text.length > 50) // Only paragraphs with significant text
+            .join('\n\n');
+        } else {
+          // Fallback to body content
+          mainContent = document.body.textContent;
+        }
+      }
+      
+      // Clean up content
+      mainContent = mainContent
+        .replace(/\s+/g, ' ')      // Replace multiple whitespace with single space
+        .replace(/\n\s+/g, '\n')   // Remove leading spaces after newlines
+        .trim();                   // Trim leading/trailing whitespace
+      
+      // Truncate if too long (limit to ~2000 chars for readability)
+      const maxLength = 2000;
+      let truncatedContent = mainContent;
+      if (mainContent.length > maxLength) {
+        truncatedContent = mainContent.substring(0, maxLength) + '... (content truncated)';
+      }
+      
+      // Convert HTML to Markdown
+      const turndownService = new TurndownService();
+      const markdown = turndownService.turndown(response.data);
+      
+      // Truncate markdown if too long
+      const maxMarkdownLength = 5000;
+      let truncatedMarkdown = markdown;
+      if (markdown.length > maxMarkdownLength) {
+        truncatedMarkdown = markdown.substring(0, maxMarkdownLength) + '... (content truncated)';
+      }
+      
+      logger.success(`Successfully extracted content from URL using fallback method (${truncatedContent.length} chars)`);
+      
+      // Use Gemini to generate a natural summary of the content (same as above)
+      logger.info('Generating AI summary of web content');
+      const apiKey = process.env.GEMINI_API_KEY;
+      
+      if (!apiKey) {
+        logger.warning('No Gemini API key found, returning raw content without AI summary');
+        
+        // Save content to memory
+        try {
+          // Import the memory service function
+          const { storeWebContent } = await import('./memoryService.js');
+          
+          // Store the URL content
+          await storeWebContent(url, title, truncatedContent, {
+            fullContent: mainContent,
+            markdown: truncatedMarkdown
+          });
+          logger.info(`Saved web content from "${url}" to memory`);
+        } catch (memoryError) {
+          logger.warning(`Failed to save URL content to memory: ${memoryError.message}`);
+        }
+        
+        return {
+          success: true,
+          title: title,
+          url: url,
+          content: truncatedContent,
+          markdown: truncatedMarkdown,
+          fullContent: mainContent,
+          message: `# ${title}\n\n${truncatedContent}\n\nSumber: ${url}`
+        };
+      }
+      
+      // Format messages for Gemini (same as above)
+      const messages = [
+        { 
+          role: 'user', 
+          content: `Kamu adalah AI asisten yang diminta untuk meringkas konten dari halaman web.
+          
+Berikut adalah konten dalam format markdown dari halaman "${title}" (${url}):
+
+${truncatedMarkdown}
+
+Tolong berikan ringkasan informatif dan natural dari konten di atas. Fokus pada: 
+
+1. Informasi utama dan kunci dari konten
+2. Fakta-fakta relevan, tanggal, dan statistik penting
+3. Kesimpulan utama atau poin penting dari artikel
+
+Format responsenya dalam paragraf yang mudah dibaca. Jangan menyebutkan sumber (URL) karena akan ditambahkan nanti. Jangan menyebutkan bahwa ini adalah ringkasan. Cukup berikan informasinya langsung dengan bahasa yang natural, seperti kamu sedang menjelaskan isi halaman ini kepada pengguna. Pastikan responsenya panjangnya tidak lebih dari 400 kata.`
+        }
+      ];
+      
+      // Request AI summary from Gemini
+      const aiSummaryResponse = await requestGeminiChat(
+        'gemini-2.0-flash',
+        apiKey,
+        messages,
+        {
+          temperature: 0.3,
+          top_p: 0.85,
+          max_tokens: 800
+        }
+      );
+      
+      // Extract summary from response
+      let aiSummary = '';
+      if (aiSummaryResponse?.choices?.[0]?.message?.content) {
+        aiSummary = aiSummaryResponse.choices[0].message.content;
+      } else {
+        // Fallback if there's an issue with AI summary
+        logger.warning('Couldn\'t get AI summary, falling back to raw content');
+        aiSummary = truncatedContent.substring(0, 500) + '...';
+      }
+      
+      // Create the final message with AI summary and source
+      const finalMessage = `# ${title}\n\n${aiSummary}\n\nSumber: ${url}`;
+      
+      // Save content to memory
+      try {
+        // Import the memory service function
+        const { storeWebContent } = await import('./memoryService.js');
+        
+        // Store the URL content with AI summary
+        await storeWebContent(url, title, aiSummary, {
+          fullContent: mainContent,
+          markdown: truncatedMarkdown,
+          aiSummary: true
+        });
+        logger.info(`Saved web content from "${url}" to memory using fallback method`);
+      } catch (memoryError) {
+        logger.warning(`Failed to save URL content to memory: ${memoryError.message}`);
+      }
+      
+      return {
+        success: true,
+        title: title,
+        url: url,
+        content: truncatedContent,
+        aiSummary: aiSummary,
+        markdown: truncatedMarkdown,
+        fullContent: mainContent,
+        message: finalMessage
       };
     }
-    
-    // Use JSDOM to parse HTML
-    const { JSDOM } = await import('jsdom');
-    const dom = new JSDOM(response.data);
-    const document = dom.window.document;
-    
-    // Extract title
-    const title = document.querySelector('title')?.textContent || 'No title';
-    
-    // Extract main content
-    // First try to get article content or main content
-    let mainContent = '';
-    const mainSelectors = [
-      'article', 'main', '[role="main"]', '.main-content', '#main-content',
-      '.post-content', '.article-content', '.content', '#content'
-    ];
-    
-    for (const selector of mainSelectors) {
-      const element = document.querySelector(selector);
-      if (element) {
-        mainContent = element.textContent;
-        break;
-      }
-    }
-    
-    // If no main content found, extract from body with filtering
-    if (!mainContent) {
-      // Get all paragraph elements
-      const paragraphs = document.querySelectorAll('p');
-      if (paragraphs.length > 0) {
-        // Join all paragraphs
-        mainContent = Array.from(paragraphs)
-          .map(p => p.textContent.trim())
-          .filter(text => text.length > 50) // Only paragraphs with significant text
-          .join('\n\n');
-      } else {
-        // Fallback to body content
-        mainContent = document.body.textContent;
-      }
-    }
-    
-    // Clean up content
-    mainContent = mainContent
-      .replace(/\s+/g, ' ')      // Replace multiple whitespace with single space
-      .replace(/\n\s+/g, '\n')   // Remove leading spaces after newlines
-      .trim();                   // Trim leading/trailing whitespace
-    
-    // Truncate if too long (limit to ~2000 chars for readability)
-    const maxLength = 2000;
-    let truncatedContent = mainContent;
-    if (mainContent.length > maxLength) {
-      truncatedContent = mainContent.substring(0, maxLength) + '... (content truncated)';
-    }
-    
-    logger.success(`Successfully extracted content from URL (${truncatedContent.length} chars)`);
-    
-    // NEW: Save content to memory
-    try {
-      // Import the memory service function
-      const { storeWebContent } = await import('./memoryService.js');
-      
-      // Store the URL content
-      await storeWebContent(url, title, truncatedContent, {
-        fullContent: mainContent,
-        contentType: contentType
-      });
-      logger.info(`Saved web content from "${url}" to memory`);
-    } catch (memoryError) {
-      logger.warning(`Failed to save URL content to memory: ${memoryError.message}`);
-      // Continue with the operation even if saving to memory fails
-    }
-    
-    return {
-      success: true,
-      title: title,
-      url: url,
-      content: truncatedContent,
-      fullContent: mainContent,
-      contentType: contentType,
-      message: `# ${title}\n\n${truncatedContent}\n\nSumber: ${url}`
-    };
   } catch (error) {
     logger.error(`Error fetching URL content: ${error.message}`);
     return {
