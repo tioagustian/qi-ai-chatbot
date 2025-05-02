@@ -1491,7 +1491,7 @@ async function generateAIResponse2(botConfig, contextMessages, streamCallback = 
             
             // Try with reduced context
             const reducedMessages = reduceContextSize(messagesToUse, {
-              maxMessages: 8, // More aggressive reduction
+              maxMessages: Math.floor(messages.length * 0.6), // More aggressive reduction
               alwaysKeepSystemMessages: true,
               alwaysKeepLastUserMessage: true,
             });
@@ -1808,7 +1808,6 @@ async function requestGeminiChat(model, apiKey, messages, params) {
       }
     };
     
-    console.log('requestData', JSON.stringify(requestData, null, 2));
     // Make request to Gemini API
     const response = await axios.post(endpoint, requestData, requestOptions);
     
@@ -1986,13 +1985,100 @@ async function requestTogetherChat(model, apiKey, messages, params) {
   let errorOccurred = false;
   let errorDetails = null;
   
+  // Estimate token count to ensure we stay under 8000 tokens
+  const estimatedTokenCount = messages.reduce((count, msg) => {
+    // Rough estimate: 1 token ≈ 4 chars for English text
+    return count + (msg.content ? Math.ceil(msg.content.length / 3) : 0);
+  }, 0);
+  
+  logger.debug(`Estimated token count for Together.AI request: ${estimatedTokenCount}`);
+  
+  // If estimated tokens exceed 7000, reduce context to stay safely under 8000 limit
+  let processedMessages = messages;
+  if (estimatedTokenCount > 7000) {
+    logger.warning(`Token count (${estimatedTokenCount}) exceeds safe limit, reducing context`);
+    processedMessages = reduceContextSize(messages, {
+      maxMessages: Math.floor(messages.length * 0.6), // More aggressive reduction
+      alwaysKeepSystemMessages: true,
+      alwaysKeepLastUserMessage: true,
+      preserveRatio: 0.6, // Favor user messages slightly
+      targetTokenCount: 6000 // Target a safe token count well under the 8K limit
+    });
+    
+    logger.info(`Reduced token count from ~${estimatedTokenCount} to ~${
+      processedMessages.reduce((count, msg) => {
+        return count + (msg.content ? Math.ceil(msg.content.length / 4) : 0);
+      }, 0)
+    }`);
+    
+    // If still too large, truncate the content of messages
+    const newTokenCount = processedMessages.reduce((count, msg) => {
+      return count + (msg.content ? Math.ceil(msg.content.length / 4) : 0);
+    }, 0);
+    console.log(newTokenCount)
+    if (newTokenCount > 7000) {
+      logger.warning(`Still over token limit after reducing messages, truncating content`);
+      
+      // Separate system messages (don't modify these) from the rest
+      const systemMsgs = processedMessages.filter(msg => msg.role === 'system');
+      const nonSystemMsgs = processedMessages.filter(msg => msg.role !== 'system');
+      
+      // Calculate how much we need to trim
+      const targetSize = 6500; // Aim for 6.5K tokens to be safe
+      const currentSize = newTokenCount;
+      const excessTokens = currentSize - targetSize;
+      
+      if (nonSystemMsgs.length > 0 && excessTokens > 0) {
+        // Find the last user message
+        const lastUserIndex = nonSystemMsgs.map(msg => msg.role).lastIndexOf('user');
+        
+        // Calculate how many characters to trim per message (excluding last user message)
+        const messagesToTrim = lastUserIndex >= 0 ? nonSystemMsgs.length - 1 : nonSystemMsgs.length;
+        const charsToTrimPerMessage = Math.ceil((excessTokens * 4) / messagesToTrim);
+        
+        // Trim each message except the last user message
+        nonSystemMsgs.forEach((msg, index) => {
+          if (lastUserIndex >= 0 && index === lastUserIndex) {
+            // Don't trim the last user message
+            return;
+          }
+          
+          if (msg.content && msg.content.length > 150) { // Only trim longer messages
+            const currentLength = msg.content.length;
+            const targetLength = Math.max(100, currentLength - charsToTrimPerMessage);
+            
+            if (targetLength < currentLength) {
+              // Preserve beginning and end, truncate middle
+              const keepStart = Math.floor(targetLength * 0.6);
+              const keepEnd = Math.max(40, targetLength - keepStart);
+              
+              msg.content = msg.content.substring(0, keepStart) + 
+                            " [...] " + 
+                            msg.content.substring(currentLength - keepEnd);
+            }
+          }
+        });
+      }
+      
+      // Reassemble the message list
+      processedMessages = [...systemMsgs, ...nonSystemMsgs];
+      
+      // Log the final token count
+      const finalTokenCount = processedMessages.reduce((count, msg) => {
+        return count + (msg.content ? Math.ceil(msg.content.length / 4) : 0);
+      }, 0);
+      
+      logger.info(`Final estimated token count after content truncation: ${finalTokenCount}`);
+    }
+  }
+  
   // Move requestData declaration outside the try block so it's accessible in the catch block
   let requestData = {
     model: model,
-    messages: messages,
+    messages: processedMessages,
     temperature: params.temperature || 0.7,
     top_p: params.top_p || 0.95,
-    max_tokens: params.max_tokens || 2048,
+    max_tokens: Math.min(params.max_tokens || 1500, 1500), // Cap at 1500 tokens for response
     stream: false
   };
   
@@ -2587,15 +2673,10 @@ async function generateImage(prompt, options = {}) {
         responseModalities: ["image", "text"],
       }
     };
-    logger.debug(model)
-    logger.debug(endpoint)
-    logger.debug(JSON.stringify(requestData))
-    logger.debug('Gemini image generation request data:', JSON.stringify(requestData));
     
     
     // Make the API request
     const response = await axios.post(endpoint, requestData, { headers });
-    console.log(response.data)
     if (!response.data) {
       throw new Error('Empty response from Gemini image generation');
     }
@@ -2730,11 +2811,8 @@ async function generateImageWithTogetherAI(prompt, options = {}) {
       seed: options.seed || Math.floor(Math.random() * 10000000)
     };
     
-    logger.debug('Together.ai request data:', JSON.stringify(requestData));
-    
     // Make the API request
     const response = await axios.post(endpoint, requestData, { headers });
-    logger.debug('Together.ai raw response:', JSON.stringify(response.data));
     
     // Handle the new response format where image URL is in data[0].url
     if (response.data && response.data.data && Array.isArray(response.data.data) && response.data.data.length > 0) {
@@ -3430,14 +3508,29 @@ function reduceContextSize(messages, options = {}) {
     maxMessages = 8,
     alwaysKeepSystemMessages = true,
     alwaysKeepLastUserMessage = true,
-    preserveRatio = 0.5 // Try to keep 50% of messages as assistant's responses
+    preserveRatio = 0.5, // Try to keep 50% of messages as assistant's responses
+    targetTokenCount = 0  // Optional token count target
   } = options;
   
   logger.info(`Reducing context size from ${messages.length} messages to max ${maxMessages}`);
   
-  // If we're already under the max, just return the original
-  if (messages.length <= maxMessages) {
+  // If we're already under the max and not targeting tokens, just return the original
+  if (messages.length <= maxMessages && !targetTokenCount) {
     return messages;
+  }
+  
+  // Check token count if a target is specified
+  if (targetTokenCount > 0) {
+    const estimatedTokens = messages.reduce((sum, msg) => {
+      return sum + (msg.content ? Math.ceil(msg.content.length / 4) : 0);
+    }, 0);
+    
+    logger.debug(`Current estimated tokens: ${estimatedTokens}, target: ${targetTokenCount}`);
+    
+    // If already under target token count, return as is
+    if (estimatedTokens <= targetTokenCount) {
+      return messages;
+    }
   }
   
   // Separate messages by role
@@ -3458,8 +3551,30 @@ function reduceContextSize(messages, options = {}) {
   // Always keep system messages if specified
   let resultMessages = [];
   if (alwaysKeepSystemMessages) {
-    resultMessages = [...systemMessages];
-    remainingSlots -= systemMessages.length;
+    // If there are many system messages, prioritize the most important ones
+    if (systemMessages.length > 3 && systemMessages.length > maxMessages / 3) {
+      // Prioritize certain system messages
+      const criticalSystemMessages = systemMessages.filter(msg => 
+        msg.content.includes('IMPORTANT') || 
+        msg.content.includes('personality') || 
+        msg.name === 'system_instruction'
+      );
+      
+      if (criticalSystemMessages.length > 0) {
+        resultMessages = [...criticalSystemMessages];
+      } else {
+        // If no critical messages, take the first and last system messages
+        resultMessages = [
+          systemMessages[0],
+          ...(systemMessages.length > 1 ? [systemMessages[systemMessages.length - 1]] : [])
+        ];
+      }
+    } else {
+      // Keep all system messages
+      resultMessages = [...systemMessages];
+    }
+    
+    remainingSlots -= resultMessages.length;
   }
   
   // If no slots remain, return what we have
@@ -3475,35 +3590,68 @@ function reduceContextSize(messages, options = {}) {
     remainingSlots--;
   }
   
+  // If no slots remain, return what we have plus last user message
+  if (remainingSlots <= 0) {
+    if (lastUserMessage) {
+      resultMessages.push(lastUserMessage);
+    }
+    return resultMessages;
+  }
+  
+  // Score user messages by importance (higher = more important)
+  const scoredUserMessages = userMessages.map((msg, index) => {
+    let score = index; // Base score by position (newer = higher index = more important)
+    
+    // Boost score for messages with questions
+    if (msg.content && (
+        msg.content.includes('?') || 
+        /\b(what|who|when|where|why|how)\b/i.test(msg.content)
+      )) {
+      score += 2;
+    }
+    
+    // Boost score for longer messages (likely more important)
+    if (msg.content && msg.content.length > 100) {
+      score += Math.min(msg.content.length / 200, 2);
+    }
+    
+    return { message: msg, score, index };
+  });
+  
   // Calculate how many of each type to keep based on preserveRatio
   const userToAssistantRatio = preserveRatio;
   const userMessagesToKeep = Math.floor(remainingSlots * userToAssistantRatio);
   const assistantMessagesToKeep = remainingSlots - userMessagesToKeep;
   
-  // Keep the most recent messages of each type
-  const recentUserMessages = userMessages.slice(-userMessagesToKeep);
-  const recentAssistantMessages = assistantMessages.slice(-assistantMessagesToKeep);
+  // For user messages, use the score to prioritize
+  scoredUserMessages.sort((a, b) => b.score - a.score);
+  const keptUserMessages = scoredUserMessages
+    .slice(0, userMessagesToKeep)
+    .sort((a, b) => a.index - b.index); // Resort by original index to maintain order
+  
+  // Keep the most recent assistant messages
+  const keptAssistantMessages = assistantMessages.slice(-assistantMessagesToKeep);
   
   logger.debug('Keeping messages', {
-    userToKeep: recentUserMessages.length,
-    assistantToKeep: recentAssistantMessages.length,
+    userToKeep: keptUserMessages.length,
+    assistantToKeep: keptAssistantMessages.length,
     lastUserMessage: lastUserMessage ? 'yes' : 'no'
   });
   
   // Combine messages, trying to maintain conversation flow
   // This interleaves user and assistant messages as much as possible
   let interleaved = [];
-  const maxInterleaveLength = Math.max(recentUserMessages.length, recentAssistantMessages.length);
+  const maxInterleaveLength = Math.max(keptUserMessages.length, keptAssistantMessages.length);
   
   for (let i = 0; i < maxInterleaveLength; i++) {
     // Add user message if available
-    if (i < recentUserMessages.length) {
-      interleaved.push(recentUserMessages[i]);
+    if (i < keptUserMessages.length) {
+      interleaved.push(keptUserMessages[i].message);
     }
     
     // Add assistant message if available
-    if (i < recentAssistantMessages.length) {
-      interleaved.push(recentAssistantMessages[i]);
+    if (i < keptAssistantMessages.length) {
+      interleaved.push(keptAssistantMessages[i]);
     }
   }
   
@@ -3513,13 +3661,54 @@ function reduceContextSize(messages, options = {}) {
     resultMessages.push(lastUserMessage);
   }
   
-  // If we still somehow have too many messages, just take the most recent ones
-  if (resultMessages.length > maxMessages) {
-    logger.warning(`Still have too many messages (${resultMessages.length}), truncating to ${maxMessages}`);
-    resultMessages = resultMessages.slice(-maxMessages);
+  // If targeting token count, check if we need further reduction
+  if (targetTokenCount > 0) {
+    const currentTokens = resultMessages.reduce((sum, msg) => {
+      return sum + (msg.content ? Math.ceil(msg.content.length / 4) : 0);
+    }, 0);
+    
+    if (currentTokens > targetTokenCount) {
+      logger.warning(`Still over token limit (${currentTokens} > ${targetTokenCount}), truncating content`);
+      
+      // Identify system messages and last user message to preserve
+      const systemMsgs = resultMessages.filter(msg => msg.role === 'system');
+      const lastMsg = lastUserMessage ? [lastUserMessage] : [];
+      const otherMsgs = resultMessages.filter(msg => 
+        msg.role !== 'system' && 
+        (lastUserMessage ? msg !== lastUserMessage : true)
+      );
+      
+      // Calculate total tokens in protected messages
+      const protectedTokens = [...systemMsgs, ...lastMsg].reduce((sum, msg) => {
+        return sum + (msg.content ? Math.ceil(msg.content.length / 4) : 0);
+      }, 0);
+      
+      // Calculate how many tokens we need to trim from other messages
+      const tokensToTrim = currentTokens - targetTokenCount;
+      const trimPercentage = 1 - ((targetTokenCount - protectedTokens) / 
+                                   Math.max(1, currentTokens - protectedTokens));
+      
+      // Apply trimming to other messages
+      otherMsgs.forEach(msg => {
+        if (msg.content && msg.content.length > 100) {
+          const originalLength = msg.content.length;
+          // Keep 60% from start, 40% from end for most messages
+          const keepStart = Math.floor(originalLength * 0.6 * (1 - trimPercentage));
+          const keepEnd = Math.floor(originalLength * 0.4 * (1 - trimPercentage));
+          
+          if (keepStart + keepEnd < originalLength) {
+            msg.content = msg.content.substring(0, keepStart) + 
+                          " [...] " + 
+                          msg.content.substring(originalLength - keepEnd);
+          }
+        }
+      });
+      
+      // Reassemble message list
+      resultMessages = [...systemMsgs, ...otherMsgs, ...lastMsg];
+    }
   }
   
   logger.info(`Context reduced from ${messages.length} to ${resultMessages.length} messages`);
-  
   return resultMessages;
 }
