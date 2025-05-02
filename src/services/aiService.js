@@ -504,7 +504,7 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
             
             // Use Gemini 2.0 Flash as fallback for most cases
             // For context too long, try Gemini 2.0 Pro which has larger context window
-            const fallbackModel = isContextTooLong ? 'gemini-2.0-pro' : 'gemini-2.0-flash';
+            const fallbackModel = 'gemini-2.0-flash';
             logger.info(`Falling back to Gemini API with model: ${fallbackModel}`);
             
             // Call Gemini API
