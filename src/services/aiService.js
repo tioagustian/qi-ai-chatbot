@@ -1758,7 +1758,7 @@ async function requestGeminiChat(model, apiKey, messages, params) {
     
     // Add tools support according to the Gemini API documentation
     // https://ai.google.dev/gemini-api/docs/function-calling
-    if (params.tools) {
+    if (params.tools && true === false) {
       // Check if we're using a newer Gemini model (2.0+) which requires different formatting
       if (normalizedModel.includes('gemini-2') || normalizedModel.includes('gemini-1.5')) {
         // For Gemini 1.5/2.0, use the newer format with toolConfig
@@ -1995,82 +1995,82 @@ async function requestTogetherChat(model, apiKey, messages, params) {
   
   // If estimated tokens exceed 7000, reduce context to stay safely under 8000 limit
   let processedMessages = messages;
-  if (estimatedTokenCount > 7000) {
-    logger.warning(`Token count (${estimatedTokenCount}) exceeds safe limit, reducing context`);
-    processedMessages = reduceContextSize(messages, {
-      maxMessages: Math.floor(messages.length * 0.6), // More aggressive reduction
-      alwaysKeepSystemMessages: true,
-      alwaysKeepLastUserMessage: true,
-      preserveRatio: 0.6, // Favor user messages slightly
-      targetTokenCount: 6000 // Target a safe token count well under the 8K limit
-    });
+  // if (estimatedTokenCount > 7000) {
+  //   logger.warning(`Token count (${estimatedTokenCount}) exceeds safe limit, reducing context`);
+  //   processedMessages = reduceContextSize(messages, {
+  //     maxMessages: Math.floor(messages.length * 0.6), // More aggressive reduction
+  //     alwaysKeepSystemMessages: true,
+  //     alwaysKeepLastUserMessage: true,
+  //     preserveRatio: 0.6, // Favor user messages slightly
+  //     targetTokenCount: 6000 // Target a safe token count well under the 8K limit
+  //   });
     
-    logger.info(`Reduced token count from ~${estimatedTokenCount} to ~${
-      processedMessages.reduce((count, msg) => {
-        return count + (msg.content ? Math.ceil(msg.content.length / 4) : 0);
-      }, 0)
-    }`);
+  //   logger.info(`Reduced token count from ~${estimatedTokenCount} to ~${
+  //     processedMessages.reduce((count, msg) => {
+  //       return count + (msg.content ? Math.ceil(msg.content.length / 4) : 0);
+  //     }, 0)
+  //   }`);
     
-    // If still too large, truncate the content of messages
-    const newTokenCount = processedMessages.reduce((count, msg) => {
-      return count + (msg.content ? Math.ceil(msg.content.length / 4) : 0);
-    }, 0);
-    console.log(newTokenCount)
-    if (newTokenCount > 7000) {
-      logger.warning(`Still over token limit after reducing messages, truncating content`);
+  //   // If still too large, truncate the content of messages
+  //   const newTokenCount = processedMessages.reduce((count, msg) => {
+  //     return count + (msg.content ? Math.ceil(msg.content.length / 4) : 0);
+  //   }, 0);
+  //   console.log(newTokenCount)
+  //   if (newTokenCount > 7000) {
+  //     logger.warning(`Still over token limit after reducing messages, truncating content`);
       
-      // Separate system messages (don't modify these) from the rest
-      const systemMsgs = processedMessages.filter(msg => msg.role === 'system');
-      const nonSystemMsgs = processedMessages.filter(msg => msg.role !== 'system');
+  //     // Separate system messages (don't modify these) from the rest
+  //     const systemMsgs = processedMessages.filter(msg => msg.role === 'system');
+  //     const nonSystemMsgs = processedMessages.filter(msg => msg.role !== 'system');
       
-      // Calculate how much we need to trim
-      const targetSize = 6500; // Aim for 6.5K tokens to be safe
-      const currentSize = newTokenCount;
-      const excessTokens = currentSize - targetSize;
+  //     // Calculate how much we need to trim
+  //     const targetSize = 6500; // Aim for 6.5K tokens to be safe
+  //     const currentSize = newTokenCount;
+  //     const excessTokens = currentSize - targetSize;
       
-      if (nonSystemMsgs.length > 0 && excessTokens > 0) {
-        // Find the last user message
-        const lastUserIndex = nonSystemMsgs.map(msg => msg.role).lastIndexOf('user');
+  //     if (nonSystemMsgs.length > 0 && excessTokens > 0) {
+  //       // Find the last user message
+  //       const lastUserIndex = nonSystemMsgs.map(msg => msg.role).lastIndexOf('user');
         
-        // Calculate how many characters to trim per message (excluding last user message)
-        const messagesToTrim = lastUserIndex >= 0 ? nonSystemMsgs.length - 1 : nonSystemMsgs.length;
-        const charsToTrimPerMessage = Math.ceil((excessTokens * 4) / messagesToTrim);
+  //       // Calculate how many characters to trim per message (excluding last user message)
+  //       const messagesToTrim = lastUserIndex >= 0 ? nonSystemMsgs.length - 1 : nonSystemMsgs.length;
+  //       const charsToTrimPerMessage = Math.ceil((excessTokens * 4) / messagesToTrim);
         
-        // Trim each message except the last user message
-        nonSystemMsgs.forEach((msg, index) => {
-          if (lastUserIndex >= 0 && index === lastUserIndex) {
-            // Don't trim the last user message
-            return;
-          }
+  //       // Trim each message except the last user message
+  //       nonSystemMsgs.forEach((msg, index) => {
+  //         if (lastUserIndex >= 0 && index === lastUserIndex) {
+  //           // Don't trim the last user message
+  //           return;
+  //         }
           
-          if (msg.content && msg.content.length > 150) { // Only trim longer messages
-            const currentLength = msg.content.length;
-            const targetLength = Math.max(100, currentLength - charsToTrimPerMessage);
+  //         if (msg.content && msg.content.length > 150) { // Only trim longer messages
+  //           const currentLength = msg.content.length;
+  //           const targetLength = Math.max(100, currentLength - charsToTrimPerMessage);
             
-            if (targetLength < currentLength) {
-              // Preserve beginning and end, truncate middle
-              const keepStart = Math.floor(targetLength * 0.6);
-              const keepEnd = Math.max(40, targetLength - keepStart);
+  //           if (targetLength < currentLength) {
+  //             // Preserve beginning and end, truncate middle
+  //             const keepStart = Math.floor(targetLength * 0.6);
+  //             const keepEnd = Math.max(40, targetLength - keepStart);
               
-              msg.content = msg.content.substring(0, keepStart) + 
-                            " [...] " + 
-                            msg.content.substring(currentLength - keepEnd);
-            }
-          }
-        });
-      }
+  //             msg.content = msg.content.substring(0, keepStart) + 
+  //                           " [...] " + 
+  //                           msg.content.substring(currentLength - keepEnd);
+  //           }
+  //         }
+  //       });
+  //     }
       
-      // Reassemble the message list
-      processedMessages = [...systemMsgs, ...nonSystemMsgs];
+  //     // Reassemble the message list
+  //     processedMessages = [...systemMsgs, ...nonSystemMsgs];
       
-      // Log the final token count
-      const finalTokenCount = processedMessages.reduce((count, msg) => {
-        return count + (msg.content ? Math.ceil(msg.content.length / 4) : 0);
-      }, 0);
+  //     // Log the final token count
+  //     const finalTokenCount = processedMessages.reduce((count, msg) => {
+  //       return count + (msg.content ? Math.ceil(msg.content.length / 4) : 0);
+  //     }, 0);
       
-      logger.info(`Final estimated token count after content truncation: ${finalTokenCount}`);
-    }
-  }
+  //     logger.info(`Final estimated token count after content truncation: ${finalTokenCount}`);
+  //   }
+  // }
   
   // Move requestData declaration outside the try block so it's accessible in the catch block
   let requestData = {
