@@ -3,11 +3,76 @@ import { logger } from '../utils/logger.js';
 import fetchUrlContent from './fetchUrlContent.js';
 import { requestGeminiChat } from '../services/aiRequest.js';
 
+/**
+ * Check if a cached search result exists and is still valid
+ * @param {string} query - The search query
+ * @param {Object} options - Options for cache control
+ * @returns {Object|null} - The cached results or null if not found/valid
+ */
+async function getCachedSearchResults(query, options = {}) {
+  try {
+    const { 
+      maxAgeMinutes = 60,  // Default cache expiry of 60 minutes
+      similarityThreshold = 0.8  // How similar queries need to be to use cache
+    } = options;
+    
+    // Import the getCachedWebSearch function from memoryService
+    const { getCachedWebSearch } = await import('../services/memoryService.js');
+    
+    // Use the dedicated function to get cached search results
+    const cachedResult = getCachedWebSearch(query, {
+      maxAgeHours: maxAgeMinutes / 60,
+      exactMatchOnly: similarityThreshold >= 0.99 // Only use exact match if threshold is very high
+    });
+    
+    return cachedResult;
+  } catch (error) {
+    logger.error(`Error checking cache: ${error.message}`);
+    return null;
+  }
+}
 
 // New web search function
 async function searchWeb(query) {
   try {
     logger.info(`Performing web search for: "${query}"`);
+    
+    // First, check for cached results
+    const cachedResults = await getCachedSearchResults(query, {
+      maxAgeMinutes: 120  // 2 hours cache validity
+    });
+    
+    if (cachedResults) {
+      logger.success(`Found cached search results for: "${query}"`);
+      
+      // If we have a cached AI summary, return it directly
+      if (cachedResults.aiSummary) {
+        const finalMessage = `# Hasil pencarian untuk: ${query}\n\n${cachedResults.aiSummary}\n\n(Hasil dari cache)`;
+        
+        return {
+          success: true,
+          results: cachedResults.results,
+          contentResults: cachedResults.contentResults || [],
+          aiSummary: cachedResults.aiSummary,
+          formattedText: cachedResults.formattedText,
+          message: finalMessage,
+          fromCache: true
+        };
+      }
+      
+      // If we have content results but no AI summary, generate a new summary
+      if (cachedResults.contentResults && cachedResults.contentResults.length > 0) {
+        // Will continue with AI summarization using cached content
+        const results = cachedResults.results;
+        const contentResults = cachedResults.contentResults;
+        const formattedText = cachedResults.formattedText || formatSearchResults(results);
+        
+        logger.info('Using cached content with new AI summary');
+        
+        // Continue to AI summarization with cached content
+        return await generateAISummary(query, results, contentResults, formattedText, { fromCache: true });
+      }
+    }
     
     // Use Google Search API with Programmable Search Engine
     const apiKey = process.env.GOOGLE_SEARCH_API_KEY;
@@ -108,6 +173,30 @@ async function searchWeb(query) {
     // Wait for all content fetching to complete
     const contentResults = await Promise.all(contentPromises);
     
+    // Generate the summary with the fetched content
+    return await generateAISummary(query, results, contentResults, formattedText);
+    
+  } catch (error) {
+    logger.error(`Error searching web: ${error.message}`);
+    return {
+      success: false,
+      error: error.message,
+      message: `Maaf, terjadi kesalahan saat melakukan pencarian: ${error.message}`
+    };
+  }
+}
+
+/**
+ * Generate AI summary for search results
+ * @param {string} query - The search query
+ * @param {Array} results - The search results
+ * @param {Array} contentResults - The detailed content of search results
+ * @param {string} formattedText - Formatted results as text
+ * @param {Object} options - Additional options
+ * @returns {Object} - Search results with AI summary
+ */
+async function generateAISummary(query, results, contentResults, formattedText, options = {}) {
+  try {
     // Generate a comprehensive AI summary of all the results
     logger.info('Generating comprehensive AI summary of search results');
     
@@ -116,7 +205,7 @@ async function searchWeb(query) {
     if (!geminiApiKey) {
       logger.warning('Gemini API key not found, returning raw search results without AI summary');
       
-      // NEW: Save search results to memory
+      // Save search results to memory
       try {
         // Import the memory service function
         const { storeWebSearchResults } = await import('./memoryService.js');
@@ -133,11 +222,12 @@ async function searchWeb(query) {
         results: results,
         contentResults: contentResults,
         formattedText: formattedText,
-        message: formattedText
+        message: formattedText,
+        fromCache: options.fromCache || false
       };
     }
     
-    // Prepare the content for the AI summary
+    // Prepare the content for the AI summary with enhanced formatting
     let summaryContent = '';
     
     contentResults.forEach((result, index) => {
@@ -145,7 +235,7 @@ async function searchWeb(query) {
       summaryContent += `Ringkasan: ${result.content.substring(0, 1000)}${result.content.length > 1000 ? '...' : ''}\n\n`;
     });
     
-    // Format messages for Gemini
+    // Enhanced prompt for better summarization
     const promptContent = `Kamu adalah AI asisten yang ahli dalam meringkas hasil pencarian web.
     
 Berikut adalah hasil pencarian untuk query: "${query}"
@@ -159,6 +249,8 @@ Berdasarkan hasil pencarian di atas, berikan ringkasan yang komprehensif. Ringka
 3. Mengutip sumber informasi dengan menuliskan nomor sumber dalam tanda kurung, misalnya (Sumber #1)
 4. Mengidentifikasi area di mana sumber-sumber tidak sepakat (jika ada)
 5. Menyoroti data terbaru atau paling relevan
+6. Mengorganisir ringkasan menggunakan poin-poin atau paragraf terstruktur sesuai topik
+7. Sertakan kesimpulan atau rekomendasi jika sesuai dengan query
 
 Berikan informasi dalam format yang jelas dan terstruktur. Jangan terlalu panjang - maksimal 500-600 kata.`;
 
@@ -192,9 +284,10 @@ Berikan informasi dalam format yang jelas dan terstruktur. Jangan terlalu panjan
     }
     
     // Create the final message with AI summary and source
-    const finalMessage = `# Hasil pencarian untuk: ${query}\n\n${aiSummary}`;
+    const cacheNotice = options.fromCache ? '\n\n(Hasil dari cache)' : '';
+    const finalMessage = `${aiSummary}${cacheNotice}`;
     
-    // NEW: Save search results with enhanced AI summary to memory
+    // Save search results with enhanced AI summary to memory
     try {
       // Import the memory service function
       const { storeWebSearchResults } = await import('./memoryService.js');
@@ -217,14 +310,21 @@ Berikan informasi dalam format yang jelas dan terstruktur. Jangan terlalu panjan
       contentResults: contentResults,
       aiSummary: aiSummary,
       formattedText: formattedText,
-      message: finalMessage
+      message: finalMessage,
+      fromCache: options.fromCache || false
     };
   } catch (error) {
-    logger.error(`Error searching web: ${error.message}`);
+    logger.error(`Error generating AI summary: ${error.message}`);
+    
+    // Fallback to formatted text
     return {
-      success: false,
-      error: error.message,
-      message: `Maaf, terjadi kesalahan saat melakukan pencarian: ${error.message}`
+      success: true,
+      results: results,
+      contentResults: contentResults,
+      formattedText: formattedText,
+      message: formattedText,
+      error: `Error generating summary: ${error.message}`,
+      fromCache: options.fromCache || false
     };
   }
 }
@@ -249,4 +349,4 @@ function formatSearchResults(results) {
   return formattedText;
 }
 
-export {searchWeb, formatSearchResults}
+export {searchWeb, formatSearchResults};

@@ -1376,7 +1376,8 @@ function getRelevantWebResults(keywords, options = {}) {
     const db = getDb();
     const {
       maxResults = 3,
-      maxAgeDays = 7
+      maxAgeDays = 7,
+      includeAiSummary = false
     } = options;
     
     if (!db.data.webSearchHistory || Object.keys(db.data.webSearchHistory).length === 0) {
@@ -1435,6 +1436,24 @@ function getRelevantWebResults(keywords, options = {}) {
         });
       }
       
+      // Score based on AI summary if available
+      if (searchData.aiSummary && includeAiSummary) {
+        const summaryText = searchData.aiSummary.toLowerCase();
+        keywordArray.forEach(keyword => {
+          const lowerKeyword = keyword.toLowerCase();
+          if (summaryText.includes(lowerKeyword)) {
+            // AI summaries are considered high-quality matches
+            score += 4;
+            matchCount++;
+          }
+        });
+      }
+      
+      // Boost score for enhanced searches
+      if (searchData.enhancedSearch) {
+        score *= 1.2;
+      }
+      
       // Only include if there's at least one match
       if (matchCount > 0) {
         scoredResults.push({
@@ -1470,11 +1489,110 @@ function getRelevantWebResults(keywords, options = {}) {
         return `  ${index+1}. ${searchResult.title}`;
       }).join('\n');
       
-      return `WEB SEARCH (${formattedDate}): "${searchData.query}" found:\n${topSearchResults}`;
+      // If AI summary is available and requested, include a snippet
+      let aiSummarySnippet = '';
+      if (includeAiSummary && searchData.aiSummary) {
+        const summaryPreview = searchData.aiSummary.substring(0, 150);
+        aiSummarySnippet = `\nAI Summary: ${summaryPreview}${searchData.aiSummary.length > 150 ? '...' : ''}`;
+      }
+      
+      return `WEB SEARCH (${formattedDate}): "${searchData.query}" found:\n${topSearchResults}${aiSummarySnippet}`;
     });
   } catch (error) {
     logger.error('Error getting relevant web search results', error);
     return [];
+  }
+}
+
+/**
+ * Get a cached search result by exact query
+ * @param {string} query - The search query
+ * @param {Object} options - Additional options
+ * @returns {Object|null} - The cached search data or null if not found
+ */
+function getCachedWebSearch(query, options = {}) {
+  try {
+    const db = getDb();
+    const {
+      maxAgeHours = 48, // Default to 48 hours cache validity
+      exactMatchOnly = false
+    } = options;
+    
+    if (!db.data.webSearchHistory || Object.keys(db.data.webSearchHistory).length === 0) {
+      return null;
+    }
+    
+    // Normalize the query
+    const normalizedQuery = query.toLowerCase().trim();
+    
+    // Get timestamp for age filtering
+    const maxAgeMs = maxAgeHours * 60 * 60 * 1000;
+    const oldestAllowed = Date.now() - maxAgeMs;
+    
+    let bestMatch = null;
+    let highestSimilarity = 0;
+    
+    // Check all stored searches
+    Object.entries(db.data.webSearchHistory).forEach(([searchId, searchData]) => {
+      // Skip expired cache entries
+      const searchTime = new Date(searchData.timestamp).getTime();
+      if (searchTime < oldestAllowed) return;
+      
+      const cachedQuery = searchData.query.toLowerCase().trim();
+      
+      // If exact match only, check for exact match
+      if (exactMatchOnly) {
+        if (cachedQuery === normalizedQuery) {
+          bestMatch = searchData;
+          highestSimilarity = 1.0;
+        }
+        return;
+      }
+      
+      // Calculate similarity
+      let similarity = 0;
+      
+      // Exact match
+      if (cachedQuery === normalizedQuery) {
+        similarity = 1.0;
+      } 
+      // Partial match
+      else if (cachedQuery.includes(normalizedQuery) || normalizedQuery.includes(cachedQuery)) {
+        // Calculate a partial similarity score based on string length ratio
+        const lengthRatio = Math.min(cachedQuery.length, normalizedQuery.length) / 
+                           Math.max(cachedQuery.length, normalizedQuery.length);
+        
+        similarity = 0.8 * lengthRatio;
+      }
+      // Word-based similarity
+      else {
+        const queryWords = new Set(normalizedQuery.split(/\s+/).filter(w => w.length > 2));
+        const cachedWords = new Set(cachedQuery.split(/\s+/).filter(w => w.length > 2));
+        
+        // Calculate Jaccard similarity
+        const intersection = new Set([...queryWords].filter(x => cachedWords.has(x)));
+        const union = new Set([...queryWords, ...cachedWords]);
+        
+        similarity = union.size > 0 ? intersection.size / union.size : 0;
+      }
+      
+      // Prioritize enhanced searches with a small boost
+      if (searchData.enhancedSearch) {
+        similarity *= 1.1;
+      }
+      
+      if (similarity > highestSimilarity) {
+        highestSimilarity = similarity;
+        bestMatch = searchData;
+      }
+    });
+    
+    // Return the best match if it's above the threshold
+    const threshold = exactMatchOnly ? 1.0 : 0.7;
+    return highestSimilarity >= threshold ? bestMatch : null;
+  } catch (error) {
+    logger.error('Error retrieving cached web search', error);
+    return null;
   }
 }
 
@@ -2235,12 +2353,16 @@ async function storeWebSearchResults(query, results, options = {}) {
       db.data.webSearchHistory = {};
     }
     
-    // Store the full search results
+    // Store the full search results with additional data for caching
     db.data.webSearchHistory[searchId] = {
       query,
       results,
       timestamp,
-      formattedResults: options.formattedText || null
+      formattedText: options.formattedText || null,
+      // Store additional data for enhanced caching
+      aiSummary: options.aiSummary || null,
+      contentResults: options.contentResults || null,
+      enhancedSearch: options.enhancedSearch || false
     };
     
     logger.info(`Stored web search results for query: "${query}" with ID: ${searchId}`);
@@ -2288,6 +2410,26 @@ async function storeWebSearchResults(query, results, options = {}) {
           tags: [...keywords, 'web_search', 'url'],
           factType: 'EXPLICIT'
         });
+      }
+      
+      // If we have an AI summary, store it as a fact too
+      if (options.aiSummary) {
+        const summaryFactKey = `ai_summary_for_${query.toLowerCase().trim().replace(/\s+/g, '_')}`;
+        
+        await addGlobalFact(summaryFactKey, options.aiSummary.substring(0, 1000), {
+          confidence: 0.98,
+          category: 'web_search',
+          tags: ['web_search', 'ai_summary', ...extractKeywordsFromQuery(query)],
+          factType: 'EXPLICIT',
+          metadata: {
+            searchId,
+            originalQuery: query,
+            timestamp,
+            isComplete: options.aiSummary.length <= 1000
+          }
+        });
+        
+        logger.info(`Stored AI summary for query: "${query}"`);
       }
       
       // Add a summary fact with a timestamp
@@ -3055,31 +3197,32 @@ function getRelevantGlobalFacts(relevantFactsObj) {
   return globalFactsArray.slice(0, 5);
 }
 
-// Export functions
+// Export all memory service functions
 export {
   extractAndProcessFacts,
-  formatRelevantFacts,
+  ensureMemoryStructure,
+  getUserFacts,
+  getGlobalFacts,
+  getChatHistory,
   getRelevantFactsForMessage,
+  extractKeywordsFromRelevantFacts,
+  storeWebSearchResults,
+  storeWebContent,
+  getRelevantWebResults,
+  getCachedWebSearch,
+  getRelevantWebContent,
+  updateRelevanceMetrics,
+  formatRelevantFacts,
+  generateTextEmbedding,
+  findImagesByDescription,
   addImageRecognitionFacts,
   storeImageEmbedding,
   findSimilarImages,
   findMatchingFaces,
-  generateTextEmbedding,
-  ensureMemoryStructure,
-  findImagesByDescription,
   addGlobalFact,
-  recordFactRelationship,
-  findRelatedFacts,
-  analyzeFactRelationships,
   manuallyAddFact,
   deleteFact,
   consolidateUserFacts,
-  getRelevantGlobalFacts,
-  updateRelevanceMetrics,
-  extractGlobalKnowledgeFromRelevantFacts,
-  storeWebSearchResults,
-  storeWebContent,
-  getRelevantWebResults,
-  getRelevantWebContent,
-  extractKeywordsFromRelevantFacts
+  groupRelatedFacts,
+  getRelevantGlobalFacts
 }; 
