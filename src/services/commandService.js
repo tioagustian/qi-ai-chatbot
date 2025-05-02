@@ -185,6 +185,20 @@ async function executeCommand(sock, message, commandData, db) {
         const togetherKeyResult = await setTogetherApiKey(args[0]);
         return togetherKeyResult.message;
         
+      case 'setsearchkey':
+        if (args.length === 0) {
+          return 'Gunakan format: !setsearchkey [YOUR_GOOGLE_SEARCH_API_KEY]';
+        }
+        const searchKeyResult = await setGoogleSearchApiKey(args[0]);
+        return searchKeyResult.message;
+        
+      case 'setsearchengineid':
+        if (args.length === 0) {
+          return 'Gunakan format: !setsearchengineid [YOUR_GOOGLE_SEARCH_ENGINE_ID]';
+        }
+        const searchEngineResult = await setGoogleSearchEngineId(args[0]);
+        return searchEngineResult.message;
+        
       case 'status':
         return getStatusText(db);
         
@@ -392,33 +406,120 @@ async function setGeminiApiKey(apiKey) {
 // Set Together.AI API key
 async function setTogetherApiKey(apiKey) {
   try {
-    // Validate the API key format (basic validation)
-    if (!apiKey || apiKey.length < 10) {
+    if (!apiKey || apiKey.length < 5) {
       return {
         success: false,
-        message: 'API key tidak valid. Harap berikan kunci yang valid.'
+        message: 'API key tidak valid'
       };
     }
     
-    // Set the API key in environment variables
+    // Validate key format - Together.AI keys typically start with 'a' 
+    if (!apiKey.startsWith('a')) {
+      return {
+        success: false,
+        message: 'Together.AI API key biasanya dimulai dengan "a". Pastikan kunci yang benar.'
+      };
+    }
+    
+    // Update environment variable
     process.env.TOGETHER_API_KEY = apiKey;
     
-    // Update the config in database
-    const db = (await import('../database/index.js')).getDb();
+    // Store in database
+    const db = getDb();
     db.data.config.togetherApiKey = apiKey;
     await db.write();
     
-    console.log('Together.AI API key set successfully');
+    console.log('Together.AI API key diperbarui dan disimpan');
     
     return {
       success: true,
-      message: 'Together.AI API key berhasil dikonfigurasi. Sekarang kamu bisa menggunakan model Together.AI.'
+      message: `Together.AI API key berhasil diperbarui! [${apiKey.substring(0, 3)}...${apiKey.substring(apiKey.length - 3)}]`
     };
   } catch (error) {
     console.error('Error setting Together.AI API key:', error);
     return {
       success: false,
-      message: 'Terjadi kesalahan saat mengatur Together.AI API key: ' + error.message
+      message: `Error setting Together.AI API key: ${error.message}`
+    };
+  }
+}
+
+// Set Google Search API key
+async function setGoogleSearchApiKey(apiKey) {
+  try {
+    if (!apiKey || apiKey.length < 5) {
+      return {
+        success: false,
+        message: 'API key tidak valid'
+      };
+    }
+    
+    // Validate key format - Google API keys are typically 39 characters
+    if (apiKey.length < 20) {
+      return {
+        success: false,
+        message: 'Google Search API key biasanya lebih dari 20 karakter. Pastikan kunci yang benar.'
+      };
+    }
+    
+    // Update environment variable
+    process.env.GOOGLE_SEARCH_API_KEY = apiKey;
+    
+    // Store in database
+    const db = getDb();
+    if (!db.data.config.searchApi) {
+      db.data.config.searchApi = {};
+    }
+    db.data.config.searchApi.googleApiKey = apiKey;
+    await db.write();
+    
+    console.log('Google Search API key diperbarui dan disimpan');
+    
+    return {
+      success: true,
+      message: `Google Search API key berhasil diperbarui! [${apiKey.substring(0, 3)}...${apiKey.substring(apiKey.length - 3)}]`
+    };
+  } catch (error) {
+    console.error('Error setting Google Search API key:', error);
+    return {
+      success: false,
+      message: `Error setting Google Search API key: ${error.message}`
+    };
+  }
+}
+
+// Set Google Search Engine ID
+async function setGoogleSearchEngineId(engineId) {
+  try {
+    if (!engineId || engineId.length < 5) {
+      return {
+        success: false,
+        message: 'Search Engine ID tidak valid'
+      };
+    }
+    
+    // Update environment variable
+    process.env.GOOGLE_SEARCH_ENGINE_ID = engineId;
+    
+    // Store in database
+    const db = getDb();
+    if (!db.data.config.searchApi) {
+      db.data.config.searchApi = {};
+    }
+    db.data.config.searchApi.googleSearchEngineId = engineId;
+    await db.write();
+    
+    console.log('Google Search Engine ID diperbarui dan disimpan');
+    
+    return {
+      success: true,
+      message: `Google Search Engine ID berhasil diperbarui! [${engineId}]`
+    };
+  } catch (error) {
+    console.error('Error setting Google Search Engine ID:', error);
+    return {
+      success: false,
+      message: `Error setting Google Search Engine ID: ${error.message}`
     };
   }
 }
@@ -511,6 +612,10 @@ function getHelpText() {
 !setmodel [model] - Mengatur model AI
 !setprovider [provider] - Mengatur provider (openrouter/gemini/together)
 
+*Pengaturan Web Search:*
+!setsearchkey [key] - Mengatur Google Search API key
+!setsearchengineid [id] - Mengatur Google Search Engine ID
+
 *Pengaturan Bot:*
 !setname [nama] - Mengatur nama bot
 !clear - Menghapus konteks percakapan
@@ -563,6 +668,8 @@ function getStatusText(db) {
     openrouterConfigured: !!process.env.OPENROUTER_API_KEY,
     geminiConfigured: !!process.env.GEMINI_API_KEY,
     togetherConfigured: !!process.env.TOGETHER_API_KEY,
+    searchApiConfigured: !!process.env.GOOGLE_SEARCH_API_KEY,
+    searchEngineConfigured: !!process.env.GOOGLE_SEARCH_ENGINE_ID,
     enhancedMemory: db.data.config.enhancedMemoryEnabled || false,
     maxContextMessages: db.data.config.maxContextMessages || 100,
     maxRelevantMessages: db.data.config.maxRelevantMessages || 20,
@@ -584,6 +691,8 @@ function getStatusText(db) {
 • OpenRouter API: ${status.openrouterConfigured ? '✅ Terkonfigurasi' : '❌ Belum dikonfigurasi'} 
 • Gemini API: ${status.geminiConfigured ? '✅ Terkonfigurasi' : '❌ Belum dikonfigurasi'}
 • Together.AI API: ${status.togetherConfigured ? '✅ Terkonfigurasi' : '❌ Belum dikonfigurasi'}
+• Google Search API: ${status.searchApiConfigured ? '✅ Terkonfigurasi' : '❌ Belum dikonfigurasi'}
+• Google CSE ID: ${status.searchEngineConfigured ? '✅ Terkonfigurasi' : '❌ Belum dikonfigurasi'}
 • Enhanced Memory: ${status.enhancedMemory ? '✅ Aktif' : '❌ Nonaktif'}
 • Max Context Messages: ${status.maxContextMessages}
 • Max Relevant Messages: ${status.maxRelevantMessages}
@@ -1077,6 +1186,8 @@ export {
   setApiKey,
   setGeminiApiKey,
   setTogetherApiKey,
+  setGoogleSearchApiKey,
+  setGoogleSearchEngineId,
   setModel,
   setBotName,
   setProvider

@@ -980,6 +980,13 @@ function createSystemMessage(config, state) {
   systemMessage += 'Dalam chat grup, kamu lebih pasif dan hanya merespon ketika ditanya atau topiknya relevan denganmu. ';
   systemMessage += 'Kamu mengenali siapa lawan bicara dan bisa mengingat riwayat percakapan dengan mereka. ';
   
+  // Add web search capability information
+  systemMessage += 'KEMAMPUAN BARU: Kamu kini memiliki akses ke internet. ';
+  systemMessage += 'Kamu dapat mencari informasi terbaru di web menggunakan fungsi search_web. ';
+  systemMessage += 'Kamu juga dapat mengambil konten dari URL spesifik menggunakan fungsi fetch_url_content. ';
+  systemMessage += 'Gunakan kemampuan ini saat ditanya tentang informasi terbaru atau faktual yang mungkin tidak kamu ketahui. ';
+  systemMessage += 'Setelah mencari di web, berikan jawaban berdasarkan informasi yang kamu temukan, tanpa perlu menjelaskan bahwa kamu telah mencari. ';
+  
   systemMessage += `Responmu saat ini mencerminkan mood "${currentMood}: ${moodDescription}".`;
 
   console.log(`Created system message with mood: ${currentMood}, personality: ${personality}`);
@@ -1049,6 +1056,40 @@ function getTools() {
           required: []
         }
       }
+    },
+    {
+      type: "function",
+      function: {
+        name: "search_web",
+        description: "Search the web for current information on any topic",
+        parameters: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description: "The search query to look up information for"
+            }
+          },
+          required: ["query"]
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "fetch_url_content",
+        description: "Fetch the content from a specific URL",
+        parameters: {
+          type: "object",
+          properties: {
+            url: {
+              type: "string",
+              description: "The URL to fetch content from"
+            }
+          },
+          required: ["url"]
+        }
+      }
     }
   ];
 }
@@ -1113,6 +1154,60 @@ function handleToolCall(functionCall) {
         const availablePersonalities = getAvailablePersonalities(db);
         console.log(`Tool ${name} returned personality list with ${availablePersonalities.length} personalities`);
         return 'Personality tersedia: ' + availablePersonalities.join(', ');
+        
+      case 'search_web':
+        if (!parsedArgs.query) {
+          logger.error('Missing query parameter for search_web tool call');
+          return 'Error: Parameter query diperlukan untuk pencarian web.';
+        }
+        
+        logger.info(`Processing web search for query: "${parsedArgs.query}"`);
+        
+        // Make the search call
+        return searchWeb(parsedArgs.query)
+          .then(searchResult => {
+            if (!searchResult.success) {
+              logger.error(`Web search failed: ${searchResult.error}`);
+              return searchResult.message;
+            }
+            
+            if (searchResult.results.length === 0) {
+              return 'Maaf, tidak ada hasil pencarian yang ditemukan untuk kueri tersebut.';
+            }
+            
+            // Return formatted results
+            let response = `Hasil pencarian untuk "${parsedArgs.query}":\n\n`;
+            response += searchResult.formattedResults;
+            return response;
+          })
+          .catch(error => {
+            logger.error(`Error in search_web tool execution: ${error.message}`, error);
+            return `Error saat mencari di web: ${error.message}`;
+          });
+        
+      case 'fetch_url_content':
+        if (!parsedArgs.url) {
+          logger.error('Missing url parameter for fetch_url_content tool call');
+          return 'Error: Parameter url diperlukan untuk mengambil konten.';
+        }
+        
+        logger.info(`Processing URL content fetch for: "${parsedArgs.url}"`);
+        
+        // Make the content fetch call
+        return fetchUrlContent(parsedArgs.url)
+          .then(contentResult => {
+            if (!contentResult.success) {
+              logger.error(`URL content fetch failed: ${contentResult.error}`);
+              return contentResult.message;
+            }
+            
+            // If successful, return the content with some formatting
+            return `Konten dari [${contentResult.title}](${contentResult.url}):\n\n${contentResult.content}`;
+          })
+          .catch(error => {
+            logger.error(`Error in fetch_url_content tool execution: ${error.message}`, error);
+            return `Error saat mengambil konten URL: ${error.message}`;
+          });
         
       default:
         console.warn(`Unknown tool called: ${name}`);
@@ -2673,5 +2768,299 @@ export {
   generateImageWithTogetherAI,
   generateAnalysis, // Export the new function
   extractEntitiesFromAnalysis,
-  extractTopicsFromAnalysis
+  extractTopicsFromAnalysis,
+  searchWeb,
+  fetchUrlContent,
+  getTools,
+  handleToolCall
 };
+
+// New web search function
+async function searchWeb(query) {
+  try {
+    logger.info(`Performing web search for: "${query}"`);
+    
+    // Use Google Search API with Programmable Search Engine
+    const apiKey = process.env.GOOGLE_SEARCH_API_KEY;
+    const searchEngineId = process.env.GOOGLE_SEARCH_ENGINE_ID;
+    
+    if (!apiKey || !searchEngineId) {
+      logger.error('Google Search API key or Search Engine ID not configured');
+      return {
+        success: false,
+        error: 'Search API not configured',
+        message: 'Google Search API belum dikonfigurasi. Tambahkan GOOGLE_SEARCH_API_KEY dan GOOGLE_SEARCH_ENGINE_ID ke environment variables.'
+      };
+    }
+    
+    const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${searchEngineId}&q=${encodeURIComponent(query)}`;
+    logger.debug(`Making request to Google CSE API: ${url.replace(apiKey, 'REDACTED')}`);
+    
+    const response = await axios.get(url);
+    
+    if (!response.data || !response.data.items || response.data.items.length === 0) {
+      logger.warning('No search results found');
+      return {
+        success: true,
+        results: [],
+        message: 'Tidak ada hasil pencarian ditemukan untuk kueri ini.'
+      };
+    }
+    
+    // Process and format results
+    const results = response.data.items.map(item => ({
+      title: item.title,
+      link: item.link,
+      snippet: item.snippet,
+      source: item.displayLink
+    }));
+    
+    logger.success(`Found ${results.length} search results for query: "${query}"`);
+    
+    return {
+      success: true,
+      results: results,
+      formattedResults: formatSearchResults(results)
+    };
+  } catch (error) {
+    logger.error(`Web search error: ${error.message}`, error);
+    
+    // Check if this is an API key error
+    if (error.response && error.response.status === 403) {
+      return {
+        success: false,
+        error: 'API key error',
+        message: 'Terjadi kesalahan dengan API key Google Search. Pastikan kunci API valid dan memiliki kuota tersedia.'
+      };
+    }
+    
+    // Generic error response
+    return {
+      success: false,
+      error: error.message,
+      message: `Terjadi kesalahan saat melakukan pencarian: ${error.message}`
+    };
+  }
+}
+
+// Format search results to be more readable
+function formatSearchResults(results) {
+  if (!results || results.length === 0) {
+    return 'Tidak ada hasil pencarian ditemukan.';
+  }
+  
+  // Limit to top 5 results to avoid overly long responses
+  const topResults = results.slice(0, 5);
+  
+  let formattedText = '';
+  
+  topResults.forEach((result, index) => {
+    formattedText += `${index + 1}. ${result.title}\n`;
+    formattedText += `   ${result.link}\n`;
+    formattedText += `   ${result.snippet}\n\n`;
+  });
+  
+  return formattedText;
+}
+
+// Function to fetch and extract content from a URL
+async function fetchUrlContent(url) {
+  try {
+    logger.info(`Fetching content from URL: ${url}`);
+    
+    // Validate URL
+    let validatedUrl;
+    try {
+      validatedUrl = new URL(url);
+      // Ensure protocol is either http or https
+      if (!validatedUrl.protocol.match(/^https?:$/)) {
+        throw new Error('Invalid protocol');
+      }
+    } catch (urlError) {
+      logger.error(`Invalid URL: ${url}`, urlError);
+      return {
+        success: false,
+        error: 'Invalid URL',
+        message: `URL tidak valid: ${url}. URL harus dimulai dengan http:// atau https://`
+      };
+    }
+    
+    // Add timeout to prevent hanging on slow responses
+    const response = await axios.get(url, {
+      timeout: 10000, // 10 seconds timeout
+      headers: {
+        'User-Agent': 'WhatsApp-Bot/1.0 (Informational Purpose Bot)',
+        'Accept': 'text/html,application/xhtml+xml,application/xml'
+      },
+      maxContentLength: 1024 * 1024, // Limit to 1MB
+    });
+    
+    // Check if the response is HTML
+    const contentType = response.headers['content-type'] || '';
+    
+    if (contentType.includes('text/html')) {
+      // Use a simple HTML content extraction approach
+      const { JSDOM } = await import('jsdom').catch(() => {
+        // If jsdom is not available, use a simpler approach
+        return {
+          JSDOM: class {
+            constructor(html) {
+              this.window = {
+                document: {
+                  querySelector: () => null,
+                  querySelectorAll: () => []
+                }
+              };
+            }
+          }
+        };
+      });
+      
+      const dom = new JSDOM(response.data);
+      const document = dom.window.document;
+      
+      // Extract title
+      const title = document.querySelector('title')?.textContent || 'No title';
+      
+      // Extract main content (try common content selectors)
+      const contentSelectors = [
+        'article', 'main', '.content', '.main-content', '#content', '#main-content',
+        '[role="main"]', '.post-content', '.article-content', '.entry-content'
+      ];
+      
+      let content = '';
+      let mainElement = null;
+      
+      // Try to find the main content element
+      for (const selector of contentSelectors) {
+        mainElement = document.querySelector(selector);
+        if (mainElement) break;
+      }
+      
+      if (mainElement) {
+        // Extract text from paragraphs within the main content
+        const paragraphs = mainElement.querySelectorAll('p');
+        content = Array.from(paragraphs)
+          .map(p => p.textContent.trim())
+          .filter(text => text.length > 20) // Filter out short paragraphs
+          .join('\n\n');
+      }
+      
+      // If no content found with selectors, use a simpler approach
+      if (!content) {
+        // Simple text extraction with minimal HTML
+        const htmlString = response.data;
+        // Remove scripts, styles, and comments
+        let cleanHtml = htmlString
+          .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+          .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+          .replace(/<!--[\s\S]*?-->/g, '')
+          .replace(/<head\b[^<]*(?:(?!<\/head>)<[^<]*)*<\/head>/gi, '');
+          
+        // Extract text from paragraphs and headings
+        const textMatches = cleanHtml.match(/<(?:p|h1|h2|h3|h4|h5|h6)[^>]*>([\s\S]*?)<\/(?:p|h1|h2|h3|h4|h5|h6)>/gi);
+        
+        if (textMatches) {
+          content = textMatches
+            .map(match => {
+              // Remove HTML tags
+              return match.replace(/<[^>]*>/g, ' ').trim();
+            })
+            .filter(text => text.length > 20) // Filter out short paragraphs
+            .join('\n\n');
+            
+          // Clean up extra whitespace
+          content = content
+            .replace(/\s+/g, ' ')
+            .replace(/\n\s+/g, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+        }
+      }
+      
+      // If still no content, try to extract all text
+      if (!content) {
+        // Extract all text nodes
+        content = response.data
+          .replace(/<[^>]*>/g, ' ') // Remove all HTML tags
+          .replace(/\s+/g, ' ')     // Replace multiple spaces with a single space
+          .trim()
+          .substring(0, 2000);      // Limit length
+      }
+      
+      // Limit content length
+      if (content.length > 3000) {
+        content = content.substring(0, 3000) + '...(konten terpotong)';
+      }
+      
+      logger.success(`Successfully extracted content from ${url}`);
+      
+      return {
+        success: true,
+        title,
+        url,
+        content,
+        formattedContent: `# ${title}\nSumber: ${url}\n\n${content}`
+      };
+    } else if (contentType.includes('application/json')) {
+      // Handle JSON content
+      const jsonContent = JSON.stringify(response.data, null, 2);
+      const truncatedJson = jsonContent.length > 3000 ? 
+        jsonContent.substring(0, 3000) + '...(konten terpotong)' : 
+        jsonContent;
+      
+      logger.success(`Successfully extracted JSON content from ${url}`);
+      
+      return {
+        success: true,
+        title: 'JSON Content',
+        url,
+        content: truncatedJson,
+        formattedContent: `# JSON Content dari ${url}\n\`\`\`json\n${truncatedJson}\n\`\`\``
+      };
+    } else {
+      // Handle other content types
+      logger.warning(`Unsupported content type: ${contentType}`);
+      return {
+        success: false,
+        error: 'Unsupported content type',
+        message: `Tipe konten tidak didukung: ${contentType}. Hanya HTML dan JSON yang didukung.`
+      };
+    }
+  } catch (error) {
+    logger.error(`Error fetching URL content: ${error.message}`, error);
+    
+    // Check for specific error types
+    if (error.code === 'ENOTFOUND') {
+      return {
+        success: false,
+        error: 'Domain not found',
+        message: `Domain tidak ditemukan: ${url}`
+      };
+    }
+    
+    if (error.code === 'ETIMEDOUT' || error.code === 'ESOCKETTIMEDOUT') {
+      return {
+        success: false,
+        error: 'Connection timeout',
+        message: `Koneksi timeout saat mengakses: ${url}`
+      };
+    }
+    
+    if (error.response) {
+      // The request was made and the server responded with a status code
+      // that falls out of the range of 2xx
+      return {
+        success: false,
+        error: `HTTP error ${error.response.status}`,
+        message: `Error ${error.response.status}: Gagal mengakses URL ${url}`
+      };
+    }
+    
+    return {
+      success: false,
+      error: error.message,
+      message: `Gagal mengambil konten dari URL: ${error.message}`
+    };
+  }
+}
