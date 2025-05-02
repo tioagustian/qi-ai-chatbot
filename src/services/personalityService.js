@@ -192,7 +192,6 @@ async function updateMoodAndPersonality(db, message = null) {
 async function updateMoodAndPersonalityWithAI(db, message, context, aiService) {
   try {
     console.log(`Analyzing message for AI-based mood/personality change: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`);
-    
     const currentTime = new Date();
     const lastInteraction = new Date(db.data.state.lastInteraction || 0);
     const currentMood = db.data.state.currentMood;
@@ -213,7 +212,7 @@ async function updateMoodAndPersonalityWithAI(db, message, context, aiService) {
     
     // Prepare prompt for AI to analyze appropriate mood/personality
     const analysisPrompt = `
-Analyze the following message and conversation context to determine the most appropriate mood and personality for me to respond with.
+Analyze the following message and conversation context and histories to determine the most appropriate mood and personality for me (Qi) to respond with.
 
 Recent message: "${message}"
 
@@ -240,7 +239,7 @@ Return your response in this format only:
     const analysisResponse = await aiService.generateAnalysis(analysisPrompt, {
       temperature: 0.7,
       max_tokens: 300
-    });
+    }, context);
     
     // Parse the AI response to extract mood and personality
     let resultData;

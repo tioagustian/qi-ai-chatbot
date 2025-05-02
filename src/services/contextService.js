@@ -508,7 +508,8 @@ async function getRelevantContext(db, chatId, message, sock) {
       ...recentMessages.map(msg => ({
         role: msg.role,
         content: msg.content,
-        name: msg.name
+        name: msg.name,
+        timestamp: msg.timestamp
       }))
     ];
     

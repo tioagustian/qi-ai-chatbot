@@ -69,6 +69,7 @@ async function processMessage(sock, message) {
       const groupInfo = await sock.groupMetadata(message.key.remoteJid);
       groupName = groupInfo.subject;
     }
+    console.log('Incoming Message:', message);
     const senderName = message.pushName || sender.split('@')[0];
     
     logger.info(`Received message from ${senderName} in ${chatType} ${groupName}: "${content?.substring(0, 50)}${content?.length > 50 ? '...' : ''}"${containsImage ? ' (contains image)' : ''}`);

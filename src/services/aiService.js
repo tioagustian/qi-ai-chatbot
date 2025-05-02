@@ -93,7 +93,7 @@ const logger = {
 };
 
 // New function for generating analysis of message content to determine mood and personality
-async function generateAnalysis(prompt, options = {}) {
+async function generateAnalysis(prompt, options = {}, context = []) {
   try {
     logger.info('Generating analysis for mood/personality determination');
     
@@ -139,6 +139,12 @@ async function generateAnalysis(prompt, options = {}) {
     // Prepare messages for API
     const messages = [
       { role: 'system', content: 'You are an expert at analyzing message tone, emotion, and context. Your task is to determine the most appropriate mood and personality for a conversational AI to adopt when responding.' },
+      { role: 'system', content: 'Here is the conversation history:' },
+      ...context.map(msg => ({
+        role: msg.role,
+        content: `Sender: ${msg.name} at ${msg.timestamp}: ${msg.content}`,
+        name: msg.name
+      })),
       { role: 'user', content: prompt }
     ];
     
@@ -1578,7 +1584,7 @@ function formatMessagesForAPI(messages, botConfig) {
       const content = typeof msg.content === 'string' ? msg.content : '';
       return {
         role: 'user',
-        content: `name: ${senderName} \n time: ${jakartaTime} \n content: ${content}`
+        content: `${senderName !== 'Unknown User' ? `name: ${senderName}` : ''} \n time: ${jakartaTime} \n content: ${content}`
       };
     } else if (msg.role === 'system') {
       // For system messages, handle Gemini's special case
