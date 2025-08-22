@@ -277,7 +277,9 @@ async function processMessage(sock, message) {
     
     // For batched messages, only respond to the last message in the batch
     if (isBatchedMessage && !message.batchMetadata.isLastInBatch) {
-      logger.debug(`Skipping response for batched message ${message.batchMetadata.batchPosition}/${message.batchMetadata.totalInBatch} (not last in batch)`);
+      const batchType = message.batchMetadata.isGroupBatch ? 'group' : 'personal';
+      const userInfo = message.batchMetadata.isGroupBatch ? ` from ${senderName}` : '';
+      logger.debug(`Skipping response for batched ${batchType} message ${message.batchMetadata.batchPosition}/${message.batchMetadata.totalInBatch}${userInfo} (not last in batch)`);
       shouldRespond = false;
     }
     
@@ -403,15 +405,22 @@ async function processMessage(sock, message) {
         
         // Add batch context if this is the last message in a batch
         if (isBatchedMessage && message.batchMetadata.isLastInBatch) {
-          logger.info(`Adding batch context for ${message.batchMetadata.totalInBatch} messages`);
+          const batchType = message.batchMetadata.isGroupBatch ? 'group' : 'personal';
+          const userInfo = message.batchMetadata.isGroupBatch ? ` from ${senderName}` : '';
+          
+          logger.info(`Adding batch context for ${message.batchMetadata.totalInBatch} ${batchType} messages${userInfo}`);
           
           const batchContextInfo = message.batchMetadata.otherMessagesInBatch
             .map(msg => `Message ${msg.position}: "${msg.content}"`)
             .join('\n');
             
+          const contextDescription = message.batchMetadata.isGroupBatch 
+            ? `BATCH CONTEXT: ${senderName} sent ${message.batchMetadata.totalInBatch} messages in sequence in the group chat. Here are all messages in order:\n${batchContextInfo}\n\nRespond to ${senderName}'s complete conversation flow, considering all their messages together.`
+            : `BATCH CONTEXT: The user sent ${message.batchMetadata.totalInBatch} messages in sequence. Here are all messages in order:\n${batchContextInfo}\n\nRespond to the complete conversation flow, considering all messages together.`;
+            
           contextMessages.push({
             role: 'system',
-            content: `BATCH CONTEXT: The user sent ${message.batchMetadata.totalInBatch} messages in sequence. Here are all messages in order:\n${batchContextInfo}\n\nRespond to the complete conversation flow, considering all messages together.`,
+            content: contextDescription,
             name: 'batch_context'
           });
         }
