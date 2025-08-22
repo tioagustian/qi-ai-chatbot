@@ -73,10 +73,10 @@ async function processMessage(sock, message) {
     const senderName = message.pushName || sender.split('@')[0];
     
     // Check if this is a batched message
-    const isBatchedMessage = message.batchMetadata && message.batchMetadata.originalMessageCount > 1;
+    const isBatchedMessage = message.batchMetadata && message.batchMetadata.isBatchedMessage;
     
     if (isBatchedMessage) {
-      logger.info(`Received batched message from ${senderName} in ${chatType} ${groupName}: ${message.batchMetadata.originalMessageCount} messages combined into "${content?.substring(0, 50)}${content?.length > 50 ? '...' : ''}"${containsImage ? ' (contains image)' : ''}`);
+      logger.info(`Received batched message ${message.batchMetadata.batchPosition}/${message.batchMetadata.totalInBatch} from ${senderName} in ${chatType} ${groupName}: "${content?.substring(0, 50)}${content?.length > 50 ? '...' : ''}"${containsImage ? ' (contains image)' : ''}`);
     } else {
       logger.info(`Received message from ${senderName} in ${chatType} ${groupName}: "${content?.substring(0, 50)}${content?.length > 50 ? '...' : ''}"${containsImage ? ' (contains image)' : ''}`);
     }
@@ -214,7 +214,7 @@ async function processMessage(sock, message) {
       return;
     }
     
-    // Update conversation context (skip for batched messages as context is already updated in batching service)
+    // Update conversation context (already updated in batching service for batched messages)
     if (!isBatchedMessage) {
       try {
         logger.debug('Updating conversation context');
@@ -274,6 +274,12 @@ async function processMessage(sock, message) {
     
     // Check if we need to respond to the message
     let shouldRespond = shouldRespondToMessage(message, content, isTagged, isGroup, db.data.config.botName);
+    
+    // For batched messages, only respond to the last message in the batch
+    if (isBatchedMessage && !message.batchMetadata.isLastInBatch) {
+      logger.debug(`Skipping response for batched message ${message.batchMetadata.batchPosition}/${message.batchMetadata.totalInBatch} (not last in batch)`);
+      shouldRespond = false;
+    }
     
     // Check if this is a query about a previous image
     let isPreviousImageQuery = false;
@@ -392,6 +398,21 @@ async function processMessage(sock, message) {
             role: 'system',
             content: `IMPORTANT FACTS ABOUT THE USER: ${factsString}`,
             name: 'user_facts'
+          });
+        }
+        
+        // Add batch context if this is the last message in a batch
+        if (isBatchedMessage && message.batchMetadata.isLastInBatch) {
+          logger.info(`Adding batch context for ${message.batchMetadata.totalInBatch} messages`);
+          
+          const batchContextInfo = message.batchMetadata.otherMessagesInBatch
+            .map(msg => `Message ${msg.position}: "${msg.content}"`)
+            .join('\n');
+            
+          contextMessages.push({
+            role: 'system',
+            content: `BATCH CONTEXT: The user sent ${message.batchMetadata.totalInBatch} messages in sequence. Here are all messages in order:\n${batchContextInfo}\n\nRespond to the complete conversation flow, considering all messages together.`,
+            name: 'batch_context'
           });
         }
         

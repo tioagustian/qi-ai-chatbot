@@ -299,33 +299,47 @@ async function processMessageBatch(sock, chatId) {
       }
     }
     
-    // Create a combined message object for processing (use regular message type)
-    const combinedMessage = {
-      key: {
-        ...messages[messages.length - 1].key, // Use the last message's key as base
-        id: `batch_${Date.now()}_${Math.random().toString(36).substr(2, 9)}` // Generate new ID for batch
-      },
-      message: {
-        conversation: combinedContent, // Use simple conversation type (regular message)
-        // Preserve image data if any message had an image
-        ...(hasImage && messages.find(m => m.message?.imageMessage)?.message)
-      },
-      pushName: messages[messages.length - 1].pushName,
-      messageTimestamp: messages[messages.length - 1].messageTimestamp
-    };
+    // NEW APPROACH: Process each message separately with batch context
+    // This allows AI to understand the conversation flow better
+    logger.success(`Processing ${messageCount} messages separately with batch context`);
     
-    // Add metadata about batch processing
-    combinedMessage.batchMetadata = {
-      originalMessageCount: messageCount,
-      combinedContent: combinedContent,
-      processingTime: Date.now() - typingState.firstMessageTime,
-      messagesAlreadyRead: true // Indicate that messages are already marked as read
-    };
-    
-    logger.success(`Combined ${messageCount} messages into single context: "${combinedContent.substring(0, 100)}${combinedContent.length > 100 ? '...' : ''}"`);
-    
-    // Process the combined message
-    await processMessage(sock, combinedMessage);
+    // Process each message individually but with batch metadata
+    for (let i = 0; i < messages.length; i++) {
+      const message = messages[i];
+      const content = message.message?.conversation || 
+                     message.message?.extendedTextMessage?.text || 
+                     message.message?.imageMessage?.caption || 
+                     '';
+      
+      // Add batch metadata to each message
+      message.batchMetadata = {
+        isBatchedMessage: true,
+        batchPosition: i + 1,
+        totalInBatch: messageCount,
+        isFirstInBatch: i === 0,
+        isLastInBatch: i === messageCount - 1,
+        batchId: `batch_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        processingTime: Date.now() - typingState.firstMessageTime,
+        messagesAlreadyRead: true,
+        // Include other messages in batch for context
+        otherMessagesInBatch: messages.map((m, idx) => ({
+          position: idx + 1,
+          content: m.message?.conversation || m.message?.extendedTextMessage?.text || '',
+          timestamp: m.messageTimestamp,
+          isThis: idx === i
+        }))
+      };
+      
+      logger.info(`Processing message ${i + 1}/${messageCount} in batch: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"`);
+      
+      // Process each message individually
+      await processMessage(sock, message);
+      
+      // Small delay between processing messages to seem more natural
+      if (i < messages.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+    }
     
   } catch (error) {
     logger.error('Error processing message batch', error);
