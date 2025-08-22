@@ -18,8 +18,6 @@ const BATCH_CONFIG = {
 };
 
 // Store for tracking typing states and message batches per chat
-// For personal chats: chatId -> state
-// For groups: chatId -> { userId -> state }
 const typingStates = new Map();
 const messageBatches = new Map();
 
@@ -41,134 +39,39 @@ const logger = {
 };
 
 /**
- * Initialize typing state for a chat (personal) or user in group
+ * Initialize typing state for a chat
  * @param {string} chatId - Chat ID
- * @param {string} userId - User ID (optional, for groups)
  */
-function initializeTypingState(chatId, userId = null) {
-  const isGroup = chatId.endsWith('@g.us');
-  
-  if (isGroup && userId) {
-    // Group chat - per-user state
-    if (!typingStates.has(chatId)) {
-      typingStates.set(chatId, new Map());
-    }
-    
-    const groupStates = typingStates.get(chatId);
-    if (!groupStates.has(userId)) {
-      groupStates.set(userId, {
-        isTyping: false,
-        lastTypingTime: null,
-        typingTimeout: null,
-        processingTimeout: null,
-        messageTimeout: null,
-        messageCount: 0,
-        firstMessageTime: null,
-        userId: userId
-      });
-    }
-  } else {
-    // Personal chat - single state
-    if (!typingStates.has(chatId)) {
-      typingStates.set(chatId, {
-        isTyping: false,
-        lastTypingTime: null,
-        typingTimeout: null,
-        processingTimeout: null,
-        messageTimeout: null,
-        messageCount: 0,
-        firstMessageTime: null
-      });
-    }
+function initializeTypingState(chatId) {
+  if (!typingStates.has(chatId)) {
+    typingStates.set(chatId, {
+      isTyping: false,
+      lastTypingTime: null,
+      typingTimeout: null,
+      processingTimeout: null,
+      messageTimeout: null, // New timeout for message-based batching
+      messageCount: 0,
+      firstMessageTime: null
+    });
   }
 }
 
 /**
- * Get typing state for a chat/user
- * @param {string} chatId - Chat ID
- * @param {string} userId - User ID (optional, for groups)
- * @returns {Object|null} - Typing state or null
- */
-function getTypingState(chatId, userId = null) {
-  const isGroup = chatId.endsWith('@g.us');
-  
-  if (isGroup && userId) {
-    const groupStates = typingStates.get(chatId);
-    return groupStates ? groupStates.get(userId) : null;
-  } else {
-    return typingStates.get(chatId);
-  }
-}
-
-/**
- * Initialize message batch for a chat (personal) or user in group
- * @param {string} chatId - Chat ID  
- * @param {string} userId - User ID (optional, for groups)
- */
-function initializeMessageBatch(chatId, userId = null) {
-  const isGroup = chatId.endsWith('@g.us');
-  
-  if (isGroup && userId) {
-    // Group chat - per-user batches
-    if (!messageBatches.has(chatId)) {
-      messageBatches.set(chatId, new Map());
-    }
-    
-    const groupBatches = messageBatches.get(chatId);
-    if (!groupBatches.has(userId)) {
-      groupBatches.set(userId, {
-        messages: [],
-        startTime: Date.now(),
-        processing: false,
-        userId: userId
-      });
-    }
-  } else {
-    // Personal chat - single batch
-    if (!messageBatches.has(chatId)) {
-      messageBatches.set(chatId, {
-        messages: [],
-        startTime: Date.now(),
-        processing: false
-      });
-    }
-  }
-}
-
-/**
- * Get message batch for a chat/user
- * @param {string} chatId - Chat ID
- * @param {string} userId - User ID (optional, for groups)
- * @returns {Object|null} - Message batch or null
- */
-function getMessageBatch(chatId, userId = null) {
-  const isGroup = chatId.endsWith('@g.us');
-  
-  if (isGroup && userId) {
-    const groupBatches = messageBatches.get(chatId);
-    return groupBatches ? groupBatches.get(userId) : null;
-  } else {
-    return messageBatches.get(chatId);
-  }
-}
-
-/**
- * Handle incoming message with batching (supports both personal and group chats)
+ * Handle incoming message for personal chat batching
  * @param {Object} sock - Socket instance
  * @param {Object} message - Message object
  */
 async function handlePersonalChatMessage(sock, message) {
   const chatId = message.key.remoteJid;
   const isGroup = chatId.endsWith('@g.us');
-  const sender = message.key.participant || message.key.remoteJid;
-  const userId = isGroup ? sender : null;
   
-  logger.debug(`Processing message for chat ${chatId}, isGroup: ${isGroup}, sender: ${sender}`);
+  logger.debug(`Processing message for chat ${chatId}, isGroup: ${isGroup}`);
   
-  // Apply batching to both personal chats and groups
+  // Only apply batching to personal chats
   if (isGroup) {
-    logger.debug(`Group chat detected, using per-user batching system`);
-    await handleGroupChatMessage(sock, message);
+    // For groups, process immediately
+    logger.debug(`Group chat detected, processing immediately`);
+    await processMessage(sock, message);
     return;
   }
   
@@ -290,125 +193,6 @@ async function handlePersonalChatMessage(sock, message) {
   }
   
   logger.debug(`Message added to batch. Total messages: ${messageBatch.messages.length}, processing: ${messageBatch.processing}`);
-}
-
-/**
- * Handle incoming message for group chat batching
- * @param {Object} sock - Socket instance
- * @param {Object} message - Message object
- */
-async function handleGroupChatMessage(sock, message) {
-  const chatId = message.key.remoteJid;
-  const sender = message.key.participant || message.key.remoteJid;
-  const userId = sender;
-  
-  // Extract message content for logging
-  const content = message.message?.conversation || 
-                 message.message?.extendedTextMessage?.text || 
-                 message.message?.imageMessage?.caption || 
-                 '[Media message]';
-  
-  const senderName = message.pushName || sender.split('@')[0];
-  logger.info(`Received group message from ${senderName} (${userId}): "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"`);
-  
-  // Initialize state for this user
-  initializeTypingState(chatId, userId);
-  initializeMessageBatch(chatId, userId);
-  
-  const typingState = getTypingState(chatId, userId);
-  const messageBatch = getMessageBatch(chatId, userId);
-  
-  // Add message to user's batch
-  messageBatch.messages.push(message);
-  typingState.messageCount++;
-  
-  // Set first message time if this is the first message for this user
-  if (typingState.messageCount === 1) {
-    typingState.firstMessageTime = Date.now();
-    logger.debug(`First message from ${senderName}, starting batch timer`);
-  }
-  
-  // Clear existing timeouts for this user
-  if (typingState.typingTimeout) {
-    clearTimeout(typingState.typingTimeout);
-    logger.debug(`Cleared typing timeout for ${senderName}`);
-  }
-  if (typingState.processingTimeout) {
-    clearTimeout(typingState.processingTimeout);
-    logger.debug(`Cleared processing timeout for ${senderName}`);
-  }
-  if (typingState.messageTimeout) {
-    clearTimeout(typingState.messageTimeout);
-    typingState.messageTimeout = null;
-    logger.debug(`Cleared message timeout for ${senderName}`);
-  }
-  
-  // Check if typing state is stale for this user
-  if (typingState.isTyping && typingState.lastTypingTime) {
-    const timeSinceLastTyping = Date.now() - typingState.lastTypingTime;
-    const maxTypingAge = BATCH_CONFIG.TYPING_TIMEOUT * 2; // 6 seconds max
-    
-    if (timeSinceLastTyping > maxTypingAge) {
-      logger.warning(`Typing state is stale for ${senderName} (${timeSinceLastTyping}ms old), assuming user stopped typing`);
-      typingState.isTyping = false;
-    }
-  }
-  
-  // Set message-based timeout for this user
-  if (!messageBatch.processing) {
-    if (typingState.isTyping) {
-      logger.debug(`${senderName} is currently typing, not setting timeout yet (message ${typingState.messageCount})`);
-      
-      // Set fallback timeout for this user
-      const fallbackDelay = BATCH_CONFIG.TYPING_FALLBACK;
-      typingState.messageTimeout = setTimeout(async () => {
-        const currentBatch = getMessageBatch(chatId, userId);
-        if (currentBatch && !currentBatch.processing) {
-          logger.warning(`Fallback timeout reached for ${senderName}, processing batch`);
-          await processUserMessageBatch(sock, chatId, userId);
-        }
-      }, fallbackDelay);
-      
-      logger.debug(`Set fallback timeout for ${senderName} (${fallbackDelay}ms)`);
-    } else {
-      // Normal timeout for this user
-      const minDelay = Math.max(BATCH_CONFIG.TYPING_TIMEOUT, 1000);
-      
-      typingState.messageTimeout = setTimeout(async () => {
-        const currentBatch = getMessageBatch(chatId, userId);
-        if (currentBatch && !currentBatch.processing) {
-          logger.debug(`Message timeout reached for ${senderName}, processing batch`);
-          await processUserMessageBatch(sock, chatId, userId);
-        }
-      }, minDelay);
-      
-      logger.debug(`Set message timeout for ${senderName} (${minDelay}ms, message ${typingState.messageCount})`);
-    }
-  } else {
-    logger.debug(`Batch is processing for ${senderName} - message added but no new timeout set`);
-  }
-  
-  // Show typing indicator after receiving message (groups get immediate typing feedback)
-  setTimeout(async () => {
-    const currentBatch = getMessageBatch(chatId, userId);
-    if (currentBatch && !currentBatch.processing) {
-      logger.debug(`Showing typing indicator for group message from ${senderName}`);
-      await sock.sendPresenceUpdate('composing', chatId);
-    }
-  }, BATCH_CONFIG.INITIAL_DELAY);
-  
-  // Set maximum wait timeout as backup (only for first message from this user)
-  if (typingState.messageCount === 1) {
-    const timeSinceFirstMessage = Date.now() - typingState.firstMessageTime;
-    const remainingWaitTime = Math.max(0, BATCH_CONFIG.MAX_WAIT_TIME - timeSinceFirstMessage);
-    
-    typingState.processingTimeout = setTimeout(async () => {
-      logger.warning(`Maximum wait time reached for ${senderName}, processing batch`);
-      await processUserMessageBatch(sock, chatId, userId);
-    }, remainingWaitTime);
-  }
-  
-  logger.debug(`Message added to ${senderName}'s batch. Total messages: ${messageBatch.messages.length}, processing: ${messageBatch.processing}`);
 }
 
 /**
@@ -578,186 +362,7 @@ async function processMessageBatch(sock, chatId) {
 }
 
 /**
- * Process a batch of messages for a specific user in a group
- * @param {Object} sock - Socket instance
- * @param {string} chatId - Chat ID
- * @param {string} userId - User ID
- */
-async function processUserMessageBatch(sock, chatId, userId) {
-  const messageBatch = getMessageBatch(chatId, userId);
-  const typingState = getTypingState(chatId, userId);
-  
-  if (!messageBatch || messageBatch.processing || messageBatch.messages.length === 0) {
-    return;
-  }
-  
-  // Clear timeouts for this user
-  if (typingState.typingTimeout) {
-    clearTimeout(typingState.typingTimeout);
-    typingState.typingTimeout = null;
-  }
-  if (typingState.processingTimeout) {
-    clearTimeout(typingState.processingTimeout);
-    typingState.processingTimeout = null;
-  }
-  if (typingState.messageTimeout) {
-    clearTimeout(typingState.messageTimeout);
-    typingState.messageTimeout = null;
-  }
-  
-  const senderName = messageBatch.messages[0]?.pushName || userId.split('@')[0];
-  logger.info(`Starting batch processing for ${messageBatch.messages.length} messages from ${senderName} in group ${chatId}`);
-  
-  try {
-    // Calculate minimum wait time
-    const timeSinceFirstMessage = Date.now() - typingState.firstMessageTime;
-    const minWaitRemaining = Math.max(0, BATCH_CONFIG.MIN_WAIT_TIME - timeSinceFirstMessage);
-    
-    if (minWaitRemaining > 0) {
-      logger.debug(`Waiting additional ${minWaitRemaining}ms for minimum wait time (${senderName})`);
-      await new Promise(resolve => setTimeout(resolve, minWaitRemaining));
-    }
-    
-    // Mark as processing for this user
-    messageBatch.processing = true;
-    
-    // Allow brief additional collection period
-    const additionalCollectionTime = 500;
-    logger.debug(`Brief additional collection period of ${additionalCollectionTime}ms for rapid messages from ${senderName}`);
-    await new Promise(resolve => setTimeout(resolve, additionalCollectionTime));
-    
-    // Get final messages for this user
-    const messages = [...messageBatch.messages];
-    const messageCount = messages.length;
-    
-    logger.info(`Processing batch of ${messageCount} messages from ${senderName} in group ${chatId}`);
-    
-    if (messageCount === 0) {
-      logger.debug(`No messages to process for ${senderName} after collection period`);
-      return;
-    }
-    
-    // Combine all messages into a single context
-    const db = getDb();
-    let combinedContent = '';
-    let hasImage = false;
-    let imageData = null;
-    
-    // Process each message, update context, and mark as read
-    for (let i = 0; i < messages.length; i++) {
-      const message = messages[i];
-      const content = message.message?.conversation || 
-                     message.message?.extendedTextMessage?.text || 
-                     message.message?.imageMessage?.caption || 
-                     '';
-      
-      // Check for images
-      if (message.message?.imageMessage || 
-          message.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage) {
-        hasImage = true;
-        imageData = {
-          messageId: message.key.id,
-          senderName: message.pushName || userId.split('@')[0]
-        };
-      }
-      
-      // Add to combined content
-      if (content.trim()) {
-        combinedContent += (combinedContent ? '\n' : '') + content;
-      }
-      
-      // Update context for each message
-      const sender = message.key.participant || message.key.remoteJid;
-      await updateContext(db, chatId, sender, content || "[Empty message]", message, sock);
-      
-      // Mark each message as read individually
-      try {
-        await sock.readMessages([message.key]);
-        logger.debug(`Marked message ${i + 1}/${messages.length} as read from ${senderName}: "${content.substring(0, 30)}${content.length > 30 ? '...' : ''}"`);
-      } catch (readError) {
-        logger.error(`Error marking message ${i + 1} as read from ${senderName}`, readError);
-      }
-    }
-    
-    // Process each message individually but with batch metadata
-    for (let i = 0; i < messages.length; i++) {
-      const message = messages[i];
-      const content = message.message?.conversation || 
-                     message.message?.extendedTextMessage?.text || 
-                     message.message?.imageMessage?.caption || 
-                     '';
-      
-      // Add batch metadata to each message
-      message.batchMetadata = {
-        isBatchedMessage: true,
-        batchPosition: i + 1,
-        totalInBatch: messageCount,
-        isFirstInBatch: i === 0,
-        isLastInBatch: i === messageCount - 1,
-        batchId: `group_batch_${userId}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        processingTime: Date.now() - typingState.firstMessageTime,
-        messagesAlreadyRead: true,
-        isGroupBatch: true,
-        userId: userId,
-        // Include other messages in batch for context
-        otherMessagesInBatch: messages.map((m, idx) => ({
-          position: idx + 1,
-          content: m.message?.conversation || m.message?.extendedTextMessage?.text || '',
-          timestamp: m.messageTimestamp,
-          isThis: idx === i
-        }))
-      };
-      
-      logger.info(`Processing group message ${i + 1}/${messageCount} from ${senderName} in batch: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"`);
-      
-      // Process each message individually
-      await processMessage(sock, message);
-      
-      // Small delay between processing messages
-      if (i < messages.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 200));
-      }
-    }
-    
-  } catch (error) {
-    logger.error(`Error processing message batch for ${senderName}`, error);
-    
-    // Fallback: process messages individually
-    logger.warning(`Falling back to individual message processing for ${senderName}`);
-    for (const message of messageBatch.messages) {
-      try {
-        await processMessage(sock, message);
-      } catch (individualError) {
-        logger.error(`Error processing individual message from ${senderName}`, individualError);
-      }
-    }
-  } finally {
-    // Clean up for this specific user
-    const groupBatches = messageBatches.get(chatId);
-    const groupStates = typingStates.get(chatId);
-    
-    if (groupBatches) {
-      groupBatches.delete(userId);
-      // If no more user batches in this group, clean up the group entry
-      if (groupBatches.size === 0) {
-        messageBatches.delete(chatId);
-      }
-    }
-    
-    if (groupStates) {
-      groupStates.delete(userId);
-      // If no more user states in this group, clean up the group entry
-      if (groupStates.size === 0) {
-        typingStates.delete(chatId);
-      }
-    }
-    
-    logger.debug(`Batch processing completed for ${senderName} in group ${chatId}`);
-  }
-}
-
-/**
- * Handle typing indicators from users (supports both personal and group chats)
+ * Handle typing indicators from users
  * @param {Object} sock - Socket instance
  * @param {Object} update - Typing update object
  */
@@ -765,12 +370,8 @@ async function handleTypingUpdate(sock, update) {
   const chatId = update.id;
   const isGroup = chatId.endsWith('@g.us');
   
-  logger.debug(`Received presence update for chat ${chatId} (isGroup: ${isGroup}):`, update);
-  logger.debug(`Update structure: participants=${!!update.participants}, presences=${!!update.presences}`);
-  
+  // Only handle typing updates for personal chats
   if (isGroup) {
-    // Handle group typing updates
-    await handleGroupTypingUpdate(sock, update);
     return;
   }
   
@@ -862,188 +463,45 @@ async function handleTypingUpdate(sock, update) {
 }
 
 /**
- * Handle typing indicators for group chats
- * @param {Object} sock - Socket instance
- * @param {Object} update - Typing update object
- */
-async function handleGroupTypingUpdate(sock, update) {
-  const chatId = update.id;
-  
-  // In groups, presence updates contain info about specific users
-  if (!update.presences) {
-    logger.debug(`No presences in group typing update for ${chatId}`);
-    return;
-  }
-  
-  // Process typing updates for each user in the group
-  for (const [userId, presence] of Object.entries(update.presences)) {
-    if (userId === process.env.BOT_ID) {
-      // Skip bot's own presence updates
-      continue;
-    }
-    
-    const isTyping = presence.lastKnownPresence === 'composing' || presence.lastKnownPresence === 'recording';
-    
-    // Initialize typing state for this user if needed
-    initializeTypingState(chatId, userId);
-    const typingState = getTypingState(chatId, userId);
-    const messageBatch = getMessageBatch(chatId, userId);
-    
-    logger.debug(`Group typing update: ${userId} in ${chatId} - ${presence.lastKnownPresence} (isTyping: ${isTyping})`);
-    
-    if (isTyping) {
-      // User started typing
-      typingState.isTyping = true;
-      typingState.lastTypingTime = Date.now();
-      
-      // Clear message timeout if they have a pending batch
-      if (messageBatch && typingState.messageTimeout) {
-        clearTimeout(typingState.messageTimeout);
-        typingState.messageTimeout = null;
-        logger.debug(`Cleared message timeout for ${userId} in group - user is actively typing`);
-      }
-      
-      logger.debug(`User ${userId} typing in group ${chatId} (${messageBatch?.messages.length || 0} messages in batch)`);
-    } else {
-      // User stopped typing
-      typingState.isTyping = false;
-      
-      // Set timeout to process messages if they have a pending batch
-      if (messageBatch && messageBatch.messages.length > 0 && !messageBatch.processing) {
-        if (typingState.messageTimeout) {
-          clearTimeout(typingState.messageTimeout);
-        }
-        
-        typingState.messageTimeout = setTimeout(async () => {
-          logger.debug(`Group typing timeout reached for ${userId}, processing batch`);
-          await processUserMessageBatch(sock, chatId, userId);
-        }, BATCH_CONFIG.TYPING_TIMEOUT);
-        
-        logger.debug(`User ${userId} stopped typing in group, will process batch in ${BATCH_CONFIG.TYPING_TIMEOUT}ms`);
-      }
-    }
-  }
-}
-
-/**
  * Get current batch status for a chat
  * @param {string} chatId - Chat ID
- * @param {string} userId - User ID (optional, for groups)
  * @returns {Object|null} - Batch status or null if no batch
  */
-function getBatchStatus(chatId, userId = null) {
-  const isGroup = chatId.endsWith('@g.us');
+function getBatchStatus(chatId) {
+  const messageBatch = messageBatches.get(chatId);
+  const typingState = typingStates.get(chatId);
   
-  if (isGroup && userId) {
-    // Group chat - get status for specific user
-    const messageBatch = getMessageBatch(chatId, userId);
-    const typingState = getTypingState(chatId, userId);
-    
-    if (!messageBatch) {
-      return null;
-    }
-    
-    return {
-      messageCount: messageBatch.messages.length,
-      startTime: messageBatch.startTime,
-      processing: messageBatch.processing,
-      isTyping: typingState?.isTyping || false,
-      lastTypingTime: typingState?.lastTypingTime || null,
-      userId: userId,
-      isGroup: true
-    };
-  } else if (isGroup) {
-    // Group chat - get status for all users
-    const groupBatches = messageBatches.get(chatId);
-    const groupStates = typingStates.get(chatId);
-    
-    if (!groupBatches || groupBatches.size === 0) {
-      return null;
-    }
-    
-    const userStatuses = {};
-    for (const [userId, batch] of groupBatches.entries()) {
-      const state = groupStates?.get(userId);
-      userStatuses[userId] = {
-        messageCount: batch.messages.length,
-        startTime: batch.startTime,
-        processing: batch.processing,
-        isTyping: state?.isTyping || false,
-        lastTypingTime: state?.lastTypingTime || null
-      };
-    }
-    
-    return {
-      isGroup: true,
-      userStatuses: userStatuses,
-      totalActiveUsers: Object.keys(userStatuses).length
-    };
-  } else {
-    // Personal chat - original behavior
-    const messageBatch = messageBatches.get(chatId);
-    const typingState = typingStates.get(chatId);
-    
-    if (!messageBatch) {
-      return null;
-    }
-    
-    return {
-      messageCount: messageBatch.messages.length,
-      startTime: messageBatch.startTime,
-      processing: messageBatch.processing,
-      isTyping: typingState?.isTyping || false,
-      lastTypingTime: typingState?.lastTypingTime || null,
-      isGroup: false
-    };
+  if (!messageBatch) {
+    return null;
   }
+  
+  return {
+    messageCount: messageBatch.messages.length,
+    startTime: messageBatch.startTime,
+    processing: messageBatch.processing,
+    isTyping: typingState?.isTyping || false,
+    lastTypingTime: typingState?.lastTypingTime || null
+  };
 }
 
 /**
  * Force process a batch (for testing or emergency)
  * @param {Object} sock - Socket instance
  * @param {string} chatId - Chat ID
- * @param {string} userId - User ID (optional, for groups)
  */
-async function forceProcessBatch(sock, chatId, userId = null) {
-  const isGroup = chatId.endsWith('@g.us');
+async function forceProcessBatch(sock, chatId) {
+  const messageBatch = messageBatches.get(chatId);
   
-  if (isGroup && userId) {
-    // Force process for specific user in group
-    const messageBatch = getMessageBatch(chatId, userId);
-    if (messageBatch && !messageBatch.processing) {
-      logger.warning(`Force processing batch for user ${userId} in group ${chatId}`);
-      await processUserMessageBatch(sock, chatId, userId);
-    }
-  } else if (isGroup) {
-    // Force process for all users in group
-    const groupBatches = messageBatches.get(chatId);
-    if (groupBatches) {
-      logger.warning(`Force processing batches for all users in group ${chatId}`);
-      for (const [userId, batch] of groupBatches.entries()) {
-        if (!batch.processing) {
-          await processUserMessageBatch(sock, chatId, userId);
-        }
-      }
-    }
-  } else {
-    // Personal chat - original behavior
-    const messageBatch = messageBatches.get(chatId);
-    if (messageBatch && !messageBatch.processing) {
-      logger.warning(`Force processing batch for chat ${chatId}`);
-      await processMessageBatch(sock, chatId);
-    }
+  if (messageBatch && !messageBatch.processing) {
+    logger.warning(`Force processing batch for chat ${chatId}`);
+    await processMessageBatch(sock, chatId);
   }
 }
 
 export {
   handlePersonalChatMessage,
-  handleGroupChatMessage,
   handleTypingUpdate,
-  handleGroupTypingUpdate,
   getBatchStatus,
   forceProcessBatch,
-  processUserMessageBatch,
-  getTypingState,
-  getMessageBatch,
   BATCH_CONFIG
 };
