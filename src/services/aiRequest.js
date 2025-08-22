@@ -140,15 +140,7 @@ async function requestTogetherChat(model, apiKey, messages, params) {
       requestData.stop = params.stop;
     }
     
-    logger.debug('Sending request to Together.AI API', {
-      endpoint,
-      model,
-      messageCount: messages.length,
-      temperature: params.temperature,
-      maxTokens: params.max_tokens,
-      hasTools: !!params.tools,
-      toolChoice: params.tool_choice || 'auto'
-    });
+    logger.debug('Sending request to Together.AI API using model: ' + model);
     
     // Prepare request options
     const requestOptions = {
@@ -359,14 +351,7 @@ async function requestGeminiChat(model, apiKey, messages, params) {
       }
     }
     
-    logger.debug('Sending request to Gemini API', {
-      endpoint,
-      model,
-      messageCount: messages.length,
-      temperature: params.temperature,
-      maxTokens: params.max_tokens,
-      hasTools: !!params.tools
-    });
+    logger.debug('Sending request to Gemini API using model: ' + model);
     
     // Prepare request options
     const requestOptions = {
@@ -594,15 +579,7 @@ async function requestNvidiaChat(model = 'meta/llama-3.3-70b-instruct', apiKey, 
       requestData.stop = params.stop;
     }
     
-    logger.debug('Sending request to NVIDIA API', {
-      endpoint,
-      model,
-      messageCount: messages.length,
-      temperature: params.temperature,
-      maxTokens: params.max_tokens,
-      hasTools: !!params.tools,
-      toolChoice: params.tool_choice || 'auto'
-    });
+    logger.debug('Sending request to NVIDIA API using model: ' + model);
     
     // Prepare request options
     const requestOptions = {

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import { getApiLogs, clearApiLogs } from './apiLogService.js';
 import { getDb } from '../database/index.js';
 import chalk from 'chalk';
+import { getBatchStatus, forceProcessBatch } from './messageBatchingService.js';
 
 // Get current directory
 const __filename = fileURLToPath(import.meta.url);
@@ -66,6 +67,51 @@ async function executeCommand(sock, message, commandData, db) {
         
       case 'ping':
         return 'Pong! Bot aktif dan siap menjawab.';
+        
+      case 'mood':
+        const currentMoodStatus = db.data.state.currentMood;
+        const moodDescStatus = getMoodDescription(currentMoodStatus, db);
+        return `Current mood: ${currentMoodStatus}\nDescription: ${moodDescStatus}`;
+        
+      case 'personality':
+        const currentPersonalityStatus = db.data.config.personality;
+        const personalityDescStatus = getPersonalityDescription(currentPersonalityStatus, db);
+        return `Current personality: ${currentPersonalityStatus}\nDescription: ${personalityDescStatus}`;
+        
+      case 'status':
+        const moodStatus = db.data.state.currentMood;
+        const personalityStatus = db.data.config.personality;
+        const moodDesc2Status = getMoodDescription(moodStatus, db);
+        const personalityDesc2Status = getPersonalityDescription(personalityStatus, db);
+        return `🤖 Qi Status:\n\nMood: ${moodStatus}\n${moodDesc2Status}\n\nPersonality: ${personalityStatus}\n${personalityDesc2Status}`;
+        
+      case 'listmoods':
+        const availableMoodsList = getAvailableMoods(db);
+        return `📋 Available Moods:\n\n${availableMoodsList.map(m => `• ${m}`).join('\n')}\n\nUse !moodinfo [mood] for detailed information`;
+        
+      case 'listpersonalities':
+        const availablePersonalitiesList = getAvailablePersonalities(db);
+        return `📋 Available Personalities:\n\n${availablePersonalitiesList.map(p => `• ${p}`).join('\n')}\n\nUse !personalityinfo [personality] for detailed information`;
+        
+      case 'moodinfo':
+        if (args.length === 0) {
+          return 'Usage: !moodinfo [mood_name]\nExample: !moodinfo happy';
+        }
+        const moodNameInfo = args[0].toLowerCase();
+        const moodInfoDesc = getMoodDescription(moodNameInfo, db);
+        const moodTriggersInfo = getAllMoodTriggers(db)[moodNameInfo] || [];
+        return `📖 Mood Info: ${moodNameInfo}\n\nDescription: ${moodInfoDesc}\n\nTrigger words: ${moodTriggersInfo.join(', ')}`;
+        
+      case 'personalityinfo':
+        if (args.length === 0) {
+          return 'Usage: !personalityinfo [personality_name]\nExample: !personalityinfo friendly';
+        }
+        const personalityNameInfo = args[0].toLowerCase();
+        const personalityInfoDesc = getPersonalityDescription(personalityNameInfo, db);
+        return `📖 Personality Info: ${personalityNameInfo}\n\nDescription: ${personalityInfoDesc}`;
+        
+      case 'newmoods':
+        return `🆕 New Moods & Personalities!\n\n*New Moods:*\n• silly - Very funny and playful, likes dad jokes and absurd humor\n• focused - Very serious and focused, structured responses\n• inspired - Full of inspiration and creativity, innovative solutions\n• grateful - Very thankful and appreciative, warm communication\n• determined - Very determined and persistent, motivational language\n\n*New Personalities:*\n• witty - Smart and humorous, clever jokes and sophisticated humor\n• adventurous - Brave and challenging, suggests exciting activities\n• creative - Very creative and imaginative, unique perspectives\n• analytical - Logical and systematic thinking, detailed analysis\n• empathetic - Very understanding of others' feelings, emotional support\n\nUse !setmood or !setpersonality to try them!`;
         
       case 'setmood':
         if (args.length === 0) {
@@ -230,6 +276,9 @@ async function executeCommand(sock, message, commandData, db) {
         
       case 'apilogs':
         return await handleApiLogsCommand(sock, message, args, db);
+        
+      case 'batch':
+        return await handleBatchCommand(sock, message, args, db);
         
       case 'getapikey':
         if (!process.env.OPENROUTER_API_KEY) {
@@ -623,7 +672,7 @@ function getHelpText() {
 !removecharacter - Menghapus pengetahuan karakter
 
 *Pengaturan Mood:*
-!setmood [mood] - Mengatur mood bot (sekarang tersedia 15 mood!)
+!setmood [mood] - Mengatur mood bot (sekarang tersedia 20 mood!)
 !listmoods - Menampilkan daftar mood
 !moodinfo [mood] - Info detail tentang mood
 !addmood [nama] [deskripsi] - Menambah mood kustom
@@ -633,7 +682,7 @@ function getHelpText() {
 !newmoods - Lihat info tentang mood dan personality baru
 
 *Pengaturan Personality:*
-!setpersonality [personality] - Mengatur personality bot (sekarang tersedia 15 personality!)
+!setpersonality [personality] - Mengatur personality bot (sekarang tersedia 20 personality!)
 !listpersonalities - Menampilkan daftar personality
 !personalityinfo [personality] - Info detail tentang personality
 !addpersonality [nama] [deskripsi] - Menambah personality kustom
@@ -1092,6 +1141,78 @@ async function getMoodTriggersMessage(db, moodName) {
 }
 
 // Add the !apilogs command handler
+async function handleBatchCommand(sock, message, args, db) {
+  try {
+    const chatId = message.key.remoteJid;
+    
+    if (args.length === 0) {
+      // Show current batch status
+      const status = getBatchStatus(chatId);
+      
+      if (!status) {
+        return 'No active message batch for this chat.';
+      }
+      
+      const timeSinceStart = Date.now() - status.startTime;
+      const isTyping = status.isTyping ? 'Yes' : 'No';
+      
+      return `*Message Batch Status*\n\n` +
+             `Messages in batch: ${status.messageCount}\n` +
+             `Processing: ${status.processing ? 'Yes' : 'No'}\n` +
+             `User typing: ${isTyping}\n` +
+             `Time since first message: ${Math.round(timeSinceStart / 1000)}s\n` +
+             `Last typing time: ${status.lastTypingTime ? new Date(status.lastTypingTime).toLocaleTimeString() : 'N/A'}`;
+    }
+    
+    const subCommand = args[0].toLowerCase();
+    
+    switch (subCommand) {
+      case 'force':
+        // Force process current batch
+        await forceProcessBatch(sock, chatId);
+        return 'Forced processing of current message batch.';
+        
+      case 'status':
+        // Show detailed status
+        const status = getBatchStatus(chatId);
+        
+        if (!status) {
+          return 'No active message batch for this chat.';
+        }
+        
+        const timeSinceStart = Date.now() - status.startTime;
+        const isTyping = status.isTyping ? 'Yes' : 'No';
+        
+        return `*Detailed Batch Status*\n\n` +
+               `Messages in batch: ${status.messageCount}\n` +
+               `Processing: ${status.processing ? 'Yes' : 'No'}\n` +
+               `User typing: ${isTyping}\n` +
+               `Time since first message: ${Math.round(timeSinceStart / 1000)}s\n` +
+               `Last typing time: ${status.lastTypingTime ? new Date(status.lastTypingTime).toLocaleTimeString() : 'N/A'}\n\n` +
+               `*Batch Configuration*\n` +
+               `Typing timeout: 3s\n` +
+               `Max wait time: 8s\n` +
+               `Min wait time: 1.5s\n` +
+               `Initial delay: 0.8s`;
+        
+      case 'help':
+        return `*Message Batching Commands*\n\n` +
+               `!batch - Show current batch status\n` +
+               `!batch status - Show detailed status\n` +
+               `!batch force - Force process current batch\n` +
+               `!batch help - Show this help\n\n` +
+               `*How it works:*\n` +
+               `Bot waits for you to finish typing before processing messages. This makes conversations more natural.`;
+        
+      default:
+        return `Unknown batch command: ${subCommand}. Use !batch help for available commands.`;
+    }
+  } catch (error) {
+    console.error('Error handling batch command:', error);
+    return 'Error handling batch command: ' + error.message;
+  }
+}
+
 async function handleApiLogsCommand(sock, message, args, db) {
   try {
     const chatId = message.key.remoteJid;

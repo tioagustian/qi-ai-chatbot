@@ -123,59 +123,300 @@ async function searchWeb(query) {
     // Visit each URL to get more comprehensive content
     logger.info(`Fetching content from top ${topResults.length} search results`);
     
-    const contentPromises = topResults.map(async (result, index) => {
-      try {
-        // Add a small delay to avoid rate limiting issues
-        await new Promise(resolve => setTimeout(resolve, index * 500));
-        
-        logger.debug(`Fetching content from ${result.link}`);
-        
-        // Use the fetchUrlContent function we already enhanced
-        const contentResult = await fetchUrlContent(result.link, {
-          userQuery: query,
-          timeoutMs: 10000  // Lower timeout for multiple requests
-        });
-        
-        if (contentResult.success) {
-          logger.debug(`Successfully fetched content from ${result.link}`);
-          
-          return {
-            title: result.title,
-            link: result.link,
-            content: contentResult.aiSummary || contentResult.content || result.snippet,
-            success: true
-          };
-        } else {
-          logger.warning(`Failed to fetch content from ${result.link}: ${contentResult.error}`);
-          
-          // Return just the search snippet if content fetching fails
-          return {
-            title: result.title,
-            link: result.link,
-            content: result.snippet,
-            success: false,
-            error: contentResult.error
-          };
-        }
-      } catch (urlError) {
-        logger.error(`Error fetching URL ${result.link}: ${urlError.message}`);
-        
-        return {
-          title: result.title,
-          link: result.link,
-          content: result.snippet,
-          success: false,
-          error: urlError.message
-        };
-      }
+    // Import puppeteer here instead of in each fetchUrlContent call
+    const puppeteer = await import('puppeteer');
+    
+    // Launch a single browser instance for all content fetching
+    logger.info('Launching shared browser instance for content fetching');
+    const browser = await puppeteer.default.launch({
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--enable-javascript',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-dev-shm-usage', // Helps with memory issues in Docker
+        '--disable-accelerated-2d-canvas', // Reduces CPU usage
+        '--no-first-run',
+        '--no-zygote',
+        '--disable-gpu'
+      ]
     });
     
-    // Wait for all content fetching to complete
-    const contentResults = await Promise.all(contentPromises);
-    
-    // Generate the summary with the fetched content
-    return await generateAISummary(query, results, contentResults, formattedText);
-    
+    try {
+      // Create a modified version of fetchUrlContent that uses the shared browser
+      const fetchContentWithSharedBrowser = async (url, options = {}) => {
+        try {
+          // Create a customized version of fetchUrlContent that uses our shared browser
+          const { default: fetchUrlContentOriginal } = await import('./fetchUrlContent.js');
+          
+          // Get browser from our parent scope
+          const sharedBrowser = browser;
+          
+          // Start by creating a new page in our shared browser
+          const page = await sharedBrowser.newPage();
+          
+          // Set a more modern user agent
+          await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+          
+          // Enable JavaScript
+          await page.setJavaScriptEnabled(true);
+          
+          // Set viewport for better rendering (larger to capture more content)
+          await page.setViewport({
+            width: 1920,
+            height: 1080
+          });
+          
+          // Intercept network requests to reduce unnecessary resources
+          await page.setRequestInterception(true);
+          page.on('request', (req) => {
+            // Block unnecessary resources to speed up loading
+            const resourceType = req.resourceType();
+            if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+              req.abort();
+            } else {
+              req.continue();
+            }
+          });
+          
+          // Import turndown for markdown conversion
+          const turndown = await import('turndown');
+          const TurndownService = turndown.default;
+          
+          try {
+            // Navigate to the URL with improved waiting strategy
+            logger.info(`Navigating to URL: ${url}`);
+            await page.goto(url, { 
+              waitUntil: ['networkidle2', 'domcontentloaded', 'load'],
+              timeout: 30000
+            });
+            
+            // Wait for common dynamic content selectors to appear
+            logger.info('Waiting for content selectors to appear');
+            await Promise.race([
+              page.waitForSelector('article', { timeout: 3000 }).catch(() => {}),
+              page.waitForSelector('main', { timeout: 3000 }).catch(() => {}),
+              page.waitForSelector('#content', { timeout: 3000 }).catch(() => {}),
+              page.waitForSelector('.content', { timeout: 3000 }).catch(() => {})
+            ]).catch(() => {
+              // This is fine if none of these selectors exist
+            });
+            
+            // Additional wait for dynamic frameworks to render content
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Get page title
+            const title = await page.title();
+            logger.info(`Page title: "${title}"`);
+            
+            // Extract main content with improved selectors
+            let mainContent = '';
+            
+            // Try extracting from main content selectors with more comprehensive list
+            const mainSelectors = [
+              'article', 'main', '[role="main"]', '.main-content', '#main-content',
+              '.post-content', '.article-content', '.content', '#content',
+              '.entry-content', '.post-body', '.article-body', '.story-body',
+              '.news-content', '.blog-content', '.page-content', '.single-content',
+              '.story-content', '#article-content', '[itemprop="articleBody"]',
+              '.body-content', '.entry', '.post', '.article'
+            ];
+            
+            // First attempt to find a main content container
+            logger.info('Extracting main content from selectors');
+            for (const selector of mainSelectors) {
+              const element = await page.$(selector);
+              if (element) {
+                mainContent = await page.evaluate(el => el.innerText, element);
+                if (mainContent && mainContent.length > 100) {
+                  logger.info(`Found content in selector: ${selector}`);
+                  break;
+                }
+              }
+            }
+            
+            // If no main content found or it's too short, try a more advanced extraction method
+            if (!mainContent || mainContent.length < 100) {
+              logger.info('Using advanced content extraction method');
+              mainContent = await page.evaluate(() => {
+                // Get all text nodes in the document
+                const textNodes = [];
+                const walker = document.createTreeWalker(
+                  document.body,
+                  NodeFilter.SHOW_TEXT,
+                  null,
+                  false
+                );
+                
+                // Skip common non-content elements
+                const skipTags = ['SCRIPT', 'STYLE', 'NOSCRIPT', 'NAV', 'HEADER', 'FOOTER', 'ASIDE'];
+                const skipClasses = ['nav', 'menu', 'sidebar', 'footer', 'header', 'comment', 'widget'];
+                
+                let node;
+                while (node = walker.nextNode()) {
+                  const parent = node.parentElement;
+                  
+                  // Skip if parent is in skipTags
+                  if (skipTags.includes(parent.tagName)) continue;
+                  
+                  // Skip if parent has any of the skipClasses
+                  if (Array.from(parent.classList).some(cls => 
+                    skipClasses.some(skipCls => cls.toLowerCase().includes(skipCls))
+                  )) continue;
+                  
+                  // Skip if hidden
+                  if (parent.offsetParent === null) continue;
+                  
+                  // Check if node has meaningful text
+                  const text = node.textContent.trim();
+                  if (text.length > 20) {
+                    textNodes.push({
+                      text,
+                      parent: parent.tagName,
+                      depth: getNodeDepth(parent)
+                    });
+                  }
+                }
+                
+                // Get depth of an element in the DOM
+                function getNodeDepth(element) {
+                  let depth = 0;
+                  let current = element;
+                  while (current) {
+                    depth++;
+                    current = current.parentElement;
+                  }
+                  return depth;
+                }
+                
+                // Group text by parent depth (nodes at similar depths likely belong to the same content)
+                const depthGroups = {};
+                textNodes.forEach(node => {
+                  if (!depthGroups[node.depth]) {
+                    depthGroups[node.depth] = [];
+                  }
+                  depthGroups[node.depth].push(node.text);
+                });
+                
+                // Find the depth with the most text content
+                let maxTextLength = 0;
+                let bestDepth = 0;
+                
+                Object.entries(depthGroups).forEach(([depth, texts]) => {
+                  const totalLength = texts.join('').length;
+                  if (totalLength > maxTextLength) {
+                    maxTextLength = totalLength;
+                    bestDepth = parseInt(depth);
+                  }
+                });
+                
+                // Get content from the best depth and adjacent depths
+                const contentNodes = textNodes.filter(node => 
+                  Math.abs(node.depth - bestDepth) <= 1
+                );
+                
+                return contentNodes.map(node => node.text).join('\n\n');
+              });
+            }
+            
+            // Get full HTML content
+            const fullHtml = await page.content();
+            
+            // Convert HTML to Markdown with improved settings
+            logger.info('Converting HTML to Markdown');
+            const turndownService = new TurndownService({
+              headingStyle: 'atx',
+              codeBlockStyle: 'fenced',
+              bulletListMarker: '-',
+              hr: '---',
+              strongDelimiter: '**'
+            });
+            
+            const markdown = turndownService.turndown(fullHtml);
+            
+            // Clean up content
+            mainContent = mainContent
+              .replace(/\s+/g, ' ')      // Replace multiple whitespace with single space
+              .replace(/\n\s+/g, '\n')   // Remove leading spaces after newlines
+              .trim();                   // Trim leading/trailing whitespace
+            
+            // Truncate if too long
+            const maxLength = 4000;
+            let truncatedContent = mainContent;
+            if (mainContent.length > maxLength) {
+              truncatedContent = mainContent.substring(0, maxLength) + '... (content truncated)';
+              logger.info(`Content truncated from ${mainContent.length} to ${maxLength} chars`);
+            }
+            
+            // Close the tab (page) but keep browser open
+            await page.close();
+            
+            logger.success(`Successfully extracted content from URL (${url})`);
+            
+            // Prepare for AI summary later (we'll do this in batch)
+            return {
+              success: true,
+              title: title,
+              url: url,
+              content: truncatedContent,
+              markdown: markdown.substring(0, 8000), // Limit markdown size
+              fullContent: mainContent,
+              message: `# ${title}\n\n${truncatedContent}\n\nSumber: ${url}`
+            };
+          } catch (error) {
+            // If there's an error, close the page and return error info
+            await page.close();
+            logger.error(`Error fetching content from URL: ${error.message}`);
+            return {
+              success: false,
+              error: error.message,
+              title: url,
+              link: url,
+              content: `Failed to fetch content: ${error.message}`,
+              message: `Failed to fetch content from ${url}: ${error.message}`
+            };
+          }
+        } catch (outerError) {
+          logger.error(`Outer error in fetchContentWithSharedBrowser: ${outerError.message}`);
+          return {
+            success: false,
+            error: outerError.message,
+            title: url,
+            link: url,
+            content: `Failed to process: ${outerError.message}`,
+            message: `Failed to process ${url}: ${outerError.message}`
+          };
+        }
+      };
+      
+      // Use Promise.all but with a small delay between each to avoid overwhelming resources
+      const contentPromises = [];
+      
+      for (let i = 0; i < topResults.length; i++) {
+        const result = topResults[i];
+        // Add a small delay between each request
+        await new Promise(resolve => setTimeout(resolve, 500));
+        contentPromises.push(fetchContentWithSharedBrowser(result.link, {
+          userQuery: query,
+          timeoutMs: 15000
+        }));
+      }
+      
+      // Wait for all content fetching to complete
+      const contentResults = await Promise.all(contentPromises);
+      
+      // Close the shared browser instance when done with all fetching
+      await browser.close();
+      
+      // Generate the summary with the fetched content
+      return await generateAISummary(query, results, contentResults, formattedText);
+    } catch (error) {
+      // Make sure to close the browser if there's an error
+      await browser.close();
+      throw error;
+    }
   } catch (error) {
     logger.error(`Error searching web: ${error.message}`);
     return {
@@ -208,7 +449,7 @@ async function generateAISummary(query, results, contentResults, formattedText, 
       // Save search results to memory
       try {
         // Import the memory service function
-        const { storeWebSearchResults } = await import('./memoryService.js');
+        const { storeWebSearchResults } = await import('../services/memoryService.js');
         
         // Store the search results
         await storeWebSearchResults(query, results, { formattedText });
@@ -290,7 +531,7 @@ Berikan informasi dalam format yang jelas dan terstruktur. Jangan terlalu panjan
     // Save search results with enhanced AI summary to memory
     try {
       // Import the memory service function
-      const { storeWebSearchResults } = await import('./memoryService.js');
+      const { storeWebSearchResults } = await import('../services/memoryService.js');
       
       // Store the search results with AI summary
       await storeWebSearchResults(query, results, { 

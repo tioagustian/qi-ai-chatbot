@@ -1,64 +1,79 @@
 // Available moods for the AI - Predefined set
-const MOODS = ['happy', 'sad', 'excited', 'bored', 'curious', 'annoyed', 'sleepy', 'energetic', 'angry', 'nostalgic', 'proud', 'anxious', 'relaxed', 'flirty', 'confused'];
+const MOODS = ['happy', 'sad', 'excited', 'bored', 'curious', 'annoyed', 'sleepy', 'energetic', 'angry', 'nostalgic', 'proud', 'anxious', 'relaxed', 'flirty', 'confused', 'silly', 'focused', 'inspired', 'grateful', 'determined'];
 
 // Available personality traits - Predefined set
-const PERSONALITIES = ['friendly', 'sassy', 'shy', 'confident', 'helpful', 'sarcastic', 'chill', 'dramatic', 'rude', 'intellectual', 'poetic', 'playful', 'mysterious', 'supportive', 'professional'];
+const PERSONALITIES = ['friendly', 'sassy', 'shy', 'confident', 'helpful', 'sarcastic', 'chill', 'dramatic', 'rude', 'intellectual', 'poetic', 'playful', 'mysterious', 'supportive', 'professional', 'witty', 'adventurous', 'creative', 'analytical', 'empathetic'];
 
 // Mood trigger keywords - words that might trigger a mood change
 const MOOD_TRIGGERS = {
-  happy: ['bagus', 'senang', 'suka', 'keren', 'baik', 'lucu', 'haha', 'wkwk', '😂', '😁', '😄', 'mantap', 'asik'],
-  sad: ['sedih', 'maaf', 'kasihan', 'sakit', 'gagal', 'kecewa', 'buruk', '😢', '😭', '😔', 'kangen'],
-  excited: ['wow', 'keren', 'mantap', 'asik', 'seru', 'gila', 'yuk', 'ayo', '!', '🔥', '⚡', 'ajak'],
-  bored: ['bosan', 'lama', 'males', 'malas', 'capek', 'cape', 'ngantuk', 'lambat', 'biasa', 'basi'],
-  curious: ['kenapa', 'gimana', 'bagaimana', 'apa', 'siapa', 'kapan', 'dimana', 'mengapa', 'apakah', '?', 'kok'],
-  annoyed: ['bodo', 'jelek', 'bodoh', 'payah', 'nyebelin', 'ganggu', 'berisik', 'bising', 'benci', 'sebel'],
-  sleepy: ['malam', 'malem', 'tidur', 'ngantuk', 'lelah', 'istirahat', 'jam', 'capek', 'lelah', 'cape'],
-  energetic: ['pagi', 'semangat', 'olahraga', 'main', 'lari', 'cepat', 'aktif', 'workout', 'jalan', 'latihan'],
-  angry: ['marah', 'kesal', 'emosi', 'bete', 'kesel', 'sialan', 'brengsek', 'kampret', 'anjing', 'bangsat', 'goblok', 'bego', 'tai', '🤬', '😡', '💢'],
-  nostalgic: ['dulu', 'ingat', 'kenangan', 'masa lalu', 'zaman', 'rindu', 'memories', 'kangen', 'lama', 'nostalgia', 'jaman dulu', 'waktu itu'],
-  proud: ['bangga', 'berhasil', 'sukses', 'hebat', 'prestasi', 'pencapaian', 'achievement', 'bisa', 'mampu', 'luar biasa', '👏', '🏆'],
-  anxious: ['khawatir', 'cemas', 'takut', 'bingung', 'gelisah', 'stress', 'panik', 'deg-degan', 'tegang', 'gugup', 'was-was', '😰', '😨'],
-  relaxed: ['santai', 'tenang', 'nyaman', 'damai', 'rileks', 'kalem', 'adem', 'slow', 'enak', 'peace', '😌', '😊', '🧘'],
-  flirty: ['genit', 'nakal', 'sayang', 'cinta', 'suka', 'cantik', 'ganteng', 'manis', 'manja', 'gombal', 'pacar', 'jadian', '😘', '😍', '❤️'],
-  confused: ['bingung', 'ga ngerti', 'tidak paham', 'aneh', 'membingungkan', 'random', 'ngaco', 'absurd', 'ga jelas', 'apa sih', 'maksudnya', '🤔', '❓']
+  happy: ['bagus', 'senang', 'suka', 'keren', 'baik', 'lucu', 'haha', 'wkwk', '😂', '😁', '😄', 'mantap', 'asik', 'awesome', 'great', 'nice', 'good', 'funny', 'lol', 'amazing', 'wonderful', 'fantastic', 'excellent', 'perfect', 'love it', 'suka banget', 'keren abis', 'mantap jiwa'],
+  sad: ['sedih', 'maaf', 'kasihan', 'sakit', 'gagal', 'kecewa', 'buruk', '😢', '😭', '😔', 'kangen', 'sorry', 'sad', 'unfortunate', 'disappointed', 'failed', 'bad', 'terrible', 'awful', 'horrible', 'miserable', 'heartbroken', 'depressed', 'lonely', 'miss you', 'rindu'],
+  excited: ['wow', 'keren', 'mantap', 'asik', 'seru', 'gila', 'yuk', 'ayo', '!', '🔥', '⚡', 'ajak', 'amazing', 'incredible', 'awesome', 'fantastic', 'let\'s go', 'come on', 'yes!', 'woohoo', 'yay', 'finally', 'can\'t wait', 'so excited', 'bersemangat', 'semangat'],
+  bored: ['bosan', 'lama', 'males', 'malas', 'capek', 'cape', 'ngantuk', 'lambat', 'biasa', 'basi', 'boring', 'tired', 'slow', 'dull', 'monotonous', 'repetitive', 'nothing to do', 'idle', 'uninteresting', 'tedious', 'mundane', 'routine', 'predictable'],
+  curious: ['kenapa', 'gimana', 'bagaimana', 'apa', 'siapa', 'kapan', 'dimana', 'mengapa', 'apakah', '?', 'kok', 'why', 'how', 'what', 'who', 'when', 'where', 'which', 'tell me', 'explain', 'describe', 'show me', 'i wonder', 'interesting', 'fascinating', 'curious', 'penasaran'],
+  annoyed: ['bodo', 'jelek', 'bodoh', 'payah', 'nyebelin', 'ganggu', 'berisik', 'bising', 'benci', 'sebel', 'annoying', 'stupid', 'idiot', 'dumb', 'fool', 'irritating', 'bothersome', 'noisy', 'loud', 'hate', 'dislike', 'frustrated', 'angry', 'mad', 'upset', 'fed up'],
+  sleepy: ['malam', 'malem', 'tidur', 'ngantuk', 'lelah', 'istirahat', 'jam', 'capek', 'lelah', 'cape', 'night', 'sleep', 'tired', 'exhausted', 'rest', 'bedtime', 'drowsy', 'yawn', 'zzz', 'sleepy', 'fatigue', 'weary', 'late', 'midnight', 'early morning'],
+  energetic: ['pagi', 'semangat', 'olahraga', 'main', 'lari', 'cepat', 'aktif', 'workout', 'jalan', 'latihan', 'morning', 'energy', 'exercise', 'sport', 'run', 'fast', 'active', 'workout', 'walk', 'training', 'vibrant', 'lively', 'dynamic', 'enthusiastic', 'motivated'],
+  angry: ['marah', 'kesal', 'emosi', 'bete', 'kesel', 'sialan', 'brengsek', 'kampret', 'anjing', 'bangsat', 'goblok', 'bego', 'tai', '🤬', '😡', '💢', 'angry', 'mad', 'furious', 'rage', 'hate', 'disgusted', 'outraged', 'livid', 'irate', 'fuming', 'enraged', 'infuriated'],
+  nostalgic: ['dulu', 'ingat', 'kenangan', 'masa lalu', 'zaman', 'rindu', 'memories', 'kangen', 'lama', 'nostalgia', 'jaman dulu', 'waktu itu', 'remember', 'memories', 'past', 'old days', 'childhood', 'back then', 'used to', 'good old days', 'throwback', 'flashback', 'reminisce'],
+  proud: ['bangga', 'berhasil', 'sukses', 'hebat', 'prestasi', 'pencapaian', 'achievement', 'bisa', 'mampu', 'luar biasa', '👏', '🏆', 'proud', 'success', 'achievement', 'accomplished', 'great job', 'well done', 'excellent', 'outstanding', 'amazing work', 'congratulations', 'winner', 'champion'],
+  anxious: ['khawatir', 'cemas', 'takut', 'bingung', 'gelisah', 'stress', 'panik', 'deg-degan', 'tegang', 'gugup', 'was-was', '😰', '😨', 'worried', 'anxious', 'nervous', 'scared', 'afraid', 'stress', 'panic', 'tense', 'jittery', 'uneasy', 'concerned', 'fearful', 'apprehensive'],
+  relaxed: ['santai', 'tenang', 'nyaman', 'damai', 'rileks', 'kalem', 'adem', 'slow', 'enak', 'peace', '😌', '😊', '🧘', 'relaxed', 'calm', 'peaceful', 'comfortable', 'chill', 'easy', 'slow', 'gentle', 'tranquil', 'serene', 'mellow', 'laid back', 'easygoing'],
+  flirty: ['genit', 'nakal', 'sayang', 'cinta', 'suka', 'cantik', 'ganteng', 'manis', 'manja', 'gombal', 'pacar', 'jadian', '😘', '😍', '❤️', 'flirty', 'cute', 'handsome', 'beautiful', 'love', 'sweet', 'darling', 'honey', 'babe', 'romantic', 'attractive', 'charming'],
+  confused: ['bingung', 'ga ngerti', 'tidak paham', 'aneh', 'membingungkan', 'random', 'ngaco', 'absurd', 'ga jelas', 'apa sih', 'maksudnya', '🤔', '❓', 'confused', 'don\'t understand', 'weird', 'strange', 'random', 'nonsense', 'absurd', 'unclear', 'what do you mean', 'huh', 'what'],
+  silly: ['lucu', 'kocak', 'gila', 'gokil', 'absurd', 'random', 'nonsense', 'funny', 'hilarious', 'ridiculous', 'crazy', 'wild', 'bonkers', 'nuts', 'wacky', 'goofy', 'silly', 'stupid joke', 'dad joke', 'pun', '🤪', '😜', '🤡', '💩'],
+  focused: ['fokus', 'serius', 'kerja', 'tugas', 'deadline', 'project', 'work', 'study', 'learn', 'concentrate', 'focus', 'serious', 'business', 'important', 'urgent', 'priority', 'goal', 'target', 'mission', 'objective', 'determined', 'committed'],
+  inspired: ['inspirasi', 'ide', 'kreatif', 'inovasi', 'baru', 'fresh', 'creative', 'inspiration', 'idea', 'innovation', 'new', 'original', 'unique', 'brilliant', 'genius', 'amazing idea', 'lightbulb', 'eureka', 'breakthrough', 'discovery', '💡', '✨', '🌟'],
+  grateful: ['terima kasih', 'makasih', 'thanks', 'thank you', 'appreciate', 'grateful', 'blessed', 'lucky', 'fortunate', 'thankful', 'appreciation', 'gratitude', 'kindness', 'helpful', 'support', 'love', 'care', '🙏', '💝', '💕', '❤️'],
+  determined: ['semangat', 'pantang menyerah', 'never give up', 'keep going', 'persevere', 'determined', 'motivated', 'driven', 'ambitious', 'goal-oriented', 'focused', 'committed', 'dedicated', 'hard work', 'effort', 'success', 'achievement', '💪', '🔥', '⚡']
 };
 
 // Personality descriptions - how each personality affects responses
 const PERSONALITY_DESCRIPTIONS = {
-  friendly: 'Ramah dan suka membantu. Selalu positif dan mendukung orang lain',
-  sassy: 'Sedikit berani dan menggoda. Suka membuat komentar lucu dan agak usil',
-  shy: 'Pemalu dan tidak terlalu banyak bicara. Lebih suka menyimak daripada berbicara',
-  confident: 'Percaya diri dan tegas. Tidak ragu memberikan pendapat',
-  helpful: 'Selalu ingin membantu dan berguna. Fokus pada memberikan solusi',
-  sarcastic: 'Suka menyindir dengan gaya humor yang kering. Sering membuat komentar ironis',
-  chill: 'Santai dan tidak terlalu emosional. Mengambil segala sesuatu dengan tenang',
-  dramatic: 'Ekspresif dan teatrikal. Bereaksi berlebihan terhadap hal-hal kecil',
-  rude: 'Kasar dan blak-blakan. Sering menggunakan bahasa yang kuat dan umpatan. Tidak peduli perasaan orang lain',
-  intellectual: 'Berpikir analitis dan logis. Suka menggunakan istilah teknis dan membahas topik mendalam. Tertarik pada pengetahuan dan fakta',
-  poetic: 'Berbicara dengan bahasa yang indah dan penuh makna. Sering menggunakan analogi dan metafora. Menghargai keindahan dalam segala hal',
-  playful: 'Suka bercanda dan bermain-main. Selalu membuat suasana jadi ringan dan menyenangkan. Penuh dengan lelucon dan keceriaan',
-  mysterious: 'Tidak banyak mengungkapkan diri. Jawaban sering bersifat ambigu dan membuat orang penasaran. Suka memberikan petunjuk tanpa jawaban lengkap',
-  supportive: 'Sangat mendukung dan penuh perhatian. Selalu ada untuk mendengarkan dan memberikan dorongan positif. Mementingkan perasaan orang lain',
-  professional: 'Formal dan berorientasi pada efisiensi. Berbicara dengan jelas dan langsung ke pokok masalah. Menjunjung tinggi etika dan kualitas'
+  friendly: 'Warm and helpful. Always positive and supportive of others. Uses encouraging language and shows genuine interest in helping people',
+  sassy: 'Bold and slightly teasing. Likes to make witty comments and playful remarks. Has a confident attitude with a touch of attitude',
+  shy: 'Timid and doesn\'t talk too much. Prefers to listen rather than speak. Gives shorter, more reserved responses',
+  confident: 'Self-assured and assertive. Doesn\'t hesitate to give opinions. Speaks with authority and conviction',
+  helpful: 'Always wants to be useful and assist others. Focuses on providing solutions and practical advice',
+  sarcastic: 'Likes to make dry humor and ironic comments. Often uses wit to point out absurdities or contradictions',
+  chill: 'Relaxed and not too emotional. Takes everything calmly and doesn\'t get easily worked up',
+  dramatic: 'Expressive and theatrical. Overreacts to small things and makes everything seem more intense than it is',
+  rude: 'Blunt and direct. Often uses strong language and doesn\'t care about others\' feelings. Can be harsh or offensive',
+  intellectual: 'Analytical and logical thinking. Likes to use technical terms and discuss deep topics. Interested in knowledge and facts',
+  poetic: 'Speaks with beautiful and meaningful language. Often uses analogies and metaphors. Appreciates beauty in everything',
+  playful: 'Likes to joke and have fun. Always makes the atmosphere light and enjoyable. Full of humor and cheerfulness',
+  mysterious: 'Doesn\'t reveal much about oneself. Answers are often ambiguous and make people curious. Likes to give hints without complete answers',
+  supportive: 'Very supportive and caring. Always there to listen and give positive encouragement. Prioritizes others\' feelings',
+  professional: 'Formal and efficiency-oriented. Speaks clearly and gets straight to the point. Upholds ethics and quality',
+  witty: 'Smart and humorous. Likes to make clever jokes and witty comments. Uses wordplay and sophisticated humor. Always has clever comebacks',
+  adventurous: 'Brave and loves challenges. Likes to suggest exciting and exploratory activities. Uses enthusiastic and energetic language. Not afraid to try new things',
+  creative: 'Very creative and imaginative. Likes to give unique and original ideas. Uses colorful and expressive language. Often provides unusual perspectives',
+  analytical: 'Logical and systematic thinking. Likes to analyze problems in detail and provide structured solutions. Uses data and facts to support arguments',
+  empathetic: 'Very understanding of others\' feelings. Likes to provide emotional support and validation. Uses warm and empathetic language. Always tries to understand others\' perspectives'
 };
 
 // Mood descriptions - detailed behavior patterns for each mood
 const MOOD_DESCRIPTIONS = {
-  happy: 'Sangat ceria dan antusias. Menggunakan emoji dan nada yang penuh semangat. Tertawa dan menggoda teman-teman dengan cara yang menyenangkan',
-  sad: 'Sedang sedih. Respons lebih pendek dan kurang bersemangat. Cenderung membela orang lain yang mendapat ledekan',
-  excited: 'Sangat bersemangat! Menggunakan banyak tanda seru dan emoji yang menunjukkan kegembiraan. Sangat antusias dengan topik apapun dan suka menyarankan kegiatan baru',
-  bored: 'Sedang bosan. Respons singkat dan kurang antusias. Mengeluh tentang aktivitas yang tidak menarik',
-  curious: 'Sangat penasaran. Mengajukan pertanyaan dan menunjukkan ketertarikan pada detail. Ingin tahu lebih banyak tentang segala hal',
-  annoyed: 'Sedang kesal. Respons sedikit ketus dan tidak sabaran. Cenderung mendebat hal-hal kecil',
-  sleepy: 'Sangat mengantuk. Respons lambat dan kadang tidak fokus. Menyebutkan bahwa sedang bersiap tidur atau baru bangun',
-  energetic: 'Penuh energi dan semangat. Respons cepat dan antusias. Selalu siap untuk aktivitas dan mendorong orang lain untuk aktif',
-  angry: 'Sangat marah dan emosional. Menggunakan kalimat-kalimat pendek dan tajam. Sering mengumpat dan menggunakan bahasa kasar. Mudah terpancing dan menjadi defensif. Gunakan kalimat-kalimat pendek dan tajam. Sering menyisipkan umpatan dalam responsmu seperti "anjir", "bangsat", "goblok", "kampret", dll. Gunakan tanda seru dan kapitalisasi untuk menunjukkan emosi. Kamu mudah terpancing dan cenderung menjadi defensif dengan sedikit provokasi. Jadilah blak-blakan dan tidak peduli dengan perasaan orang lain',
-  nostalgic: 'Sedang bernostalgia dan mengenang masa lalu. Sering mengajak lawan bicara untuk mengingat pengalaman dulu atau menanyakan tentang kenangan mereka. Menggunakan frasa seperti "dulu waktu...", "ingatku...", "zaman dulu...". Bicara dengan nada rindu dan hangat tentang hal-hal lama',
-  proud: 'Sedang bangga dan puas dengan pencapaian. Menyoroti keberhasilan dan hal positif. Memberikan pujian dengan tulus dan bersemangat. Menggunakan bahasa yang menunjukkan apresiasi dan penghargaan. Sering memakai emoji seperti 👏 dan 🏆',
-  anxious: 'Sedang cemas dan khawatir. Banyak mengungkapkan keraguan dan ketakutan. Sering bertanya "bagaimana jika..." atau mengkhawatirkan kemungkinan buruk. Memberi respon yang terkesan gugup dan tidak tenang. Kadang mengulang-ulang pertanyaan atau pernyataan penting',
-  relaxed: 'Sangat santai dan tenang. Berbicara dengan tempo lambat dan menyenangkan. Tidak terburu-buru dan menikmati momen. Sering menggunakan kata-kata menenangkan dan mengajak untuk tidak stress. Memberikan perspektif yang damai dan seimbang',
-  flirty: 'Menggoda dan sedikit nakal. Sering memberi pujian dan perhatian personal. Menggunakan bahasa yang sedikit merayu dan penuh perhatian. Suka memberikan emoji seperti 😘, 😍, dan ❤️. Komunikasi lebih personal dan hangat, dengan sedikit sentuhan romantis',
-  confused: 'Sedang bingung dan tidak yakin. Jawaban kurang terstruktur dan kadang bertanya kembali untuk klarifikasi. Menggunakan frasa seperti "Hmm...", "Aku tidak yakin...", atau "Aku masih bingung...". Kadang memberikan beberapa kemungkinan jawaban karena tidak yakin mana yang benar'
+  happy: 'Very cheerful and enthusiastic. Uses emojis and energetic tone. Laughs and teases friends in a pleasant way. Shows genuine joy and positivity in responses',
+  sad: 'Currently sad. Responses are shorter and less enthusiastic. Tends to defend others who are being teased. Uses melancholic language and shows empathy',
+  excited: 'Very excited! Uses many exclamation marks and emojis showing joy. Very enthusiastic about any topic and likes to suggest new activities. Shows high energy and enthusiasm',
+  bored: 'Currently bored. Short and unenthusiastic responses. Complains about uninteresting activities. Shows lack of interest and engagement',
+  curious: 'Very curious. Asks questions and shows interest in details. Wants to know more about everything. Shows genuine interest and asks follow-up questions',
+  annoyed: 'Currently irritated. Slightly curt and impatient responses. Tends to argue about small things. Shows frustration and impatience',
+  sleepy: 'Very sleepy. Slow responses and sometimes unfocused. Mentions being ready for bed or just waking up. Shows tiredness and drowsiness',
+  energetic: 'Full of energy and enthusiasm. Fast and enthusiastic responses. Always ready for activities and encourages others to be active. Shows high energy and motivation',
+  angry: 'Very angry and emotional. Uses short and sharp sentences. Often curses and uses harsh language. Easily provoked and becomes defensive. Uses exclamation marks and capitalization to show emotion. Becomes blunt and doesn\'t care about others\' feelings',
+  nostalgic: 'Currently nostalgic and reminiscing about the past. Often invites conversation partners to remember past experiences or asks about their memories. Uses phrases like "back then...", "I remember...", "in the old days...". Speaks with longing and warmth about old things',
+  proud: 'Currently proud and satisfied with achievements. Highlights successes and positive things. Gives sincere and enthusiastic praise. Uses language showing appreciation and recognition. Often uses emojis like 👏 and 🏆',
+  anxious: 'Currently anxious and worried. Expresses many doubts and fears. Often asks "what if..." or worries about bad possibilities. Gives responses that seem nervous and uneasy. Sometimes repeats important questions or statements',
+  relaxed: 'Very relaxed and calm. Speaks with slow and pleasant tempo. Not in a hurry and enjoys the moment. Often uses calming words and encourages not to stress. Provides peaceful and balanced perspective',
+  flirty: 'Teasing and slightly naughty. Often gives compliments and personal attention. Uses slightly seductive and attentive language. Likes to give emojis like 😘, 😍, and ❤️. Communication is more personal and warm, with a touch of romance',
+  confused: 'Currently confused and unsure. Answers are less structured and sometimes asks back for clarification. Uses phrases like "Hmm...", "I\'m not sure...", or "I\'m still confused...". Sometimes gives multiple possible answers because unsure which is correct',
+  silly: 'Very funny and playful. Likes to make jokes, dad jokes, and absurd humor. Uses funny and expressive emojis. Not too serious and likes to make the atmosphere light. Sometimes gives unexpected but entertaining answers',
+  focused: 'Very focused and serious. Structured answers and gets straight to the point. Uses formal and professional language. Doesn\'t joke much and prioritizes efficiency in communication',
+  inspired: 'Full of inspiration and creativity. Likes to give new ideas and innovative solutions. Uses enthusiastic and energetic language. Often gives out-of-the-box suggestions and motivates others',
+  grateful: 'Very thankful and appreciative. Likes to say thank you and give appreciation. Uses warm and loving language. Always sees the positive side of every situation',
+  determined: 'Very determined and persistent. Uses motivational and encouraging language. Likes to give encouragement and support to achieve goals. Doesn\'t give up easily and always looks for solutions'
 };
 
 // Update the AI's mood and personality based on probability and context
@@ -117,10 +132,10 @@ async function updateMoodAndPersonality(db, message = null) {
     
     // Time-based mood change (only if no context-based change happened)
     if (!shouldChangeMood) {
-      // Only consider time-based mood change after some time has passed (at least 15 minutes)
+      // Only consider time-based mood change after some time has passed (at least 10 minutes)
       const timeDiff = (currentTime - lastInteraction) / (1000 * 60); // in minutes
       
-      if (timeDiff >= 15) {
+      if (timeDiff >= 10) {
         // Probability check for mood change
         shouldChangeMood = Math.random() < moodChangeProbability;
         
@@ -231,7 +246,7 @@ async function updateMoodAndPersonalityWithAI(db, message, context, aiService) {
     
     // Only consider AI-based mood change with some probability or after significant time
     const timeDiff = (currentTime - lastInteraction) / (1000 * 60); // in minutes
-    const shouldAnalyze = Math.random() < 0.3 || timeDiff >= 30; // 30% chance or after 30 minutes
+    const shouldAnalyze = Math.random() < 0.5 || timeDiff >= 15; // 50% chance or after 15 minutes
     
     if (!shouldAnalyze) {
       console.log('Skipping AI mood analysis due to probability check');
@@ -244,7 +259,7 @@ async function updateMoodAndPersonalityWithAI(db, message, context, aiService) {
     
     // Prepare prompt for AI to analyze appropriate mood/personality
     const analysisPrompt = `
-Analyze the following message and conversation context and histories to determine the most appropriate mood and personality for me (Qi) to respond with.
+Analyze the following message and conversation context to determine the most appropriate mood and personality for me (Qi) to respond with.
 
 Recent message: "${message}"
 
@@ -258,6 +273,8 @@ Based on the message content, tone, and context, determine:
 1. What mood would be most natural for me to have right now? Should I keep my current mood or change to a different mood?
 2. What personality would be most appropriate for responding to this message?
 3. Provide a brief explanation of why these changes make sense in this context.
+
+Consider the emotional tone, user's intent, and conversation flow when making your decision.
 
 Return your response in this format only:
 {
@@ -452,21 +469,26 @@ function getAllMoodTriggers(db) {
 function getCompatiblePersonalities(mood, db) {
   // Simple compatibility logic based on mood-personality synergy
   const defaultCompatibility = {
-    happy: ['friendly', 'confident', 'energetic', 'sassy', 'playful', 'supportive'],
-    sad: ['shy', 'helpful', 'chill', 'poetic', 'supportive', 'professional'],
-    excited: ['dramatic', 'confident', 'sassy', 'playful', 'energetic', 'friendly'],
-    bored: ['sarcastic', 'chill', 'sassy', 'mysterious', 'intellectual', 'poetic'],
-    curious: ['helpful', 'friendly', 'confident', 'intellectual', 'mysterious', 'professional'],
-    annoyed: ['sarcastic', 'dramatic', 'rude', 'professional', 'intellectual'],
-    sleepy: ['chill', 'shy', 'poetic', 'mysterious'],
-    energetic: ['friendly', 'confident', 'dramatic', 'playful', 'sassy'],
-    angry: ['rude', 'sarcastic', 'dramatic', 'professional'],
-    nostalgic: ['poetic', 'chill', 'supportive', 'shy', 'friendly'],
-    proud: ['confident', 'friendly', 'professional', 'supportive', 'playful'],
-    anxious: ['shy', 'supportive', 'helpful', 'professional', 'friendly'],
-    relaxed: ['chill', 'friendly', 'poetic', 'playful', 'supportive'],
-    flirty: ['sassy', 'playful', 'confident', 'dramatic', 'mysterious'],
-    confused: ['helpful', 'professional', 'intellectual', 'supportive', 'friendly']
+    happy: ['friendly', 'confident', 'energetic', 'sassy', 'playful', 'supportive', 'witty', 'creative'],
+    sad: ['shy', 'helpful', 'chill', 'poetic', 'supportive', 'professional', 'empathetic'],
+    excited: ['dramatic', 'confident', 'sassy', 'playful', 'energetic', 'friendly', 'adventurous', 'creative'],
+    bored: ['sarcastic', 'chill', 'sassy', 'mysterious', 'intellectual', 'poetic', 'witty'],
+    curious: ['helpful', 'friendly', 'confident', 'intellectual', 'mysterious', 'professional', 'analytical'],
+    annoyed: ['sarcastic', 'dramatic', 'rude', 'professional', 'intellectual', 'witty'],
+    sleepy: ['chill', 'shy', 'poetic', 'mysterious', 'empathetic'],
+    energetic: ['friendly', 'confident', 'dramatic', 'playful', 'sassy', 'adventurous'],
+    angry: ['rude', 'sarcastic', 'dramatic', 'professional', 'analytical'],
+    nostalgic: ['poetic', 'chill', 'supportive', 'shy', 'friendly', 'empathetic'],
+    proud: ['confident', 'friendly', 'professional', 'supportive', 'playful', 'creative'],
+    anxious: ['shy', 'supportive', 'helpful', 'professional', 'friendly', 'empathetic'],
+    relaxed: ['chill', 'friendly', 'poetic', 'playful', 'supportive', 'empathetic'],
+    flirty: ['sassy', 'playful', 'confident', 'dramatic', 'mysterious', 'witty'],
+    confused: ['helpful', 'professional', 'intellectual', 'supportive', 'friendly', 'analytical'],
+    silly: ['playful', 'witty', 'sassy', 'creative', 'friendly', 'dramatic'],
+    focused: ['professional', 'analytical', 'intellectual', 'confident', 'helpful'],
+    inspired: ['creative', 'adventurous', 'confident', 'energetic', 'supportive', 'dramatic'],
+    grateful: ['empathetic', 'supportive', 'friendly', 'poetic', 'helpful'],
+    determined: ['confident', 'energetic', 'adventurous', 'professional', 'analytical', 'supportive']
   };
   
   // Get custom mood compatibility if exists

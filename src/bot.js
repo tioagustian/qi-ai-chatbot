@@ -12,6 +12,8 @@ import { generateGroupIntroduction } from './services/contextService.js';
 import { calculateResponseDelay } from './utils/messageUtils.js';
 // Import API logging service
 import { cleanupOldLogs } from './services/apiLogService.js';
+// Import message batching service
+import { handlePersonalChatMessage, handleTypingUpdate } from './services/messageBatchingService.js';
 
 // Get current directory
 const __filename = fileURLToPath(import.meta.url);
@@ -236,16 +238,22 @@ const startBot = async () => {
       }
     });
 
-    // Handle messages
+    // Handle messages with batching for personal chats
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type === 'notify') {
         for (const message of messages) {
           if (!message.key.fromMe && message.message) {
-            // Process incoming message
-            await processMessage(sock, message);
+            // Use batching service for personal chats, direct processing for groups
+            await handlePersonalChatMessage(sock, message);
           }
         }
       }
+    });
+
+    // Handle typing indicators for message batching
+    sock.ev.on('presence.update', async (update) => {
+      console.log(chalk.blue(`[PRESENCE][${new Date().toISOString()}] Received presence update:`, update));
+      await handleTypingUpdate(sock, update);
     });
 
     // Handle group participants update events (added, removed, promoted, demoted)

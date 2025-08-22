@@ -19,8 +19,513 @@ const MAX_TOPIC_SPECIFIC_MESSAGES = process.env.MAX_TOPIC_SPECIFIC_MESSAGES || 1
 // Import from memoryService
 import { findImagesByDescription } from './memoryService.js';
 
-// Update context with new message
+// Enhanced conversation history structure with better AI context
+const ENHANCED_CONTEXT_METADATA = {
+  // Semantic analysis
+  SEMANTIC_TOPICS: true,
+  EMOTION_ANALYSIS: true,
+  INTENT_DETECTION: true,
+  CONVERSATION_FLOW: true,
+  RELATIONSHIP_TRACKING: true,
+  TEMPORAL_CONTEXT: true,
+  CROSS_REFERENCE_LINKS: true
+};
+
+// Enhanced message structure for better AI understanding
+function createEnhancedMessage(message, sender, content, chatType, metadata = {}) {
+  const timestamp = new Date().toISOString();
+  const messageId = message.key?.id || `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  
+  // Extract semantic information
+  const semanticData = extractSemanticData(content, message);
+  const emotionData = analyzeEmotion(content, message);
+  const intentData = detectIntent(content, message);
+  
+  return {
+    // Core message data
+    id: messageId,
+    sender,
+    name: message.pushName || sender.split('@')[0],
+    content,
+    timestamp,
+    role: sender === process.env.BOT_ID ? 'assistant' : 'user',
+    chatType,
+    
+    // Enhanced metadata for AI understanding
+    metadata: {
+      // Basic metadata
+      hasImage: message.message?.imageMessage || message.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage ? true : false,
+      isReply: message.message?.extendedTextMessage?.contextInfo?.quotedMessage ? true : false,
+      quotedMessageId: message.message?.extendedTextMessage?.contextInfo?.stanzaId || null,
+      
+      // Semantic analysis
+      topics: semanticData.topics,
+      entities: semanticData.entities,
+      keywords: semanticData.keywords,
+      language: semanticData.language,
+      
+      // Emotional context
+      emotion: emotionData.primary,
+      emotionConfidence: emotionData.confidence,
+      emotionalIntensity: emotionData.intensity,
+      sentiment: emotionData.sentiment,
+      
+      // Intent analysis
+      intent: intentData.primary,
+      intentConfidence: intentData.confidence,
+      subIntents: intentData.subIntents,
+      
+      // Conversation flow
+      conversationPhase: determineConversationPhase(content, message),
+      responseType: determineResponseType(content, message),
+      engagementLevel: calculateEngagementLevel(content, message),
+      
+      // Relationship context
+      isDirectAddress: isDirectAddress(content, message),
+      mentionsOthers: extractMentions(content, message),
+      referencesPrevious: extractReferences(content, message),
+      
+      // Temporal context
+      timeOfDay: getTimeOfDay(timestamp),
+      dayOfWeek: getDayOfWeek(timestamp),
+      conversationDuration: calculateConversationDurationSimple(timestamp),
+      
+      // Cross-reference links
+      relatedMessages: [],
+      conversationThread: null,
+      topicContinuation: null,
+      
+      // User behavior patterns
+      typingPattern: extractTypingPattern(message),
+      responseDelay: calculateResponseDelay(message),
+      messageLength: content.length,
+      complexity: calculateMessageComplexity(content),
+      
+      // Contextual relevance
+      relevanceScore: 0.5, // Will be updated by AI analysis
+      contextImportance: 'medium', // high/medium/low
+      requiresFollowUp: false,
+      
+      // Original message data
+      originalMessage: message
+    },
+    
+    // AI-specific context markers
+    aiContext: {
+      // Conversation state
+      conversationState: {
+        topic: semanticData.topics[0] || 'general',
+        mood: emotionData.primary || 'neutral',
+        engagement: 'medium',
+        complexity: 'medium'
+      },
+      
+      // Response guidance
+      responseGuidance: {
+        shouldRespond: true,
+        responseType: 'conversational',
+        tone: 'friendly',
+        length: 'medium',
+        urgency: 'normal'
+      },
+      
+      // Memory triggers
+      memoryTriggers: {
+        userPreferences: extractUserPreferences(content),
+        importantFacts: extractImportantFacts(content),
+        relationshipUpdates: extractRelationshipUpdates(content)
+      }
+    }
+  };
+}
+
+// Extract semantic data from message content
+function extractSemanticData(content, message) {
+  // Basic topic extraction (enhanced version)
+  const topics = extractTopics(content);
+  
+  // Named entity recognition
+  const entities = extractEntities(content);
+  
+  // Keyword extraction
+  const keywords = extractKeywords(content);
+  
+  // Language detection
+  const language = detectLanguage(content);
+  
+  return {
+    topics,
+    entities,
+    keywords,
+    language
+  };
+}
+
+// Extract entities from content
+function extractEntities(content) {
+  const entities = [];
+  
+  // Simple entity extraction patterns
+  const entityPatterns = [
+    // Names (capitalized words)
+    { pattern: /\b[A-Z][a-z]+ [A-Z][a-z]+\b/g, type: 'person' },
+    // Numbers
+    { pattern: /\b\d+\b/g, type: 'number' },
+    // URLs
+    { pattern: /https?:\/\/[^\s]+/g, type: 'url' },
+    // Email addresses
+    { pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g, type: 'email' },
+    // Phone numbers (Indonesian format)
+    { pattern: /\b(\+62|62|0)8[1-9][0-9]{6,9}\b/g, type: 'phone' }
+  ];
+  
+  entityPatterns.forEach(({ pattern, type }) => {
+    const matches = content.match(pattern);
+    if (matches) {
+      matches.forEach(match => {
+        entities.push({ value: match, type });
+      });
+    }
+  });
+  
+  return entities;
+}
+
+// Extract keywords from content
+function extractKeywords(content) {
+  const stopWords = ['dan', 'atau', 'yang', 'dengan', 'untuk', 'dari', 'ke', 'di', 'pada', 'oleh', 'sebagai', 'adalah', 'itu', 'ini', 'saya', 'aku', 'dia', 'mereka', 'kita', 'kami', 'anda', 'kamu'];
+  const words = content.toLowerCase().split(/\s+/);
+  
+  return words.filter(word => 
+    word.length > 2 && 
+    !stopWords.includes(word) && 
+    !/^[0-9]+$/.test(word)
+  ).slice(0, 10); // Limit to 10 keywords
+}
+
+// Detect language of content
+function detectLanguage(content) {
+  // Simple language detection based on common words
+  const indonesianWords = ['yang', 'dengan', 'untuk', 'dari', 'ke', 'di', 'pada', 'oleh', 'sebagai', 'adalah', 'itu', 'ini', 'saya', 'aku', 'dia', 'mereka'];
+  const englishWords = ['the', 'and', 'or', 'with', 'for', 'from', 'to', 'in', 'on', 'by', 'as', 'is', 'that', 'this', 'i', 'you', 'he', 'she', 'they'];
+  
+  const lowerContent = content.toLowerCase();
+  const indonesianCount = indonesianWords.filter(word => lowerContent.includes(word)).length;
+  const englishCount = englishWords.filter(word => lowerContent.includes(word)).length;
+  
+  if (indonesianCount > englishCount) {
+    return 'id';
+  } else if (englishCount > indonesianCount) {
+    return 'en';
+  } else {
+    return 'mixed';
+  }
+}
+
+// Analyze emotional content
+function analyzeEmotion(content, message) {
+  // Simple emotion detection based on keywords and patterns
+  const emotionKeywords = {
+    happy: ['senang', 'bahagia', 'gembira', 'suka', 'bagus', 'mantap', 'keren'],
+    sad: ['sedih', 'kecewa', 'murung', 'galau', 'stress'],
+    angry: ['marah', 'kesal', 'jengkel', 'sebel'],
+    excited: ['asyik', 'seru', 'wow', 'amazing', 'incredible'],
+    curious: ['penasaran', 'mau tau', 'gimana', 'apa'],
+    neutral: ['ok', 'baik', 'ya', 'tidak']
+  };
+  
+  let primaryEmotion = 'neutral';
+  let confidence = 0.5;
+  let intensity = 0.5;
+  let sentiment = 'neutral';
+  
+  const lowerContent = content.toLowerCase();
+  
+  // Check for emotion keywords
+  for (const [emotion, keywords] of Object.entries(emotionKeywords)) {
+    const matches = keywords.filter(keyword => lowerContent.includes(keyword));
+    if (matches.length > 0) {
+      primaryEmotion = emotion;
+      confidence = Math.min(0.9, 0.5 + (matches.length * 0.1));
+      intensity = Math.min(1.0, 0.5 + (matches.length * 0.15));
+      break;
+    }
+  }
+  
+  // Sentiment analysis
+  const positiveWords = ['bagus', 'senang', 'suka', 'mantap', 'keren', 'asyik'];
+  const negativeWords = ['buruk', 'sedih', 'tidak suka', 'jelek', 'sial'];
+  
+  const positiveCount = positiveWords.filter(word => lowerContent.includes(word)).length;
+  const negativeCount = negativeWords.filter(word => lowerContent.includes(word)).length;
+  
+  if (positiveCount > negativeCount) {
+    sentiment = 'positive';
+  } else if (negativeCount > positiveCount) {
+    sentiment = 'negative';
+  }
+  
+  return {
+    primary: primaryEmotion,
+    confidence,
+    intensity,
+    sentiment
+  };
+}
+
+// Detect user intent
+function detectIntent(content, message) {
+  const lowerContent = content.toLowerCase();
+  
+  // Intent patterns
+  const intentPatterns = {
+    question: {
+      patterns: ['apa', 'siapa', 'kapan', 'dimana', 'kenapa', 'bagaimana', 'berapa', '?'],
+      confidence: 0.8
+    },
+    greeting: {
+      patterns: ['halo', 'hai', 'hi', 'hello', 'selamat pagi', 'selamat siang', 'selamat malam'],
+      confidence: 0.9
+    },
+    farewell: {
+      patterns: ['bye', 'selamat tinggal', 'sampai jumpa', 'dadah'],
+      confidence: 0.9
+    },
+    request: {
+      patterns: ['tolong', 'bisa', 'mohon', 'minta'],
+      confidence: 0.7
+    },
+    statement: {
+      patterns: ['saya', 'aku', 'dia', 'mereka'],
+      confidence: 0.6
+    }
+  };
+  
+  let primaryIntent = 'statement';
+  let confidence = 0.5;
+  let subIntents = [];
+  
+  for (const [intent, data] of Object.entries(intentPatterns)) {
+    const matches = data.patterns.filter(pattern => lowerContent.includes(pattern));
+    if (matches.length > 0) {
+      primaryIntent = intent;
+      confidence = data.confidence;
+      subIntents = matches;
+      break;
+    }
+  }
+  
+  return {
+    primary: primaryIntent,
+    confidence,
+    subIntents
+  };
+}
+
+// Determine conversation phase
+function determineConversationPhase(content, message) {
+  const lowerContent = content.toLowerCase();
+  
+  if (lowerContent.includes('halo') || lowerContent.includes('hai')) {
+    return 'greeting';
+  } else if (lowerContent.includes('bye') || lowerContent.includes('selamat tinggal')) {
+    return 'farewell';
+  } else if (lowerContent.includes('?')) {
+    return 'question';
+  } else if (lowerContent.includes('terima kasih') || lowerContent.includes('thanks')) {
+    return 'gratitude';
+  } else {
+    return 'conversation';
+  }
+}
+
+// Determine response type needed
+function determineResponseType(content, message) {
+  const lowerContent = content.toLowerCase();
+  
+  if (lowerContent.includes('?')) {
+    return 'answer';
+  } else if (lowerContent.includes('halo') || lowerContent.includes('hai')) {
+    return 'greeting';
+  } else if (lowerContent.includes('bye')) {
+    return 'farewell';
+  } else {
+    return 'acknowledgment';
+  }
+}
+
+// Calculate engagement level
+function calculateEngagementLevel(content, message) {
+  const length = content.length;
+  const hasQuestion = content.includes('?');
+  const hasEmotion = /[!?]/.test(content);
+  const hasMention = content.includes('@') || content.includes('Qi');
+  
+  let score = 0.5;
+  
+  if (length > 50) score += 0.2;
+  if (hasQuestion) score += 0.2;
+  if (hasEmotion) score += 0.1;
+  if (hasMention) score += 0.2;
+  
+  if (score > 0.8) return 'high';
+  if (score > 0.6) return 'medium';
+  return 'low';
+}
+
+// Check if message is direct address
+function isDirectAddress(content, message) {
+  const lowerContent = content.toLowerCase();
+  return lowerContent.includes('qi') || lowerContent.includes('@') || 
+         (message.message?.extendedTextMessage?.contextInfo?.quotedMessage ? true : false);
+}
+
+// Extract mentions from content
+function extractMentions(content, message) {
+  const mentions = [];
+  const mentionPattern = /@(\w+)/g;
+  let match;
+  
+  while ((match = mentionPattern.exec(content)) !== null) {
+    mentions.push(match[1]);
+  }
+  
+  return mentions;
+}
+
+// Extract references to previous messages
+function extractReferences(content, message) {
+  const references = [];
+  const referencePatterns = [
+    /itu tadi/i,
+    /sebelumnya/i,
+    /yang kemarin/i,
+    /yang dulu/i
+  ];
+  
+  referencePatterns.forEach(pattern => {
+    if (pattern.test(content)) {
+      references.push('previous_message');
+    }
+  });
+  
+  return references;
+}
+
+// Get time context
+function getTimeOfDay(timestamp) {
+  const hour = new Date(timestamp).getHours();
+  if (hour >= 5 && hour < 12) return 'morning';
+  if (hour >= 12 && hour < 17) return 'afternoon';
+  if (hour >= 17 && hour < 21) return 'evening';
+  return 'night';
+}
+
+function getDayOfWeek(timestamp) {
+  const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  return days[new Date(timestamp).getDay()];
+}
+
+// Calculate conversation duration (simple version)
+function calculateConversationDurationSimple(timestamp) {
+  // This would need to be calculated based on conversation start time
+  return 'ongoing';
+}
+
+// Extract typing patterns
+function extractTypingPattern(message) {
+  // This would need to be implemented based on WhatsApp typing indicators
+  return 'normal';
+}
+
+// Calculate response delay
+function calculateResponseDelay(message) {
+  // This would need to be calculated based on previous message timestamps
+  return 'normal';
+}
+
+// Calculate message complexity
+function calculateMessageComplexity(content) {
+  const words = content.split(' ').length;
+  const sentences = content.split(/[.!?]+/).length;
+  const avgWordLength = content.replace(/\s/g, '').length / words;
+  
+  let complexity = 'simple';
+  if (words > 20 || sentences > 3 || avgWordLength > 6) {
+    complexity = 'complex';
+  } else if (words > 10 || sentences > 2) {
+    complexity = 'medium';
+  }
+  
+  return complexity;
+}
+
+// Extract user preferences
+function extractUserPreferences(content) {
+  const preferences = [];
+  const preferencePatterns = [
+    /suka\s+(\w+)/i,
+    /tidak suka\s+(\w+)/i,
+    /favorit\s+(\w+)/i
+  ];
+  
+  preferencePatterns.forEach(pattern => {
+    const match = content.match(pattern);
+    if (match) {
+      preferences.push(match[1]);
+    }
+  });
+  
+  return preferences;
+}
+
+// Extract important facts
+function extractImportantFacts(content) {
+  const facts = [];
+  const factPatterns = [
+    /saya\s+(\w+)/i,
+    /aku\s+(\w+)/i,
+    /nama\s+(\w+)/i,
+    /umur\s+(\d+)/i
+  ];
+  
+  factPatterns.forEach(pattern => {
+    const match = content.match(pattern);
+    if (match) {
+      facts.push(match[0]);
+    }
+  });
+  
+  return facts;
+}
+
+// Extract relationship updates
+function extractRelationshipUpdates(content) {
+  const updates = [];
+  const relationshipPatterns = [
+    /teman/i,
+    /keluarga/i,
+    /pacar/i,
+    /suami/i,
+    /istri/i
+  ];
+  
+  relationshipPatterns.forEach(pattern => {
+    if (pattern.test(content)) {
+      updates.push(pattern.source);
+    }
+  });
+  
+  return updates;
+}
+
+// Update context with new message (legacy function - now uses enhanced version)
 async function updateContext(db, chatId, sender, content, message, sock) {
+  return await updateEnhancedContext(db, chatId, sender, content, message, sock);
+}
+
+// Enhanced context update function
+async function updateEnhancedContext(db, chatId, sender, content, message, sock) {
   try {
     // Get chat type (group or private)
     const isGroup = chatId.endsWith('@g.us');
@@ -32,7 +537,6 @@ async function updateContext(db, chatId, sender, content, message, sock) {
     // Try to get the group name from the message if available
     if (isGroup && message.key && message.key.remoteJid) {
       if (message.pushName) {
-        // This might be the group name in some versions of the API
         chatName = message.pushName;
       }
       
@@ -41,10 +545,8 @@ async function updateContext(db, chatId, sender, content, message, sock) {
           message.message.extendedTextMessage && 
           message.message.extendedTextMessage.contextInfo &&
           message.message.extendedTextMessage.contextInfo.participant) {
-        // Might contain group name or chat info
         if (message.message.extendedTextMessage.contextInfo.quotedMessage &&
             message.message.extendedTextMessage.contextInfo.quotedMessage.conversation) {
-          // Sometimes group name is here
           chatName = message.message.extendedTextMessage.contextInfo.quotedMessage.conversation;
         }
       }
@@ -59,20 +561,36 @@ async function updateContext(db, chatId, sender, content, message, sock) {
         chatType: chatType,
         chatName: chatName,
         hasIntroduced: false,
-        lastIntroduction: null
+        lastIntroduction: null,
+        // Enhanced conversation metadata
+        conversationMetadata: {
+          startTime: new Date().toISOString(),
+          totalMessages: 0,
+          activeTopics: [],
+          conversationMood: 'neutral',
+          engagementLevel: 'medium',
+          conversationPhase: 'ongoing',
+          lastTopicChange: null,
+          participantEmotions: {},
+          conversationThreads: []
+        }
       };
     } else {
       // Update the chat name if needed
       if (isGroup) {
-        const groupInfo = await sock.groupMetadata(chatId);
-        db.data.conversations[chatId].chatName = groupInfo.subject;
+        try {
+          const groupInfo = await sock.groupMetadata(chatId);
+          db.data.conversations[chatId].chatName = groupInfo.subject;
+        } catch (error) {
+          console.log('Could not fetch group metadata:', error.message);
+        }
       }
     }
     
     // Get user name if available (from pushName)
     const userName = message.pushName || sender.split('@')[0];
     
-    // Update participants info
+    // Update participants info with enhanced data
     if (!db.data.conversations[chatId].participants[sender]) {
       db.data.conversations[chatId].participants[sender] = {
         id: sender,
@@ -80,7 +598,17 @@ async function updateContext(db, chatId, sender, content, message, sock) {
         messageCount: 0,
         firstSeen: new Date().toISOString(),
         lastMessage: content,
-        lastActive: new Date().toISOString()
+        lastActive: new Date().toISOString(),
+        // Enhanced participant data
+        participantMetadata: {
+          preferredTopics: [],
+          communicationStyle: 'neutral',
+          engagementPattern: 'medium',
+          emotionalTendency: 'neutral',
+          responseTime: 'normal',
+          messageComplexity: 'medium',
+          interactionFrequency: 'normal'
+        }
       };
     } else {
       // Update participant's activity
@@ -96,25 +624,56 @@ async function updateContext(db, chatId, sender, content, message, sock) {
     // Increment message count for this participant
     db.data.conversations[chatId].participants[sender].messageCount++;
     
-    // Add message to conversation history
-    const contextMessage = {
-      id: message.key.id,
-      sender,
-      name: userName,
-      content,
-      timestamp: new Date().toISOString(),
-      role: sender === process.env.BOT_ID ? 'assistant' : 'user',
-      chatType: chatType,
-      // Add metadata for better context tracking
-      metadata: {
-        hasImage: message.message?.imageMessage || message.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage ? true : false,
-        isReply: message.message?.extendedTextMessage?.contextInfo?.quotedMessage ? true : false,
-        quotedMessageId: message.message?.extendedTextMessage?.contextInfo?.stanzaId || null,
-        topics: extractTopics(content)
-      }
-    };
+    // Create enhanced message with better AI context
+    let enhancedMessage;
+    try {
+      enhancedMessage = createEnhancedMessage(message, sender, content, chatType);
+    } catch (error) {
+      console.error('Error creating enhanced message:', error);
+      // Fallback to basic message structure
+      enhancedMessage = {
+        id: message.key?.id || `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        sender,
+        name: message.pushName || sender.split('@')[0],
+        content,
+        timestamp: new Date().toISOString(),
+        role: sender === process.env.BOT_ID ? 'assistant' : 'user',
+        chatType,
+        metadata: {
+          hasImage: false,
+          isReply: false,
+          topics: [],
+          entities: [],
+          keywords: [],
+          language: 'unknown',
+          emotion: 'neutral',
+          emotionConfidence: 0.5,
+          sentiment: 'neutral',
+          intent: 'general',
+          intentConfidence: 0.5,
+          conversationPhase: 'ongoing',
+          responseType: 'conversational',
+          engagementLevel: 'medium',
+          isDirectAddress: false,
+          mentionsOthers: [],
+          referencesPrevious: [],
+          timeOfDay: 'unknown',
+          dayOfWeek: 'unknown',
+          conversationDuration: 'ongoing',
+          messageLength: content.length,
+          complexity: 'medium',
+          relevanceScore: 0.5,
+          contextImportance: 'medium',
+          requiresFollowUp: false
+        }
+      };
+    }
     
-    db.data.conversations[chatId].messages.push(contextMessage);
+    // Add message to conversation history
+    db.data.conversations[chatId].messages.push(enhancedMessage);
+    
+    // Update conversation metadata
+    updateConversationMetadata(db.data.conversations[chatId], enhancedMessage);
     
     // Limit the size of the conversation history
     if (db.data.conversations[chatId].messages.length > MAX_CONTEXT_MESSAGES) {
@@ -125,11 +684,15 @@ async function updateContext(db, chatId, sender, content, message, sock) {
     db.data.conversations[chatId].lastActive = new Date().toISOString();
     
     // Also add to global context memory for cross-chat references
-    // This is useful for the bot to remember interactions across different chats
     const globalContextMessage = {
-      ...contextMessage,
+      ...enhancedMessage,
       chatId
     };
+    
+    // Initialize contextMemory if it doesn't exist
+    if (!db.data.contextMemory) {
+      db.data.contextMemory = [];
+    }
     
     db.data.contextMemory.push(globalContextMessage);
     
@@ -138,7 +701,7 @@ async function updateContext(db, chatId, sender, content, message, sock) {
       db.data.contextMemory = db.data.contextMemory.slice(-200);
     }
     
-    // Update global participants registry
+    // Update global participants registry with enhanced data
     if (!db.data.participantsRegistry) {
       db.data.participantsRegistry = {};
     }
@@ -151,7 +714,19 @@ async function updateContext(db, chatId, sender, content, message, sock) {
         firstSeen: new Date().toISOString(),
         lastActive: new Date().toISOString(),
         lastMessage: content,
-        totalMessages: 1
+        totalMessages: 1,
+        // Enhanced global participant data
+        globalMetadata: {
+          crossChatTopics: [],
+          overallEngagement: 'medium',
+          preferredChatTypes: [chatType],
+          communicationPatterns: {
+            messageLength: 'medium',
+            responseTime: 'normal',
+            topicDiversity: 'medium',
+            emotionalExpression: 'neutral'
+          }
+        }
       };
     } else {
       // Update participant info
@@ -168,12 +743,96 @@ async function updateContext(db, chatId, sender, content, message, sock) {
       if (!db.data.participantsRegistry[sender].chats.includes(chatId)) {
         db.data.participantsRegistry[sender].chats.push(chatId);
       }
+      
+      // Update global metadata
+      updateGlobalParticipantMetadata(db.data.participantsRegistry[sender], enhancedMessage);
     }
     
     // Save changes
     await db.write();
   } catch (error) {
-    console.error('Error updating context:', error);
+    console.error('Error updating enhanced context:', error);
+  }
+}
+
+// Update conversation metadata
+function updateConversationMetadata(conversation, message) {
+  // Initialize conversationMetadata if it doesn't exist (for backward compatibility)
+  if (!conversation.conversationMetadata) {
+    conversation.conversationMetadata = {
+      startTime: conversation.lastActive || new Date().toISOString(),
+      totalMessages: 0,
+      activeTopics: [],
+      conversationMood: 'neutral',
+      engagementLevel: 'medium',
+      conversationPhase: 'ongoing',
+      lastTopicChange: null,
+      participantEmotions: {},
+      conversationThreads: []
+    };
+  }
+  
+  conversation.conversationMetadata.totalMessages++;
+  
+  // Update active topics
+  if (message.metadata && message.metadata.topics && message.metadata.topics.length > 0) {
+    message.metadata.topics.forEach(topic => {
+      if (!conversation.conversationMetadata.activeTopics.includes(topic)) {
+        conversation.conversationMetadata.activeTopics.push(topic);
+      }
+    });
+  }
+  
+  // Update conversation mood
+  if (message.metadata && message.metadata.emotion && message.metadata.emotion !== 'neutral') {
+    conversation.conversationMetadata.conversationMood = message.metadata.emotion;
+  }
+  
+  // Update engagement level
+  if (message.metadata && message.metadata.engagementLevel) {
+    conversation.conversationMetadata.engagementLevel = message.metadata.engagementLevel;
+  }
+  
+  // Update participant emotions
+  if (message.metadata && message.sender) {
+    conversation.conversationMetadata.participantEmotions[message.sender] = {
+      emotion: message.metadata.emotion || 'neutral',
+      confidence: message.metadata.emotionConfidence || 0.5,
+      timestamp: message.timestamp || new Date().toISOString()
+    };
+  }
+}
+
+// Update global participant metadata
+function updateGlobalParticipantMetadata(participant, message) {
+  // Initialize globalMetadata if it doesn't exist (for backward compatibility)
+  if (!participant.globalMetadata) {
+    participant.globalMetadata = {
+      crossChatTopics: [],
+      overallEngagement: 'medium',
+      preferredChatTypes: [],
+      communicationPatterns: {
+        messageLength: 'medium',
+        responseTime: 'normal',
+        topicDiversity: 'medium',
+        emotionalExpression: 'neutral'
+      }
+    };
+  }
+  
+  // Update cross-chat topics
+  if (message.metadata && message.metadata.topics && message.metadata.topics.length > 0) {
+    message.metadata.topics.forEach(topic => {
+      if (!participant.globalMetadata.crossChatTopics.includes(topic)) {
+        participant.globalMetadata.crossChatTopics.push(topic);
+      }
+    });
+  }
+  
+  // Update communication patterns
+  if (message.metadata) {
+    participant.globalMetadata.communicationPatterns.messageLength = message.metadata.messageLength > 50 ? 'long' : 'short';
+    participant.globalMetadata.communicationPatterns.emotionalExpression = message.metadata.emotion || 'neutral';
   }
 }
 
@@ -480,8 +1139,9 @@ async function getRelevantContext(db, chatId, message, sock) {
         // Add marker for cross-chat context
         recentMessages.push({
           role: 'system',
-          content: 'Berikut beberapa informasi dari percakapan pribadi yang relevan:',
-          name: 'system'
+          content: 'Here is some relevant information from private conversations:',
+          name: 'system',
+          timestamp: new Date().toISOString()
         });
         
         // Add cross-chat context
@@ -498,8 +1158,9 @@ async function getRelevantContext(db, chatId, message, sock) {
       
       contextPrefix.push({
         role: 'system',
-        content: `Ini adalah chat grup bernama "${groupInfo.name}". Terdapat ${groupInfo.memberCount} anggota dalam grup ini, diantaranya: ${groupInfo.recentActiveMembers}.`,
-        name: 'system'
+        content: `This is a group chat named "${groupInfo.name}". There are ${groupInfo.memberCount} members in this group, including: ${groupInfo.recentActiveMembers}.`,
+        name: 'system',
+        timestamp: new Date().toISOString()
       });
     } else {
       // It's a private chat
@@ -511,15 +1172,16 @@ async function getRelevantContext(db, chatId, message, sock) {
         
         contextPrefix.push({
           role: 'system',
-          content: `Ini adalah chat pribadi dengan ${participant.name}. Mereka telah mengirim ${participant.messageCount} pesan dalam percakapan ini.`,
-          name: 'system'
+          content: `This is a private chat with ${participant.name}. They have sent ${participant.messageCount} messages in this conversation.`,
+          name: 'system',
+          timestamp: new Date().toISOString()
         });
         
         // Check if this person is also in groups with the bot
         if (db.data.participantsRegistry && db.data.participantsRegistry[participant.id]) {
           const participantGroups = db.data.participantsRegistry[participant.id].chats
             .filter(id => id !== chatId && id.endsWith('@g.us'))
-            .map(id => db.data.conversations[id]?.chatName || 'Grup')
+            .map(id => db.data.conversations[id]?.chatName || 'Group')
             .slice(0, 3);
           
           if (participantGroups.length > 0) {
@@ -527,8 +1189,9 @@ async function getRelevantContext(db, chatId, message, sock) {
             
             contextPrefix.push({
               role: 'system',
-              content: `${participant.name} juga anggota grup: ${participantGroups.join(', ')}`,
-              name: 'system'
+              content: `${participant.name} is also a member of groups: ${participantGroups.join(', ')}`,
+              name: 'system',
+              timestamp: new Date().toISOString()
             });
           }
         }
@@ -2155,9 +2818,374 @@ function findUserIdsByName(db, nameOrNickname) {
   return results;
 }
 
+// Enhanced conversation history formatter for better AI understanding
+function formatEnhancedConversationHistory(messages, chatType, participants = {}) {
+  if (!messages || messages.length === 0) {
+    return {
+      summary: "No conversation history available",
+      messages: [],
+      context: {}
+    };
+  }
+
+  // Analyze conversation patterns
+  const conversationAnalysis = analyzeConversationPatterns(messages);
+  
+  // Create enhanced message format
+  const enhancedMessages = messages.map((msg, index) => {
+    const enhancedMsg = {
+      // Core message info
+      role: msg.role,
+      name: msg.name || msg.sender?.split('@')[0] || 'Unknown',
+      content: msg.content,
+      timestamp: msg.timestamp,
+      
+      // Enhanced context
+      messageIndex: index + 1,
+      totalMessages: messages.length,
+      
+      // Semantic analysis (if available)
+      topics: msg.metadata?.topics || [],
+      emotion: msg.metadata?.emotion || 'neutral',
+      intent: msg.metadata?.intent || 'statement',
+      engagement: msg.metadata?.engagementLevel || 'medium',
+      
+      // Conversation flow
+      conversationPhase: msg.metadata?.conversationPhase || 'conversation',
+      isDirectAddress: msg.metadata?.isDirectAddress || false,
+      mentionsOthers: msg.metadata?.mentionsOthers || [],
+      referencesPrevious: msg.metadata?.referencesPrevious || [],
+      
+      // Temporal context
+      timeOfDay: msg.metadata?.timeOfDay || 'unknown',
+      dayOfWeek: msg.metadata?.dayOfWeek || 'unknown',
+      
+      // Message characteristics
+      complexity: msg.metadata?.complexity || 'medium',
+      messageLength: msg.content?.length || 0,
+      hasImage: msg.metadata?.hasImage || false,
+      isReply: msg.metadata?.isReply || false
+    };
+    
+    return enhancedMsg;
+  });
+
+  // Create conversation summary
+  const conversationSummary = createConversationSummary(messages, conversationAnalysis, participants);
+  
+  // Create context metadata
+  const contextMetadata = createContextMetadata(messages, chatType, participants);
+
+  return {
+    summary: conversationSummary,
+    messages: enhancedMessages,
+    context: contextMetadata,
+    analysis: conversationAnalysis
+  };
+}
+
+// Analyze conversation patterns
+function analyzeConversationPatterns(messages) {
+  const analysis = {
+    totalMessages: messages.length,
+    participants: {},
+    topics: {},
+    emotions: {},
+    conversationFlow: [],
+    engagementTrend: [],
+    responsePatterns: {},
+    conversationPhases: {}
+  };
+
+  // Analyze each message
+  messages.forEach((msg, index) => {
+    const sender = msg.sender || msg.name;
+    
+    // Participant analysis
+    if (!analysis.participants[sender]) {
+      analysis.participants[sender] = {
+        messageCount: 0,
+        emotions: [],
+        topics: [],
+        engagement: [],
+        responseTime: []
+      };
+    }
+    
+    analysis.participants[sender].messageCount++;
+    
+    // Topic analysis
+    if (msg.metadata?.topics) {
+      msg.metadata.topics.forEach(topic => {
+        analysis.topics[topic] = (analysis.topics[topic] || 0) + 1;
+        analysis.participants[sender].topics.push(topic);
+      });
+    }
+    
+    // Emotion analysis
+    if (msg.metadata?.emotion) {
+      analysis.emotions[msg.metadata.emotion] = (analysis.emotions[msg.metadata.emotion] || 0) + 1;
+      analysis.participants[sender].emotions.push(msg.metadata.emotion);
+    }
+    
+    // Engagement analysis
+    if (msg.metadata?.engagementLevel) {
+      analysis.participants[sender].engagement.push(msg.metadata.engagementLevel);
+    }
+    
+    // Conversation flow
+    analysis.conversationFlow.push({
+      index,
+      sender,
+      phase: msg.metadata?.conversationPhase || 'conversation',
+      emotion: msg.metadata?.emotion || 'neutral',
+      engagement: msg.metadata?.engagementLevel || 'medium',
+      isDirectAddress: msg.metadata?.isDirectAddress || false
+    });
+    
+    // Conversation phases
+    const phase = msg.metadata?.conversationPhase || 'conversation';
+    analysis.conversationPhases[phase] = (analysis.conversationPhases[phase] || 0) + 1;
+  });
+
+  return analysis;
+}
+
+// Create conversation summary
+function createConversationSummary(messages, analysis, participants) {
+  const totalMessages = messages.length;
+  const uniqueParticipants = Object.keys(analysis.participants).length;
+  const duration = calculateConversationDurationFromMessages(messages);
+  
+  // Get dominant topics
+  const topTopics = Object.entries(analysis.topics)
+    .sort(([,a], [,b]) => b - a)
+    .slice(0, 3)
+    .map(([topic, count]) => `${topic} (${count} mentions)`);
+  
+  // Get dominant emotions
+  const topEmotions = Object.entries(analysis.emotions)
+    .sort(([,a], [,b]) => b - a)
+    .slice(0, 3)
+    .map(([emotion, count]) => `${emotion} (${count} times)`);
+  
+  // Get conversation phases
+  const phases = Object.entries(analysis.conversationPhases)
+    .map(([phase, count]) => `${phase}: ${count} messages`)
+    .join(', ');
+  
+  return {
+    overview: `Conversation with ${totalMessages} messages involving ${uniqueParticipants} participants over ${duration}`,
+    topics: topTopics.length > 0 ? `Main topics: ${topTopics.join(', ')}` : 'No specific topics identified',
+    emotions: topEmotions.length > 0 ? `Emotional tone: ${topEmotions.join(', ')}` : 'Neutral emotional tone',
+    phases: `Conversation phases: ${phases}`,
+    engagement: `Overall engagement level: ${calculateOverallEngagement(analysis)}`
+  };
+}
+
+// Create context metadata
+function createContextMetadata(messages, chatType, participants) {
+  const lastMessage = messages[messages.length - 1];
+  const firstMessage = messages[0];
+  
+  return {
+    chatType,
+    participantCount: Object.keys(participants).length,
+    conversationStart: firstMessage?.timestamp,
+    conversationEnd: lastMessage?.timestamp,
+    duration: calculateConversationDurationFromMessages(messages),
+    currentPhase: lastMessage?.metadata?.conversationPhase || 'conversation',
+    currentEmotion: lastMessage?.metadata?.emotion || 'neutral',
+    currentEngagement: lastMessage?.metadata?.engagementLevel || 'medium',
+    activeTopics: extractActiveTopics(messages.slice(-5)), // Last 5 messages
+    recentEmotions: extractRecentEmotions(messages.slice(-5)),
+    conversationThread: identifyConversationThread(messages),
+    requiresResponse: lastMessage?.metadata?.intent === 'question' || lastMessage?.metadata?.isDirectAddress
+  };
+}
+
+// Helper functions for conversation analysis
+function calculateConversationDurationFromMessages(messages) {
+  if (messages.length < 2) return 'ongoing';
+  
+  const startTime = new Date(messages[0].timestamp);
+  const endTime = new Date(messages[messages.length - 1].timestamp);
+  const durationMs = endTime - startTime;
+  
+  const minutes = Math.floor(durationMs / (1000 * 60));
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  
+  if (days > 0) return `${days} day${days > 1 ? 's' : ''}`;
+  if (hours > 0) return `${hours} hour${hours > 1 ? 's' : ''}`;
+  if (minutes > 0) return `${minutes} minute${minutes > 1 ? 's' : ''}`;
+  return 'less than a minute';
+}
+
+function calculateOverallEngagement(analysis) {
+  const engagementLevels = Object.values(analysis.participants)
+    .flatMap(p => p.engagement)
+    .filter(Boolean);
+  
+  if (engagementLevels.length === 0) return 'unknown';
+  
+  const engagementScores = engagementLevels.map(level => {
+    switch (level) {
+      case 'high': return 3;
+      case 'medium': return 2;
+      case 'low': return 1;
+      default: return 2;
+    }
+  });
+  
+  const averageScore = engagementScores.reduce((a, b) => a + b, 0) / engagementScores.length;
+  
+  if (averageScore >= 2.5) return 'high';
+  if (averageScore >= 1.5) return 'medium';
+  return 'low';
+}
+
+function extractActiveTopics(messages) {
+  const topics = {};
+  messages.forEach(msg => {
+    if (msg.metadata?.topics) {
+      msg.metadata.topics.forEach(topic => {
+        topics[topic] = (topics[topic] || 0) + 1;
+      });
+    }
+  });
+  
+  return Object.entries(topics)
+    .sort(([,a], [,b]) => b - a)
+    .slice(0, 3)
+    .map(([topic]) => topic);
+}
+
+function extractRecentEmotions(messages) {
+  const emotions = messages
+    .map(msg => msg.metadata?.emotion)
+    .filter(Boolean);
+  
+  return emotions.slice(-3); // Last 3 emotions
+}
+
+function identifyConversationThread(messages) {
+  // Identify if there's a continuous thread of conversation
+  const recentMessages = messages.slice(-3);
+  const hasCommonTopic = recentMessages.every(msg => 
+    msg.metadata?.topics && msg.metadata.topics.length > 0
+  );
+  
+  if (hasCommonTopic) {
+    const commonTopics = recentMessages
+      .flatMap(msg => msg.metadata.topics)
+      .filter((topic, index, arr) => arr.indexOf(topic) === index);
+    
+    return commonTopics.slice(0, 2).join(', ');
+  }
+  
+  return null;
+}
+
+// Enhanced context retrieval with better formatting
+async function getEnhancedRelevantContext(db, chatId, message, sock) {
+  try {
+    console.log(`[ENHANCED_CONTEXT] Getting enhanced context for chat: ${chatId}`);
+    
+    if (!db.data.conversations[chatId]) {
+      console.log(`[ENHANCED_CONTEXT] No conversation found for chat: ${chatId}`);
+      return {
+        summary: "No conversation history available",
+        messages: [],
+        context: {}
+      };
+    }
+    
+    // Get chat type and participants
+    const isGroup = chatId.endsWith('@g.us');
+    const chatType = isGroup ? 'group' : 'private';
+    const participants = db.data.conversations[chatId].participants || {};
+    
+    // Get all messages from this chat
+    const chatMessages = db.data.conversations[chatId].messages;
+    console.log(`[ENHANCED_CONTEXT] Total messages in conversation: ${chatMessages.length}`);
+    
+    // Extract topics from current message to find relevant past messages
+    const messageTopics = message ? extractTopics(message) : [];
+    console.log(`[ENHANCED_CONTEXT] Current message topics: ${messageTopics.join(', ')}`);
+    
+    // Start with recent messages as base context
+    let recentMessages = chatMessages.slice(-MAX_RELEVANT_MESSAGES);
+    
+    // If we have topics, find topic-specific messages to include
+    let topicSpecificMessages = [];
+    if (messageTopics.length > 0) {
+      messageTopics.forEach(topic => {
+        const topicMessages = findTopicSpecificMessages(chatMessages, topic, MAX_TOPIC_SPECIFIC_MESSAGES/2);
+        topicSpecificMessages = [...topicSpecificMessages, ...topicMessages];
+      });
+      
+      // Remove duplicates
+      topicSpecificMessages = [...new Map(topicSpecificMessages.map(msg => [msg.id, msg])).values()];
+      console.log(`[ENHANCED_CONTEXT] Found ${topicSpecificMessages.length} topic-specific messages`);
+    }
+    
+    // Check if this is a reply to a specific message
+    let replyContext = [];
+    if (message && typeof message === 'object' && message.message?.extendedTextMessage?.contextInfo?.stanzaId) {
+      const quotedMsgId = message.message.extendedTextMessage.contextInfo.stanzaId;
+      if (quotedMsgId) {
+        const quotedMsgIndex = chatMessages.findIndex(msg => msg.id === quotedMsgId);
+        if (quotedMsgIndex !== -1) {
+          const contextStart = Math.max(0, quotedMsgIndex - 2);
+          const contextEnd = Math.min(chatMessages.length, quotedMsgIndex + 3);
+          replyContext = chatMessages.slice(contextStart, contextEnd);
+          console.log(`[ENHANCED_CONTEXT] Adding ${replyContext.length} messages as reply context`);
+        }
+      }
+    }
+    
+    // Combine all context sources, prioritizing recent messages
+    let combinedMessages = [...recentMessages];
+    
+    // Add topic-specific and reply context, avoiding duplicates
+    const existingIds = new Set(combinedMessages.map(msg => msg.id));
+    
+    [...topicSpecificMessages, ...replyContext].forEach(msg => {
+      if (!existingIds.has(msg.id)) {
+        combinedMessages.push(msg);
+        existingIds.add(msg.id);
+      }
+    });
+    
+    // Sort by timestamp to maintain conversation flow
+    combinedMessages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    
+    // Limit to maximum context size
+    if (combinedMessages.length > MAX_RELEVANT_MESSAGES) {
+      combinedMessages = combinedMessages.slice(-MAX_RELEVANT_MESSAGES);
+    }
+    
+    console.log(`[ENHANCED_CONTEXT] Taking ${combinedMessages.length} combined relevant messages`);
+    
+    // Format the conversation history with enhanced context
+    const enhancedContext = formatEnhancedConversationHistory(combinedMessages, chatType, participants);
+    
+    return enhancedContext;
+  } catch (error) {
+    console.error('[ENHANCED_CONTEXT] Error getting enhanced context:', error);
+    return {
+      summary: "Error retrieving conversation context",
+      messages: [],
+      context: {}
+    };
+  }
+}
+
 export { 
   updateContext,
   getRelevantContext, 
+  getEnhancedRelevantContext,
   detectCrossChatQuestion,
   getCrossChatContextForQuestion,
   findUserIdsByName,
@@ -2165,5 +3193,8 @@ export {
   shouldIntroduceInGroup,
   generateGroupIntroduction,
   findRelatedMessages,
-  findTopicSpecificMessages
+  findTopicSpecificMessages,
+  formatEnhancedConversationHistory,
+  createEnhancedMessage,
+  updateEnhancedContext
 };

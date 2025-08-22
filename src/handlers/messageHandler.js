@@ -72,14 +72,14 @@ async function processMessage(sock, message) {
     
     const senderName = message.pushName || sender.split('@')[0];
     
-    logger.info(`Received message from ${senderName} in ${chatType} ${groupName}: "${content?.substring(0, 50)}${content?.length > 50 ? '...' : ''}"${containsImage ? ' (contains image)' : ''}`);
-    logger.debug('Message details', { 
-      sender, 
-      chatId, 
-      isGroup, 
-      messageId: message.key.id,
-      containsImage
-    });
+    // Check if this is a batched message
+    const isBatchedMessage = message.batchMetadata && message.batchMetadata.originalMessageCount > 1;
+    
+    if (isBatchedMessage) {
+      logger.info(`Received batched message from ${senderName} in ${chatType} ${groupName}: ${message.batchMetadata.originalMessageCount} messages combined into "${content?.substring(0, 50)}${content?.length > 50 ? '...' : ''}"${containsImage ? ' (contains image)' : ''}`);
+    } else {
+      logger.info(`Received message from ${senderName} in ${chatType} ${groupName}: "${content?.substring(0, 50)}${content?.length > 50 ? '...' : ''}"${containsImage ? ' (contains image)' : ''}`);
+    }
     
     // Add a small natural delay before marking as read (simulating human reading time)
     const messageLength = content?.length || 0;
@@ -174,14 +174,6 @@ async function processMessage(sock, message) {
     // Check if the bot is mentioned in the message
     const isTagged = isTaggedMessage(message, db.data.config.botName);
     
-    logger.debug('Tag detection result', { 
-      isTagged,
-      botId: process.env.BOT_ID,
-      botName: db.data.config.botName,
-      content: content?.substring(0, 50),
-      mentionPattern: `@${process.env.BOT_ID?.split('@')[0]?.split(':')[0] || 'not-set'}`
-    });
-    
     // Check if it's a command (starts with ! or /)
     const commandData = content ? detectCommand(content) : null;
     if (commandData) {
@@ -222,12 +214,16 @@ async function processMessage(sock, message) {
       return;
     }
     
-    // Update conversation context
-    try {
-      logger.debug('Updating conversation context');
-      await updateContext(db, chatId, sender, content || (containsImage ? `[Image with analysis: ${imageAnalysisId}]` : "[Empty message]"), message, sock);
-    } catch (contextError) {
-      logger.error('Error updating context', contextError);
+    // Update conversation context (skip for batched messages as context is already updated in batching service)
+    if (!isBatchedMessage) {
+      try {
+        logger.debug('Updating conversation context');
+        await updateContext(db, chatId, sender, content || (containsImage ? `[Image with analysis: ${imageAnalysisId}]` : "[Empty message]"), message, sock);
+      } catch (contextError) {
+        logger.error('Error updating context', contextError);
+      }
+    } else {
+      logger.debug('Skipping context update for batched message (already handled in batching service)');
     }
     
     // NEW: Extract and process facts after message is stored
@@ -633,10 +629,7 @@ async function processMessage(sock, message) {
         stopTypingInterval = true;
         
         // Debug the AI response
-        logger.debug('AI response generated', { 
-          responseLength: aiResponse.length,
-          responsePreview: aiResponse.substring(0, 50) + (aiResponse.length > 50 ? '...' : '')
-        });
+        logger.debug('AI response generated');
 
         // Calculate dynamic response delay based on message length and complexity
         const isPrivateChat = !isGroup;

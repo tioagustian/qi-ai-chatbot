@@ -127,10 +127,6 @@ function isTaggedMessage(message, botName) {
     const content = extractMessageContent(message);
     if (!content) return false;
     
-    // For debug purposes, log the mentions and content
-    console.log(`[TAG CHECK] Content: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"`);
-    console.log(`[TAG CHECK] Bot ID: ${botId}, Bot Number: ${botNumber}, Base Number: ${baseNumber}, Bot Name: ${botName}`);
-    
     // Check for direct mentions in the message object
     if (message.message?.extendedTextMessage?.contextInfo?.mentionedJid) {
       const mentions = message.message.extendedTextMessage.contextInfo.mentionedJid;

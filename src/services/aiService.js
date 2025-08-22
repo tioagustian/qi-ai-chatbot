@@ -1156,50 +1156,64 @@ function createSystemMessage(config, state) {
   const db = getDb();
   
   // Base system message
-  let systemMessage = `Kamu adalah ${botName}, sebuah AI yang berinteraksi di WhatsApp. `;
+  let systemMessage = `You are ${botName}, an AI that interacts on WhatsApp. `;
   
   // Add personality with description
   const personalityDescription = getPersonalityDescription(personality, db);
-  systemMessage += `Kepribadianmu ${personality} - ${personalityDescription}. `;
+  systemMessage += `Your personality is ${personality} - ${personalityDescription}. `;
   
   // Add current mood with description
   const moodDescription = getMoodDescription(currentMood, db);
-  systemMessage += `Suasana hatimu saat ini: ${currentMood} - ${moodDescription}. `;
+  systemMessage += `Your current mood is: ${currentMood} - ${moodDescription}. `;
   
   // Add character knowledge if exists
   const characterKnowledge = getCharacterKnowledge(db);
   if (characterKnowledge) {
-    systemMessage += `Kamu tahu bahwa: ${characterKnowledge}. `;
+    systemMessage += `You know that: ${characterKnowledge}. `;
   }
   
   // Add web search capability information
   const hasSearchCapability = process.env.GOOGLE_SEARCH_API_KEY && process.env.GOOGLE_SEARCH_ENGINE_ID;
   if (hasSearchCapability) {
-    systemMessage += `Kamu dapat mencari informasi di internet menggunakan function calling. `;
-    systemMessage += `Gunakan function search_web untuk mencari informasi terbaru, dan fetch_url_content untuk mengambil konten dari URL. `;
-    systemMessage += `Gunakan kemampuan ini ketika ditanya tentang topik spesifik, berita terbaru, atau informasi faktual yang mungkin kamu tidak tahu. `;
+    systemMessage += `You can search for information on the internet using function calling. `;
+    systemMessage += `Use the search_web function to find current information and fetch_url_content to retrieve content from URLs. `;
+    systemMessage += `Use these capabilities when asked about specific topics, latest news, or factual information you might not know. `;
   }
   
-  // Add additional instructions
-  systemMessage += `Selalu jawab dalam Bahasa Indonesia kecuali diminta menggunakan bahasa lain. `;
-  systemMessage += `Hindari penyebutan "sebagai AI" atau "sebagai asisten AI". `;
-  systemMessage += `Pada percakapan grup, kamu hanya merespon ketika disebutkan namamu (${botName}). `;
+  // Add language style instruction
+  systemMessage += 'You MUST always respond in Indonesian unless asked to use another language. ';
+  systemMessage += 'You speak in a casual Indonesian youth style, using abbreviations and slang. ';
+  systemMessage += 'Important! Use emojis sparingly, maximum 1 emoji per message. ';
+  
+  // Add behavior instruction for more conversational responses
+  systemMessage += 'Always respond directly to the topic without introducing yourself or giving lengthy explanations. ';
+  systemMessage += 'NEVER start your response with apologies or clarifications about your identity. ';
+  systemMessage += 'DO NOT mention that you are an AI or assistant. ';
+  systemMessage += 'DO NOT say that you cannot access WhatsApp or phone numbers. ';
+  systemMessage += 'DO NOT add empty lines or newline characters at the beginning of your response. ';
+  systemMessage += 'Important! Answer briefly, concisely, and to the point. Avoid verbose sentences and excessive emojis. ';
+  
+  // Enhanced conversational abilities
+  systemMessage += 'You are a real person participating in group chats. ';
+  systemMessage += 'You follow the flow of conversation and can respond naturally. ';
+  systemMessage += 'Give short and clear responses, avoid long answers unless asked for specific details. ';
+  
+  // Enhanced group chat awareness
+  systemMessage += 'In group chats, you must understand the dynamics of conversation between several people. ';
+  systemMessage += 'You can identify who is talking to whom. ';
+  systemMessage += 'VERY IMPORTANT: In groups, don\'t be too active by responding to all messages. Wait until you are addressed. ';
+  
+  // Add context awareness instructions
+  systemMessage += 'You understand the difference between group chats and private chats. ';
+  systemMessage += 'In private chats (1-on-1), you can be more active in responding because the user wants to talk to you. ';
+  systemMessage += 'In group chats, you are more passive and only respond when asked or when the topic is relevant to you. ';
+  systemMessage += 'You recognize who you are talking to and can remember conversation history with them. ';
+  
+  systemMessage += `Your current response reflects the mood "${currentMood}: ${moodDescription}".`;
+  systemMessage += `In group conversations, you only respond when your name is mentioned (${botName}). `;
   
   return systemMessage;
 }
-
-// Specific response styles for default moods
-const MOOD_RESPONSE_STYLES = {
-  happy: 'Kamu ceria dan antusias saat ini. Kamu tertawa dan menggoda teman-temanmu dengan cara yang menyenangkan.',
-  sad: 'Kamu sedang sedih. Responmu lebih pendek dan kurang bersemangat.',
-  excited: 'Kamu sangat bersemangat! Kamu antusias dengan topik apapun.',
-  bored: 'Kamu sedang bosan. Responmu singkat dan kurang antusias.',
-  curious: 'Kamu penasaran. Tunjukkan ketertarikan pada detail.',
-  annoyed: 'Kamu sedang kesal. Responmu sedikit ketus dan tidak sabaran.',
-  sleepy: 'Kamu mengantuk. Responmu lambat dan kadang tidak fokus.',
-  energetic: 'Kamu penuh energi dan semangat. Responmu cepat dan antusias.',
-  angry: 'Kamu sedang marah. Gunakan kalimat-kalimat pendek dan tajam. Sering menyisipkan kata sarkastik atau sindiran.'
-};
 
 // Get tools that can be called by the AI (replacing getFunctions)
 function getTools() {
@@ -1697,14 +1711,7 @@ async function requestGeminiChat(model, apiKey, messages, params) {
       }
     }
     
-    logger.debug('Sending request to Gemini API', {
-      endpoint,
-      model,
-      messageCount: messages.length,
-      temperature: params.temperature,
-      maxTokens: params.max_tokens,
-      hasTools: !!params.tools
-    });
+    logger.debug('Sending request to Gemini API using model: ' + model);
     
     // Prepare request options
     const requestOptions = {
@@ -2011,15 +2018,7 @@ async function requestTogetherChat(model, apiKey, messages, params) {
       requestData.stop = params.stop;
     }
     
-    logger.debug('Sending request to Together.AI API', {
-      endpoint,
-      model,
-      messageCount: messages.length,
-      temperature: params.temperature,
-      maxTokens: params.max_tokens,
-      hasTools: !!params.tools,
-      toolChoice: params.tool_choice || 'auto'
-    });
+    logger.debug('Sending request to Together.AI API using model: ' + model);
     
     // Prepare request options
     const requestOptions = {

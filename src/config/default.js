@@ -10,7 +10,7 @@ const defaultConfig = {
   
   // Mood and personality settings
   personality: 'friendly',
-  moodChangeProbability: 0.15, // 15% chance of random mood change after inactivity
+  moodChangeProbability: 0.25, // 25% chance of random mood change after inactivity
   aiMoodAnalysisEnabled: true, // Enable AI-based mood analysis
   
   // Context and memory settings
