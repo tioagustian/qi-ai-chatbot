@@ -201,7 +201,7 @@ async function processMessage(sock, message) {
           logger.info(`Waiting ${commandResponseDelay}ms before sending command response`);
           await new Promise(resolve => setTimeout(resolve, commandResponseDelay));
           
-          await sock.sendMessage(chatId, { text: response }, { quoted: message });
+          await sock.sendMessage(chatId, { text: response });
           
           // Pause typing after sending response
           await sock.sendPresenceUpdate('paused', chatId);
@@ -428,7 +428,7 @@ async function processMessage(sock, message) {
               logger.warning('Empty image prompt extracted from message');
               await sock.sendMessage(chatId, { 
                 text: 'Maaf, aku perlu tahu gambar apa yang kamu inginkan. Contoh: "Buatkan gambar kucing berwarna hitam"' 
-              }, { quoted: message });
+              });
               return;
             }
             
@@ -516,7 +516,7 @@ async function processMessage(sock, message) {
                 image: imageBuffer,
                 mimetype: generatedImage.mimeType,
                 caption: aiResponse
-              }, { quoted: message });
+              });
               
               logger.success('Generated image sent successfully');
               
@@ -566,7 +566,7 @@ async function processMessage(sock, message) {
               // Send AI response anyway with error message
               await sock.sendMessage(chatId, {
                 text: `${aiResponse}`
-              }, { quoted: message });
+              });
               
               // Still update the context
               try {
@@ -593,7 +593,7 @@ async function processMessage(sock, message) {
             // Send a generic error message
             await sock.sendMessage(chatId, {
               text: `Maaf, terjadi kesalahan tak terduga saat mencoba membuat gambar. Mohon coba lagi nanti ya~`
-            }, { quoted: message });
+            });
             
             return; // End processing here
           }
@@ -698,7 +698,7 @@ async function processMessage(sock, message) {
         }
         
         // Send the response
-        await sock.sendMessage(chatId, { text: aiResponse }, { quoted: message });
+        await sock.sendMessage(chatId, { text: aiResponse });
         logger.success(`Response sent to ${chatId}`);
         // If this was a response to an image, mark the image analysis as shown
         if ((containsImage && isExplicitImageAnalysisRequest) || isPreviousImageQuery) {
@@ -741,7 +741,7 @@ async function processMessage(sock, message) {
           
             await sock.sendMessage(chatId, { 
             text: `Maaf, terjadi kesalahan saat memproses pesan: ${responseError.message}. Coba lagi nanti ya~` 
-            }, { quoted: message });
+            });
         } catch (sendError) {
           logger.error('Error sending error message', sendError);
         }
