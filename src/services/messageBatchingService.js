@@ -58,24 +58,15 @@ function initializeTypingState(chatId) {
 
 /**
  * Handle incoming message for personal chat batching
+ * NOTE: This function should ONLY be called for personal chats (non-group messages)
+ * Group detection is now handled in bot.js before calling this function
  * @param {Object} sock - Socket instance
- * @param {Object} message - Message object
+ * @param {Object} message - Message object (must be from personal chat)
  */
 async function handlePersonalChatMessage(sock, message) {
   const chatId = message.key.remoteJid;
-  const isGroup = chatId.endsWith('@g.us');
   
-  logger.debug(`Processing message for chat ${chatId}, isGroup: ${isGroup}`);
-  
-  // Only apply batching to personal chats
-  if (isGroup) {
-    // For groups, process immediately
-    logger.debug(`Group chat detected, processing immediately`);
-    await processMessage(sock, message);
-    return;
-  }
-  
-  logger.debug(`Personal chat detected, using batching system`);
+  logger.debug(`Processing personal chat message for ${chatId}`);
   
   initializeTypingState(chatId);
   const typingState = typingStates.get(chatId);
@@ -498,8 +489,32 @@ async function forceProcessBatch(sock, chatId) {
   }
 }
 
+/**
+ * TODO: Future dedicated group message handler
+ * This function will handle group messages with group-specific optimizations
+ * @param {Object} sock - Socket instance
+ * @param {Object} message - Message object (must be from group chat)
+ */
+async function handleGroupChatMessage(sock, message) {
+  // TODO: Implement group-specific message handling
+  // Possible features:
+  // - Group-specific response logic
+  // - Member activity tracking
+  // - Group context management
+  // - Anti-spam mechanisms
+  // - Group admin commands
+  
+  const chatId = message.key.remoteJid;
+  logger.debug(`Group message handler not yet implemented for ${chatId}, using direct processing`);
+  
+  // For now, just call processMessage directly
+  const { processMessage } = await import('../handlers/messageHandler.js');
+  await processMessage(sock, message);
+}
+
 export {
   handlePersonalChatMessage,
+  handleGroupChatMessage,
   handleTypingUpdate,
   getBatchStatus,
   forceProcessBatch,

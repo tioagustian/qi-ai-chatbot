@@ -13,7 +13,7 @@ import { calculateResponseDelay } from './utils/messageUtils.js';
 // Import API logging service
 import { cleanupOldLogs } from './services/apiLogService.js';
 // Import message batching service
-import { handlePersonalChatMessage, handleTypingUpdate } from './services/messageBatchingService.js';
+import { handlePersonalChatMessage, handleGroupChatMessage, handleTypingUpdate } from './services/messageBatchingService.js';
 
 // Get current directory
 const __filename = fileURLToPath(import.meta.url);
@@ -238,15 +238,28 @@ const startBot = async () => {
       }
     });
 
-    // Handle messages with batching for personal chats
+    // Handle incoming messages with proper routing
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type === 'notify') {
         for (const message of messages) {
           if (!message.key.fromMe && message.message) {
             // Note: status@broadcast messages are filtered out in messageHandler.js
             // TODO: Add dedicated handler for status@broadcast if status interaction is needed
-            // Use batching service for personal chats, direct processing for groups
-            await handlePersonalChatMessage(sock, message);
+            
+            // Determine chat type and route accordingly
+            const chatId = message.key.remoteJid;
+            const isGroup = chatId.endsWith('@g.us');
+            
+            if (isGroup) {
+              // TODO: Enhance group message handler with group-specific features
+              // Currently uses direct processing without batching
+              console.log(`[ROUTING] Group message detected in ${chatId}, using group handler`);
+              await handleGroupChatMessage(sock, message);
+            } else {
+              // Personal chat - use batching service for better UX
+              console.log(`[ROUTING] Personal chat message detected in ${chatId}, using batching system`);
+              await handlePersonalChatMessage(sock, message);
+            }
           }
         }
       }
