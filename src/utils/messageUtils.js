@@ -318,6 +318,200 @@ function calculateResponseDelay(message, response, options = {}) {
   }
 }
 
+/**
+ * User identity mapping to link group participant IDs with personal chat IDs
+ * Format: { phoneNumber: { personalId, groupId, lastSeen, displayName } }
+ */
+const userIdentityMap = new Map();
+
+/**
+ * Extract phone number from WhatsApp ID (works for both formats)
+ * @param {string} whatsappId - WhatsApp ID in any format
+ * @returns {string|null} - Extracted phone number or null
+ */
+function extractPhoneNumber(whatsappId) {
+  if (!whatsappId) return null;
+  
+  // For personal chat format: "6282111182808@s.whatsapp.net"
+  const personalMatch = whatsappId.match(/^(\d+)@s\.whatsapp\.net$/);
+  if (personalMatch) {
+    return personalMatch[1];
+  }
+  
+  // For group participant format: "275363422859280@lid"
+  const groupMatch = whatsappId.match(/^(\d+)@lid$/);
+  if (groupMatch) {
+    return groupMatch[1];
+  }
+  
+  // For other formats, try to extract any number sequence
+  const generalMatch = whatsappId.match(/^(\d+)@/);
+  if (generalMatch) {
+    return generalMatch[1];
+  }
+  
+  return null;
+}
+
+/**
+ * Get unified user ID based on phone number
+ * @param {string} whatsappId - WhatsApp ID in any format
+ * @returns {string|null} - Unified user ID (phone number) or null
+ */
+function getUnifiedUserId(whatsappId) {
+  return extractPhoneNumber(whatsappId);
+}
+
+/**
+ * Register user identity from message
+ * @param {Object} message - Message object
+ * @param {Object} options - Additional options
+ */
+function registerUserIdentity(message, options = {}) {
+  try {
+    const isGroup = isGroupMessage(message);
+    const displayName = message.pushName || options.displayName || 'Unknown';
+    
+    let whatsappId, chatContext;
+    
+    if (isGroup) {
+      // Group message
+      whatsappId = message.key.participant || message.key.remoteJid;
+      chatContext = 'group';
+    } else {
+      // Personal chat
+      whatsappId = message.key.remoteJid;
+      chatContext = 'personal';
+    }
+    
+    const phoneNumber = extractPhoneNumber(whatsappId);
+    if (!phoneNumber) {
+      console.log(`[USER-ID] Could not extract phone number from: ${whatsappId}`);
+      return;
+    }
+    
+    // Get or create user identity record
+    let userIdentity = userIdentityMap.get(phoneNumber);
+    if (!userIdentity) {
+      userIdentity = {
+        phoneNumber,
+        personalId: null,
+        groupId: null,
+        lastSeen: Date.now(),
+        displayName,
+        firstSeenContext: chatContext,
+        lastSeenContext: chatContext
+      };
+      userIdentityMap.set(phoneNumber, userIdentity);
+      console.log(`[USER-ID] Registered new user identity for phone ${phoneNumber} (${displayName})`);
+    }
+    
+    // Update the appropriate ID field
+    if (isGroup) {
+      if (!userIdentity.groupId) {
+        userIdentity.groupId = whatsappId;
+        console.log(`[USER-ID] Linked group ID ${whatsappId} to phone ${phoneNumber}`);
+      }
+    } else {
+      if (!userIdentity.personalId) {
+        userIdentity.personalId = whatsappId;
+        console.log(`[USER-ID] Linked personal ID ${whatsappId} to phone ${phoneNumber}`);
+      }
+    }
+    
+    // Update common fields
+    userIdentity.lastSeen = Date.now();
+    userIdentity.lastSeenContext = chatContext;
+    userIdentity.displayName = displayName; // Update display name in case it changed
+    
+    // Log the mapping if both IDs are now available
+    if (userIdentity.personalId && userIdentity.groupId) {
+      console.log(`[USER-ID] ✅ Complete identity mapping for ${displayName} (${phoneNumber}):`);
+      console.log(`[USER-ID]   Personal: ${userIdentity.personalId}`);
+      console.log(`[USER-ID]   Group: ${userIdentity.groupId}`);
+    }
+    
+  } catch (error) {
+    console.error('[USER-ID] Error registering user identity:', error);
+  }
+}
+
+/**
+ * Get complete user identity by any WhatsApp ID
+ * @param {string} whatsappId - WhatsApp ID in any format
+ * @returns {Object|null} - Complete user identity or null
+ */
+function getUserIdentity(whatsappId) {
+  const phoneNumber = extractPhoneNumber(whatsappId);
+  if (!phoneNumber) return null;
+  
+  return userIdentityMap.get(phoneNumber) || null;
+}
+
+/**
+ * Get all known IDs for a user
+ * @param {string} whatsappId - WhatsApp ID in any format
+ * @returns {Object} - Object with personalId and groupId
+ */
+function getAllUserIds(whatsappId) {
+  const identity = getUserIdentity(whatsappId);
+  return {
+    phoneNumber: identity?.phoneNumber || null,
+    personalId: identity?.personalId || null,
+    groupId: identity?.groupId || null,
+    displayName: identity?.displayName || null,
+    isComplete: !!(identity?.personalId && identity?.groupId)
+  };
+}
+
+/**
+ * Check if two WhatsApp IDs belong to the same user
+ * @param {string} id1 - First WhatsApp ID
+ * @param {string} id2 - Second WhatsApp ID
+ * @returns {boolean} - True if same user
+ */
+function isSameUser(id1, id2) {
+  if (!id1 || !id2) return false;
+  if (id1 === id2) return true; // Exact match
+  
+  const phone1 = extractPhoneNumber(id1);
+  const phone2 = extractPhoneNumber(id2);
+  
+  return phone1 && phone2 && phone1 === phone2;
+}
+
+/**
+ * Get user statistics for debugging
+ * @returns {Object} - Statistics about mapped users
+ */
+function getUserMappingStats() {
+  const stats = {
+    totalUsers: userIdentityMap.size,
+    usersWithBothIds: 0,
+    usersWithPersonalOnly: 0,
+    usersWithGroupOnly: 0,
+    recentlyActive: 0
+  };
+  
+  const oneHourAgo = Date.now() - (60 * 60 * 1000);
+  
+  userIdentityMap.forEach(identity => {
+    if (identity.personalId && identity.groupId) {
+      stats.usersWithBothIds++;
+    } else if (identity.personalId) {
+      stats.usersWithPersonalOnly++;
+    } else if (identity.groupId) {
+      stats.usersWithGroupOnly++;
+    }
+    
+    if (identity.lastSeen > oneHourAgo) {
+      stats.recentlyActive++;
+    }
+  });
+  
+  return stats;
+}
+
 export {
   extractMessageContent,
   isGroupMessage,
@@ -326,5 +520,12 @@ export {
   getChatInfo,
   calculateResponseDelay,
   hasImage,
-  extractImageData
+  extractImageData,
+  extractPhoneNumber,
+  getUnifiedUserId,
+  registerUserIdentity,
+  getUserIdentity,
+  getAllUserIds,
+  isSameUser,
+  getUserMappingStats
 }; 

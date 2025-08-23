@@ -280,6 +280,10 @@ async function executeCommand(sock, message, commandData, db) {
       case 'batch':
         return await handleBatchCommand(sock, message, args, db);
         
+      case 'usermap':
+      case 'users':
+        return await handleUserMappingCommand(sock, message, args, db);
+        
       case 'getapikey':
         if (!process.env.OPENROUTER_API_KEY) {
           return 'API key belum dikonfigurasi di environment variables.';
@@ -1298,6 +1302,87 @@ async function handleApiLogsCommand(sock, message, args, db) {
   } catch (error) {
     console.error('Error handling API logs command:', error);
     return 'Error retrieving API logs: ' + error.message;
+  }
+}
+
+async function handleUserMappingCommand(sock, message, args, db) {
+  try {
+    const { getUserMappingStats, getAllUserIds, extractPhoneNumber } = await import('../utils/messageUtils.js');
+    const chatId = message.key.remoteJid;
+    const sender = message.key.participant || message.key.remoteJid;
+    
+    if (args.length === 0) {
+      // Show general statistics
+      const stats = getUserMappingStats();
+      
+      return `*User Identity Mapping Statistics*\n\n` +
+             `📊 *Overview:*\n` +
+             `Total users tracked: ${stats.totalUsers}\n` +
+             `Complete mappings: ${stats.usersWithBothIds}\n` +
+             `Personal chat only: ${stats.usersWithPersonalOnly}\n` +
+             `Group chat only: ${stats.usersWithGroupOnly}\n` +
+             `Recently active (1h): ${stats.recentlyActive}\n\n` +
+             `*Commands:*\n` +
+             `!usermap - Show statistics\n` +
+             `!usermap me - Show your identity mapping\n` +
+             `!usermap phone <number> - Lookup by phone number\n` +
+             `!usermap help - Show help`;
+    }
+    
+    const subCommand = args[0].toLowerCase();
+    
+    switch (subCommand) {
+      case 'me':
+        // Show current user's identity mapping
+        const myIds = getAllUserIds(sender);
+        
+        return `*Your Identity Mapping*\n\n` +
+               `📱 Phone: ${myIds.phoneNumber || 'Unknown'}\n` +
+               `👤 Personal ID: ${myIds.personalId || 'Not mapped'}\n` +
+               `👥 Group ID: ${myIds.groupId || 'Not mapped'}\n` +
+               `✅ Complete: ${myIds.isComplete ? 'Yes' : 'No'}\n` +
+               `📛 Display Name: ${myIds.displayName || 'Unknown'}\n\n` +
+               `*Current Context:*\n` +
+               `Current ID: ${sender}\n` +
+               `Phone extracted: ${extractPhoneNumber(sender)}`;
+        
+      case 'phone':
+        if (args.length < 2) {
+          return 'Please provide a phone number: !usermap phone 628123456789';
+        }
+        
+        const phoneNumber = args[1];
+        const phoneIds = getAllUserIds(`${phoneNumber}@s.whatsapp.net`);
+        
+        if (!phoneIds.phoneNumber) {
+          return `No user found with phone number: ${phoneNumber}`;
+        }
+        
+        return `*User Identity for ${phoneNumber}*\n\n` +
+               `👤 Personal ID: ${phoneIds.personalId || 'Not mapped'}\n` +
+               `👥 Group ID: ${phoneIds.groupId || 'Not mapped'}\n` +
+               `✅ Complete: ${phoneIds.isComplete ? 'Yes' : 'No'}\n` +
+               `📛 Display Name: ${phoneIds.displayName || 'Unknown'}`;
+        
+      case 'help':
+        return `*User Identity Mapping System*\n\n` +
+               `This system maps the same user's different WhatsApp IDs:\n` +
+               `• Personal chat: 628xxx@s.whatsapp.net\n` +
+               `• Group chat: 628xxx@lid\n\n` +
+               `*Commands:*\n` +
+               `!usermap - Show statistics\n` +
+               `!usermap me - Your identity info\n` +
+               `!usermap phone <number> - Lookup user\n` +
+               `!usermap help - This help\n\n` +
+               `*Why this matters:*\n` +
+               `The bot can now recognize that messages from the same person in groups and personal chats are from the same user, enabling better context and memory.`;
+        
+      default:
+        return `Unknown usermap command: ${subCommand}. Use !usermap help for available commands.`;
+    }
+  } catch (error) {
+    console.error('Error handling usermap command:', error);
+    return 'Error handling usermap command: ' + error.message;
   }
 }
 

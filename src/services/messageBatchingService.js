@@ -66,7 +66,14 @@ function initializeTypingState(chatId) {
 async function handlePersonalChatMessage(sock, message) {
   const chatId = message.key.remoteJid;
   
+  // Register user identity to map group and personal chat IDs
+  const { registerUserIdentity, getAllUserIds } = await import('../utils/messageUtils.js');
+  registerUserIdentity(message);
+  
+  // Get unified user information
+  const userIds = getAllUserIds(chatId);
   logger.debug(`Processing personal chat message for ${chatId}`);
+  logger.debug(`User identity: Phone ${userIds.phoneNumber}, Complete mapping: ${userIds.isComplete}`);
   
   initializeTypingState(chatId);
   const typingState = typingStates.get(chatId);
@@ -489,34 +496,203 @@ async function forceProcessBatch(sock, chatId) {
   }
 }
 
+// Store group presence states for monitoring
+const groupPresenceStates = new Map();
+
 /**
- * TODO: Future dedicated group message handler
- * This function will handle group messages with group-specific optimizations
+ * Initialize group presence tracking for a specific group
+ * @param {string} groupId - Group chat ID
+ */
+function initializeGroupPresence(groupId) {
+  if (!groupPresenceStates.has(groupId)) {
+    groupPresenceStates.set(groupId, {
+      activeMembers: new Map(), // memberId -> { lastSeen, status, lastActivity }
+      lastPresenceUpdate: null,
+      messageCount: 0,
+      createdAt: Date.now()
+    });
+    logger.debug(`Initialized presence tracking for group ${groupId}`);
+  }
+}
+
+/**
+ * Handle presence updates in group chats
+ * @param {Object} sock - Socket instance
+ * @param {Object} update - Presence update object
+ */
+async function handleGroupPresenceUpdate(sock, update) {
+  const groupId = update.id;
+  
+  // Only handle group presence updates
+  if (!groupId.endsWith('@g.us')) {
+    return;
+  }
+  
+  console.log(`[GROUP-PRESENCE][${new Date().toISOString()}] Received presence update for group ${groupId}`);
+  console.log(`[GROUP-PRESENCE] Update details:`, JSON.stringify(update, null, 2));
+  
+  // Initialize presence tracking if not exists
+  initializeGroupPresence(groupId);
+  const groupState = groupPresenceStates.get(groupId);
+  
+  // Update last presence update time
+  groupState.lastPresenceUpdate = Date.now();
+  
+  // Process presence data if available
+  if (update.presences) {
+    console.log(`[GROUP-PRESENCE] Processing ${Object.keys(update.presences).length} presence updates`);
+    
+    Object.entries(update.presences).forEach(([memberId, presence]) => {
+      const memberInfo = {
+        lastSeen: Date.now(),
+        status: presence.lastKnownPresence || 'unknown',
+        lastActivity: presence.lastKnownPresence,
+        timestamp: new Date().toISOString()
+      };
+      
+      // Store/update member presence
+      groupState.activeMembers.set(memberId, memberInfo);
+      
+      console.log(`[GROUP-PRESENCE] Member ${memberId}: ${presence.lastKnownPresence || 'unknown'}`);
+      
+      // Log specific presence types
+      switch (presence.lastKnownPresence) {
+        case 'composing':
+          console.log(`[GROUP-PRESENCE] 📝 ${memberId} is typing in group ${groupId}`);
+          break;
+        case 'recording':
+          console.log(`[GROUP-PRESENCE] 🎤 ${memberId} is recording voice message in group ${groupId}`);
+          break;
+        case 'paused':
+          console.log(`[GROUP-PRESENCE] ⏸️ ${memberId} paused typing in group ${groupId}`);
+          break;
+        case 'available':
+          console.log(`[GROUP-PRESENCE] ✅ ${memberId} is online in group ${groupId}`);
+          break;
+        case 'unavailable':
+          console.log(`[GROUP-PRESENCE] ❌ ${memberId} went offline in group ${groupId}`);
+          break;
+        default:
+          console.log(`[GROUP-PRESENCE] ❓ ${memberId} presence: ${presence.lastKnownPresence || 'unknown'} in group ${groupId}`);
+      }
+    });
+    
+    // Log group activity summary
+    const activeCount = Array.from(groupState.activeMembers.values())
+      .filter(member => ['composing', 'recording', 'available'].includes(member.status)).length;
+    
+    console.log(`[GROUP-PRESENCE] Group ${groupId} activity summary: ${activeCount} active members out of ${groupState.activeMembers.size} tracked`);
+  }
+  
+  // Log participants info if available
+  if (update.participants) {
+    console.log(`[GROUP-PRESENCE] Participants data available for ${update.participants.length} members`);
+    update.participants.forEach(participant => {
+      console.log(`[GROUP-PRESENCE] Participant: ${participant}`);
+    });
+  }
+}
+
+/**
+ * Get group presence statistics
+ * @param {string} groupId - Group chat ID
+ * @returns {Object} - Presence statistics
+ */
+function getGroupPresenceStats(groupId) {
+  const groupState = groupPresenceStates.get(groupId);
+  if (!groupState) {
+    return null;
+  }
+  
+  const now = Date.now();
+  const recentActiveMembers = Array.from(groupState.activeMembers.entries())
+    .filter(([_, member]) => (now - member.lastSeen) < 300000) // Active in last 5 minutes
+    .map(([memberId, _]) => memberId);
+  
+  return {
+    groupId,
+    totalTrackedMembers: groupState.activeMembers.size,
+    recentActiveMembers: recentActiveMembers.length,
+    lastPresenceUpdate: groupState.lastPresenceUpdate,
+    messageCount: groupState.messageCount,
+    trackingDuration: now - groupState.createdAt
+  };
+}
+
+/**
+ * Group message handler with presence monitoring
+ * This function handles group messages with group-specific optimizations
  * @param {Object} sock - Socket instance
  * @param {Object} message - Message object (must be from group chat)
  */
 async function handleGroupChatMessage(sock, message) {
-  // TODO: Implement group-specific message handling
-  // Possible features:
-  // - Group-specific response logic
-  // - Member activity tracking
-  // - Group context management
-  // - Anti-spam mechanisms
-  // - Group admin commands
-  
   const chatId = message.key.remoteJid;
-  logger.debug(`Group message handler not yet implemented for ${chatId}, using direct processing`);
+  const sender = message.key.participant || message.key.remoteJid;
+  
+  // Initialize presence tracking for this group
+  initializeGroupPresence(chatId);
+  const groupState = groupPresenceStates.get(chatId);
+  
+  // Increment message count
+  groupState.messageCount++;
+  
+  // Log group message with presence context
+  const presenceStats = getGroupPresenceStats(chatId);
+  console.log(`[GROUP-MSG][${new Date().toISOString()}] Message from ${sender} in group ${chatId}`);
+  console.log(`[GROUP-MSG] Group stats: ${presenceStats.recentActiveMembers} active, ${presenceStats.totalTrackedMembers} tracked members`);
+  
+  // Update sender's presence info (they're obviously active if sending a message)
+  if (groupState.activeMembers.has(sender)) {
+    const senderInfo = groupState.activeMembers.get(sender);
+    senderInfo.lastSeen = Date.now();
+    senderInfo.lastActivity = 'messaging';
+    senderInfo.status = 'available';
+  } else {
+    groupState.activeMembers.set(sender, {
+      lastSeen: Date.now(),
+      status: 'available',
+      lastActivity: 'messaging',
+      timestamp: new Date().toISOString()
+    });
+  }
+
+    // Register user identity to map group and personal chat IDs
+  const { registerUserIdentity, getAllUserIds, getUnifiedUserId } = await import('../utils/messageUtils.js');
+  registerUserIdentity(message);
+  
+  // Get unified user information
+  const userIds = getAllUserIds(sender);
+  console.log(`[GROUP-MSG] User identity mapping for ${sender}:`);
+  console.log(`[GROUP-MSG]   Phone: ${userIds.phoneNumber}`);
+  console.log(`[GROUP-MSG]   Personal ID: ${userIds.personalId}`);
+  console.log(`[GROUP-MSG]   Group ID: ${userIds.groupId}`);
+  console.log(`[GROUP-MSG]   Is Complete Mapping: ${userIds.isComplete}`);
+  
+  console.log(JSON.stringify(message, null, 2));
+   
+  // TODO: Implement group-specific message handling
+  // Future features:
+  // - Group-specific response logic based on member activity
+  // - Member engagement tracking
+  // - Group context management
+  // - Anti-spam mechanisms based on presence patterns
+  // - Group admin commands
+  // - Member role management
+  
+  logger.debug(`Group message handler processing message in ${chatId}, using direct processing for now`);
   
   // For now, just call processMessage directly
-  const { processMessage } = await import('../handlers/messageHandler.js');
-  await processMessage(sock, message);
+  // const { processMessage } = await import('../handlers/messageHandler.js');
+  // await processMessage(sock, message);
 }
 
 export {
   handlePersonalChatMessage,
   handleGroupChatMessage,
+  handleGroupPresenceUpdate,
   handleTypingUpdate,
   getBatchStatus,
   forceProcessBatch,
+  getGroupPresenceStats,
   BATCH_CONFIG
 };
