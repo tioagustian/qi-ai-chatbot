@@ -243,6 +243,8 @@ const startBot = async () => {
       if (type === 'notify') {
         for (const message of messages) {
           if (!message.key.fromMe && message.message) {
+            // Note: status@broadcast messages are filtered out in messageHandler.js
+            // TODO: Add dedicated handler for status@broadcast if status interaction is needed
             // Use batching service for personal chats, direct processing for groups
             await handlePersonalChatMessage(sock, message);
           }

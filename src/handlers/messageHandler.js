@@ -48,6 +48,14 @@ async function processMessage(sock, message) {
     const isGroup = isGroupMessage(message);
     const chatId = message.key.remoteJid;
     
+    // Skip status broadcast messages
+    // TODO: Implement dedicated status@broadcast handler for status updates
+    // Status messages have different structure and are meant for viewing, not interaction
+    if (chatId === 'status@broadcast') {
+      logger.debug('Skipping status@broadcast message - not processing status updates');
+      return;
+    }
+    
     // Check if the message contains an image
     const imageData = extractImageData(message);
     // Add additional metadata to imageData if it exists
@@ -917,4 +925,56 @@ function extractImagePrompt(content) {
   return cleanedPrompt.trim();
 }
 
-export { processMessage, shouldRespondToMessage, getLastImageAnalysisId, detectImageGenerationRequest, extractImagePrompt };
+/**
+ * TODO: Future implementation for handling status@broadcast messages
+ * 
+ * Status messages are WhatsApp status updates (stories) that users share.
+ * These messages have special characteristics:
+ * - remoteJid: 'status@broadcast'
+ * - Ephemeral content (disappears after 24 hours)
+ * - Different message structure than regular chats
+ * - Meant for viewing, not interaction
+ * 
+ * Possible use cases for status@broadcast handler:
+ * - Analytics on status updates
+ * - Automatic status viewing/reading
+ * - Status content analysis for insights
+ * - Status backup/archiving
+ * - React to specific status content types
+ * 
+ * Implementation considerations:
+ * - Status messages should not trigger regular chat responses
+ * - Need special permission handling for status access
+ * - Different privacy implications
+ * - Limited interaction capabilities
+ * 
+ * @param {Object} sock - WhatsApp socket instance
+ * @param {Object} message - Status broadcast message object
+ * @returns {Promise<void>}
+ */
+async function processStatusBroadcast(sock, message) {
+  // TODO: Implement status broadcast handling logic
+  // This function will be called specifically for status@broadcast messages
+  
+  try {
+    const logger = {
+      info: (msg) => console.log(`[STATUS][${new Date().toISOString()}] ${msg}`),
+      debug: (msg) => console.log(`[STATUS-DEBUG][${new Date().toISOString()}] ${msg}`),
+      error: (msg, err) => console.error(`[STATUS-ERROR][${new Date().toISOString()}] ${msg}`, err)
+    };
+    
+    logger.debug('Status broadcast message received - handler not yet implemented');
+    
+    // Example future implementation:
+    // 1. Extract status content and metadata
+    // 2. Analyze status type (text, image, video)
+    // 3. Store status data if needed
+    // 4. Perform any automated status interactions
+    // 5. Log status activity for analytics
+    
+  } catch (error) {
+    console.error('Error processing status broadcast:', error);
+  }
+}
+
+export { processMessage, shouldRespondToMessage, getLastImageAnalysisId, detectImageGenerationRequest, extractImagePrompt, processStatusBroadcast };
