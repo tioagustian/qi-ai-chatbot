@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 import { getApiLogs, clearApiLogs } from './apiLogService.js';
 import { getDb } from '../database/index.js';
 import chalk from 'chalk';
-import { getBatchStatus, forceProcessBatch } from './messageBatchingService.js';
+import { getBatchStatus, forceProcessBatch, getGroupPresenceStats, processGroupMessageBatch, GROUP_BATCH_CONFIG } from './messageBatchingService.js';
 
 // Get current directory
 const __filename = fileURLToPath(import.meta.url);
@@ -279,6 +279,10 @@ async function executeCommand(sock, message, commandData, db) {
         
       case 'batch':
         return await handleBatchCommand(sock, message, args, db);
+        
+      case 'groupbatch':
+      case 'gbatch':
+        return await handleGroupBatchCommand(sock, message, args, db);
         
       case 'usermap':
       case 'users':
@@ -1302,6 +1306,80 @@ async function handleApiLogsCommand(sock, message, args, db) {
   } catch (error) {
     console.error('Error handling API logs command:', error);
     return 'Error retrieving API logs: ' + error.message;
+  }
+}
+
+async function handleGroupBatchCommand(sock, message, args, db) {
+  try {
+    const chatId = message.key.remoteJid;
+    
+    // Only allow in group chats
+    if (!chatId.endsWith('@g.us')) {
+      return 'This command only works in group chats.';
+    }
+    
+    if (args.length === 0) {
+      // Show group batch status
+      const presenceStats = getGroupPresenceStats(chatId);
+      
+      if (!presenceStats) {
+        return 'No group activity tracked yet for this group.';
+      }
+      
+      return `*Group Batch Status*\n\n` +
+             `📊 *Group Activity:*\n` +
+             `Total tracked members: ${presenceStats.totalTrackedMembers}\n` +
+             `Recently active: ${presenceStats.recentActiveMembers}\n` +
+             `Messages processed: ${presenceStats.messageCount}\n` +
+             `Tracking duration: ${Math.round(presenceStats.trackingDuration / 1000 / 60)}m\n\n` +
+             `⚙️ *Batch Configuration:*\n` +
+             `Min wait time: ${GROUP_BATCH_CONFIG.minWaitTime / 1000}s\n` +
+             `Max wait time: ${GROUP_BATCH_CONFIG.maxWaitTime / 1000}s\n` +
+             `Typing timeout: ${GROUP_BATCH_CONFIG.typingTimeout / 1000}s\n` +
+             `Max batch size: ${GROUP_BATCH_CONFIG.maxBatchSize} messages\n\n` +
+             `*Commands:*\n` +
+             `!gbatch - Show status\n` +
+             `!gbatch force - Force process current batch\n` +
+             `!gbatch help - Show help`;
+    }
+    
+    const subCommand = args[0].toLowerCase();
+    
+    switch (subCommand) {
+      case 'force':
+        // Force process current group batch
+        try {
+          await processGroupMessageBatch(sock, chatId);
+          return 'Forced processing of current group message batch.';
+        } catch (error) {
+          return `Error forcing group batch processing: ${error.message}`;
+        }
+        
+      case 'help':
+        return `*Group Message Batching System*\n\n` +
+               `Advanced batching for group chats that waits for the very last message before processing.\n\n` +
+               `*How it works:*\n` +
+               `🔄 Collects messages from multiple users\n` +
+               `👀 Monitors typing indicators in real-time\n` +
+               `⏱️ Waits until everyone stops typing\n` +
+               `🧠 Processes all messages with full context\n` +
+               `🆔 Uses unified user identity mapping\n\n` +
+               `*Commands:*\n` +
+               `!gbatch - Show current status\n` +
+               `!gbatch force - Force process batch\n` +
+               `!gbatch help - This help\n\n` +
+               `*Benefits:*\n` +
+               `• Better conversation context\n` +
+               `• Reduces interruptions\n` +
+               `• More natural responses\n` +
+               `• Multi-user awareness`;
+        
+      default:
+        return `Unknown group batch command: ${subCommand}. Use !gbatch help for available commands.`;
+    }
+  } catch (error) {
+    console.error('Error handling group batch command:', error);
+    return 'Error handling group batch command: ' + error.message;
   }
 }
 

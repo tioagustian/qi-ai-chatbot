@@ -499,6 +499,18 @@ async function forceProcessBatch(sock, chatId) {
 // Store group presence states for monitoring
 const groupPresenceStates = new Map();
 
+// Store group message batches for advanced batching
+const groupMessageBatches = new Map();
+
+// Group batching configuration
+const GROUP_BATCH_CONFIG = {
+  minWaitTime: 2000,      // Minimum wait time after last message (2 seconds)
+  maxWaitTime: 15000,     // Maximum wait time for batch (15 seconds)
+  typingTimeout: 5000,    // How long to wait after typing stops (5 seconds)
+  maxBatchSize: 10,       // Maximum messages per batch
+  processingDelay: 1000   // Initial delay before starting batch timer (1 second)
+};
+
 /**
  * Initialize group presence tracking for a specific group
  * @param {string} groupId - Group chat ID
@@ -516,7 +528,27 @@ function initializeGroupPresence(groupId) {
 }
 
 /**
- * Handle presence updates in group chats
+ * Initialize group message batching for a specific group
+ * @param {string} groupId - Group chat ID
+ */
+function initializeGroupBatch(groupId) {
+  if (!groupMessageBatches.has(groupId)) {
+    groupMessageBatches.set(groupId, {
+      messages: [],
+      senderStates: new Map(), // senderId -> { isTyping, lastTypingTime, messageCount }
+      startTime: Date.now(),
+      lastMessageTime: null,
+      processing: false,
+      processingTimeout: null,
+      typingTimeouts: new Map(), // senderId -> timeout
+      batchTimeout: null
+    });
+    logger.debug(`Initialized group batch for ${groupId}`);
+  }
+}
+
+/**
+ * Handle presence updates in group chats with batch integration
  * @param {Object} sock - Socket instance
  * @param {Object} update - Presence update object
  */
@@ -531,9 +563,12 @@ async function handleGroupPresenceUpdate(sock, update) {
   console.log(`[GROUP-PRESENCE][${new Date().toISOString()}] Received presence update for group ${groupId}`);
   console.log(`[GROUP-PRESENCE] Update details:`, JSON.stringify(update, null, 2));
   
-  // Initialize presence tracking if not exists
+  // Initialize presence tracking and batching if not exists
   initializeGroupPresence(groupId);
+  initializeGroupBatch(groupId);
+  
   const groupState = groupPresenceStates.get(groupId);
+  const groupBatch = groupMessageBatches.get(groupId);
   
   // Update last presence update time
   groupState.lastPresenceUpdate = Date.now();
@@ -554,6 +589,51 @@ async function handleGroupPresenceUpdate(sock, update) {
       groupState.activeMembers.set(memberId, memberInfo);
       
       console.log(`[GROUP-PRESENCE] Member ${memberId}: ${presence.lastKnownPresence || 'unknown'}`);
+      
+      // Update batch sender states for typing detection
+      const currentTime = Date.now();
+      const isTyping = ['composing', 'recording'].includes(presence.lastKnownPresence);
+      const isAvailable = presence.lastKnownPresence === 'available';
+      
+      // Get or create sender state
+      let senderState = groupBatch.senderStates.get(memberId);
+      if (!senderState) {
+        senderState = {
+          isTyping: false,
+          lastTypingTime: null,
+          messageCount: 0,
+          lastActivity: currentTime
+        };
+        groupBatch.senderStates.set(memberId, senderState);
+      }
+      
+      // Clear existing typing timeout for this sender
+      if (groupBatch.typingTimeouts.has(memberId)) {
+        clearTimeout(groupBatch.typingTimeouts.get(memberId));
+        groupBatch.typingTimeouts.delete(memberId);
+      }
+      
+      if (isTyping) {
+        senderState.isTyping = true;
+        senderState.lastTypingTime = currentTime;
+        senderState.lastActivity = currentTime;
+        console.log(`[GROUP-BATCH] ${memberId} started typing, extending batch wait`);
+        
+        // Extend batch timeout while someone is typing
+        updateGroupBatchTimeout(sock, groupId);
+        
+      } else if (isAvailable) {
+        senderState.isTyping = false;
+        senderState.lastActivity = currentTime;
+        console.log(`[GROUP-BATCH] ${memberId} stopped typing, setting typing timeout`);
+        
+        // Set a timeout to process batch if this was the last person typing
+        const typingTimeout = setTimeout(() => {
+          checkAndProcessGroupBatch(sock, groupId);
+        }, GROUP_BATCH_CONFIG.typingTimeout);
+        
+        groupBatch.typingTimeouts.set(memberId, typingTimeout);
+      }
       
       // Log specific presence types
       switch (presence.lastKnownPresence) {
@@ -620,7 +700,173 @@ function getGroupPresenceStats(groupId) {
 }
 
 /**
- * Group message handler with presence monitoring
+ * Update group batch timeout based on current activity
+ * @param {Object} sock - Socket instance
+ * @param {string} groupId - Group chat ID
+ */
+function updateGroupBatchTimeout(sock, groupId) {
+  const groupBatch = groupMessageBatches.get(groupId);
+  if (!groupBatch || groupBatch.processing) {
+    return;
+  }
+  
+  // Clear existing timeout
+  if (groupBatch.batchTimeout) {
+    clearTimeout(groupBatch.batchTimeout);
+  }
+  
+  // Check if anyone is currently typing
+  const someoneTyping = Array.from(groupBatch.senderStates.values())
+    .some(state => state.isTyping);
+  
+  if (someoneTyping) {
+    // Extend timeout while someone is typing
+    const extendedTimeout = setTimeout(() => {
+      processGroupMessageBatch(sock, groupId);
+    }, GROUP_BATCH_CONFIG.maxWaitTime);
+    
+    groupBatch.batchTimeout = extendedTimeout;
+    console.log(`[GROUP-BATCH] Extended batch timeout for ${groupId} (someone typing)`);
+  } else {
+    // No one typing, use minimum wait time
+    const minTimeout = setTimeout(() => {
+      processGroupMessageBatch(sock, groupId);
+    }, GROUP_BATCH_CONFIG.minWaitTime);
+    
+    groupBatch.batchTimeout = minTimeout;
+    console.log(`[GROUP-BATCH] Set minimum batch timeout for ${groupId} (no one typing)`);
+  }
+}
+
+/**
+ * Check if group batch should be processed
+ * @param {Object} sock - Socket instance
+ * @param {string} groupId - Group chat ID
+ */
+function checkAndProcessGroupBatch(sock, groupId) {
+  const groupBatch = groupMessageBatches.get(groupId);
+  if (!groupBatch || groupBatch.processing || groupBatch.messages.length === 0) {
+    return;
+  }
+  
+  // Check if anyone is still typing
+  const someoneStillTyping = Array.from(groupBatch.senderStates.values())
+    .some(state => state.isTyping && (Date.now() - state.lastTypingTime) < GROUP_BATCH_CONFIG.typingTimeout);
+  
+  if (someoneStillTyping) {
+    console.log(`[GROUP-BATCH] Delaying batch processing for ${groupId} - someone still typing`);
+    updateGroupBatchTimeout(sock, groupId);
+    return;
+  }
+  
+  console.log(`[GROUP-BATCH] All typing stopped, processing batch for ${groupId}`);
+  processGroupMessageBatch(sock, groupId);
+}
+
+/**
+ * Process group message batch with unified user identity and advanced context
+ * @param {Object} sock - Socket instance
+ * @param {string} groupId - Group chat ID
+ */
+async function processGroupMessageBatch(sock, groupId) {
+  const groupBatch = groupMessageBatches.get(groupId);
+  if (!groupBatch || groupBatch.processing || groupBatch.messages.length === 0) {
+    return;
+  }
+  
+  console.log(`[GROUP-BATCH] Starting batch processing for ${groupId} with ${groupBatch.messages.length} messages`);
+  
+  // Mark as processing
+  groupBatch.processing = true;
+  
+  // Clear all timeouts
+  if (groupBatch.batchTimeout) {
+    clearTimeout(groupBatch.batchTimeout);
+    groupBatch.batchTimeout = null;
+  }
+  
+  groupBatch.typingTimeouts.forEach(timeout => clearTimeout(timeout));
+  groupBatch.typingTimeouts.clear();
+  
+  try {
+    const { registerUserIdentity, getAllUserIds, getUnifiedUserId } = await import('../utils/messageUtils.js');
+    const { processMessage } = await import('../handlers/messageHandler.js');
+    
+    // Process each message with enhanced context
+    for (let i = 0; i < groupBatch.messages.length; i++) {
+      const message = groupBatch.messages[i];
+      const isLastMessage = i === groupBatch.messages.length - 1;
+      
+      // Register user identity for unified tracking
+      registerUserIdentity(message);
+      
+      // Add batch metadata to the message
+      message.batchMetadata = {
+        isBatchedMessage: true,
+        batchPosition: i + 1,
+        totalInBatch: groupBatch.messages.length,
+        isLastInBatch: isLastMessage,
+        batchStartTime: groupBatch.startTime,
+        batchType: 'group',
+        groupId: groupId
+      };
+      
+      // Get unified user info
+      const sender = message.key.participant || message.key.remoteJid;
+      const userIds = getAllUserIds(sender);
+      const unifiedUserId = getUnifiedUserId(sender);
+      
+      console.log(`[GROUP-BATCH] Processing message ${i + 1}/${groupBatch.messages.length} from ${userIds.displayName || 'Unknown'} (${unifiedUserId})`);
+      
+      // Add other messages in batch as context
+      if (groupBatch.messages.length > 1) {
+        const otherMessages = groupBatch.messages
+          .filter((_, index) => index !== i)
+          .map((msg, index) => {
+            const msgSender = msg.key.participant || msg.key.remoteJid;
+            const msgUserIds = getAllUserIds(msgSender);
+            const content = msg.message?.conversation || 
+                           msg.message?.extendedTextMessage?.text || 
+                           msg.message?.imageMessage?.caption || 
+                           '[Media message]';
+            
+            return {
+              position: index < i ? index + 1 : index + 2, // Adjust position relative to current
+              content: content,
+              sender: msgUserIds.displayName || msgSender.split('@')[0],
+              unifiedUserId: getUnifiedUserId(msgSender),
+              timestamp: msg.messageTimestamp
+            };
+          });
+        
+        message.batchMetadata.otherMessagesInBatch = otherMessages;
+      }
+      
+      // Process the message
+      await processMessage(sock, message);
+      
+      // Small delay between processing messages in batch
+      if (!isLastMessage) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+    }
+    
+    console.log(`[GROUP-BATCH] Completed batch processing for ${groupId}`);
+    
+  } catch (error) {
+    console.error(`[GROUP-BATCH] Error processing batch for ${groupId}:`, error);
+  } finally {
+    // Reset batch
+    groupBatch.messages = [];
+    groupBatch.senderStates.clear();
+    groupBatch.startTime = Date.now();
+    groupBatch.lastMessageTime = null;
+    groupBatch.processing = false;
+  }
+}
+
+/**
+ * Group message handler with advanced presence monitoring and batching
  * This function handles group messages with group-specific optimizations
  * @param {Object} sock - Socket instance
  * @param {Object} message - Message object (must be from group chat)
@@ -629,17 +875,29 @@ async function handleGroupChatMessage(sock, message) {
   const chatId = message.key.remoteJid;
   const sender = message.key.participant || message.key.remoteJid;
   
-  // Initialize presence tracking for this group
+  // Initialize presence tracking and batching for this group
   initializeGroupPresence(chatId);
+  initializeGroupBatch(chatId);
+  
   const groupState = groupPresenceStates.get(chatId);
+  const groupBatch = groupMessageBatches.get(chatId);
   
   // Increment message count
   groupState.messageCount++;
   
+  // Register user identity to map group and personal chat IDs
+  const { registerUserIdentity, getAllUserIds, getUnifiedUserId } = await import('../utils/messageUtils.js');
+  registerUserIdentity(message);
+  
+  // Get unified user information
+  const userIds = getAllUserIds(sender);
+  const unifiedUserId = getUnifiedUserId(sender);
+  
   // Log group message with presence context
   const presenceStats = getGroupPresenceStats(chatId);
-  console.log(`[GROUP-MSG][${new Date().toISOString()}] Message from ${sender} in group ${chatId}`);
+  console.log(`[GROUP-MSG][${new Date().toISOString()}] Message from ${userIds.displayName || 'Unknown'} (${unifiedUserId}) in group ${chatId}`);
   console.log(`[GROUP-MSG] Group stats: ${presenceStats.recentActiveMembers} active, ${presenceStats.totalTrackedMembers} tracked members`);
+  console.log(`[GROUP-MSG] User identity: Phone ${userIds.phoneNumber}, Complete mapping: ${userIds.isComplete}`);
   
   // Update sender's presence info (they're obviously active if sending a message)
   if (groupState.activeMembers.has(sender)) {
@@ -655,35 +913,59 @@ async function handleGroupChatMessage(sock, message) {
       timestamp: new Date().toISOString()
     });
   }
-
-    // Register user identity to map group and personal chat IDs
-  const { registerUserIdentity, getAllUserIds, getUnifiedUserId } = await import('../utils/messageUtils.js');
-  registerUserIdentity(message);
   
-  // Get unified user information
-  const userIds = getAllUserIds(sender);
-  console.log(`[GROUP-MSG] User identity mapping for ${sender}:`);
-  console.log(`[GROUP-MSG]   Phone: ${userIds.phoneNumber}`);
-  console.log(`[GROUP-MSG]   Personal ID: ${userIds.personalId}`);
-  console.log(`[GROUP-MSG]   Group ID: ${userIds.groupId}`);
-  console.log(`[GROUP-MSG]   Is Complete Mapping: ${userIds.isComplete}`);
+  // Update sender state in batch
+  let senderState = groupBatch.senderStates.get(sender);
+  if (!senderState) {
+    senderState = {
+      isTyping: false,
+      lastTypingTime: null,
+      messageCount: 0,
+      lastActivity: Date.now()
+    };
+    groupBatch.senderStates.set(sender, senderState);
+  }
   
-  console.log(JSON.stringify(message, null, 2));
-   
-  // TODO: Implement group-specific message handling
-  // Future features:
-  // - Group-specific response logic based on member activity
-  // - Member engagement tracking
-  // - Group context management
-  // - Anti-spam mechanisms based on presence patterns
-  // - Group admin commands
-  // - Member role management
+  // Increment message count for this sender
+  senderState.messageCount++;
+  senderState.lastActivity = Date.now();
+  senderState.isTyping = false; // They just sent a message, so they're not typing anymore
   
-  logger.debug(`Group message handler processing message in ${chatId}, using direct processing for now`);
+  // Add message to batch
+  groupBatch.messages.push(message);
+  groupBatch.lastMessageTime = Date.now();
   
-  // For now, just call processMessage directly
-  // const { processMessage } = await import('../handlers/messageHandler.js');
-  // await processMessage(sock, message);
+  // If this is the first message in the batch, set start time
+  if (groupBatch.messages.length === 1) {
+    groupBatch.startTime = Date.now();
+    console.log(`[GROUP-BATCH] Started new batch for group ${chatId}`);
+  }
+  
+  console.log(`[GROUP-BATCH] Added message to batch (${groupBatch.messages.length}/${GROUP_BATCH_CONFIG.maxBatchSize}) from ${userIds.displayName || 'Unknown'}`);
+  
+  // Clear existing timeouts for this sender (they just sent a message)
+  if (groupBatch.typingTimeouts.has(sender)) {
+    clearTimeout(groupBatch.typingTimeouts.get(sender));
+    groupBatch.typingTimeouts.delete(sender);
+  }
+  
+  // Check if we should process immediately due to batch size limit
+  if (groupBatch.messages.length >= GROUP_BATCH_CONFIG.maxBatchSize) {
+    console.log(`[GROUP-BATCH] Batch size limit reached for ${chatId}, processing immediately`);
+    await processGroupMessageBatch(sock, chatId);
+    return;
+  }
+  
+  // Set timeout to process batch
+  updateGroupBatchTimeout(sock, chatId);
+  
+  // Log message content for debugging (shortened)
+  const content = message.message?.conversation || 
+                 message.message?.extendedTextMessage?.text || 
+                 message.message?.imageMessage?.caption || 
+                 '[Media message]';
+  
+  console.log(`[GROUP-BATCH] Message content: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"`);
 }
 
 export {
@@ -694,5 +976,7 @@ export {
   getBatchStatus,
   forceProcessBatch,
   getGroupPresenceStats,
-  BATCH_CONFIG
+  processGroupMessageBatch,
+  BATCH_CONFIG,
+  GROUP_BATCH_CONFIG
 };
