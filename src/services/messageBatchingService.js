@@ -541,7 +541,8 @@ function initializeGroupBatch(groupId) {
       processing: false,
       processingTimeout: null,
       typingTimeouts: new Map(), // senderId -> timeout
-      batchTimeout: null
+      batchTimeout: null,
+      maxTimeout: null // Maximum wait timeout
     });
     logger.debug(`Initialized group batch for ${groupId}`);
   }
@@ -720,21 +721,33 @@ function updateGroupBatchTimeout(sock, groupId) {
     .some(state => state.isTyping);
   
   if (someoneTyping) {
-    // Extend timeout while someone is typing
+    // Extend timeout while someone is typing - use checkAndProcessGroupBatch to properly validate
     const extendedTimeout = setTimeout(() => {
-      processGroupMessageBatch(sock, groupId);
-    }, GROUP_BATCH_CONFIG.maxWaitTime);
+      checkAndProcessGroupBatch(sock, groupId);
+    }, GROUP_BATCH_CONFIG.typingTimeout); // Use typing timeout, not max wait time
     
     groupBatch.batchTimeout = extendedTimeout;
-    console.log(`[GROUP-BATCH] Extended batch timeout for ${groupId} (someone typing)`);
+    console.log(`[GROUP-BATCH] Extended batch timeout for ${groupId} (someone typing) - will recheck in ${GROUP_BATCH_CONFIG.typingTimeout}ms`);
   } else {
-    // No one typing, use minimum wait time
+    // No one typing, use minimum wait time but still check before processing
     const minTimeout = setTimeout(() => {
-      processGroupMessageBatch(sock, groupId);
+      checkAndProcessGroupBatch(sock, groupId);
     }, GROUP_BATCH_CONFIG.minWaitTime);
     
     groupBatch.batchTimeout = minTimeout;
-    console.log(`[GROUP-BATCH] Set minimum batch timeout for ${groupId} (no one typing)`);
+    console.log(`[GROUP-BATCH] Set minimum batch timeout for ${groupId} (no one typing) - will process in ${GROUP_BATCH_CONFIG.minWaitTime}ms`);
+  }
+  
+  // Set maximum wait timeout as backup (only if this is the first message)
+  if (groupBatch.messages.length === 1) {
+    const maxTimeout = setTimeout(() => {
+      console.log(`[GROUP-BATCH] Maximum wait time reached for ${groupId}, forcing batch processing`);
+      processGroupMessageBatch(sock, groupId);
+    }, GROUP_BATCH_CONFIG.maxWaitTime);
+    
+    // Store the max timeout separately so it doesn't get cleared by regular updates
+    groupBatch.maxTimeout = maxTimeout;
+    console.log(`[GROUP-BATCH] Set maximum wait timeout of ${GROUP_BATCH_CONFIG.maxWaitTime}ms for ${groupId}`);
   }
 }
 
@@ -749,17 +762,59 @@ function checkAndProcessGroupBatch(sock, groupId) {
     return;
   }
   
-  // Check if anyone is still typing
-  const someoneStillTyping = Array.from(groupBatch.senderStates.values())
-    .some(state => state.isTyping && (Date.now() - state.lastTypingTime) < GROUP_BATCH_CONFIG.typingTimeout);
+  const now = Date.now();
   
-  if (someoneStillTyping) {
-    console.log(`[GROUP-BATCH] Delaying batch processing for ${groupId} - someone still typing`);
-    updateGroupBatchTimeout(sock, groupId);
+  // Check minimum wait time since first message (like personal chat)
+  const timeSinceFirstMessage = now - groupBatch.startTime;
+  const minWaitTime = Math.max(GROUP_BATCH_CONFIG.minWaitTime, 4000); // At least 4 seconds for groups
+  
+  if (timeSinceFirstMessage < minWaitTime) {
+    const remainingWait = minWaitTime - timeSinceFirstMessage;
+    console.log(`[GROUP-BATCH] Too soon to process ${groupId} - waiting ${remainingWait}ms more (minimum wait time)`);
+    
+    // Set new timeout for remaining wait time
+    if (groupBatch.batchTimeout) {
+      clearTimeout(groupBatch.batchTimeout);
+    }
+    
+    groupBatch.batchTimeout = setTimeout(() => {
+      checkAndProcessGroupBatch(sock, groupId);
+    }, remainingWait);
+    
     return;
   }
   
-  console.log(`[GROUP-BATCH] All typing stopped, processing batch for ${groupId}`);
+  // Check if anyone is still typing (with reasonable timeout)
+  const someoneStillTyping = Array.from(groupBatch.senderStates.values())
+    .some(state => {
+      if (!state.isTyping) return false;
+      const timeSinceTyping = now - (state.lastTypingTime || 0);
+      return timeSinceTyping < GROUP_BATCH_CONFIG.typingTimeout;
+    });
+  
+  if (someoneStillTyping) {
+    console.log(`[GROUP-BATCH] Delaying batch processing for ${groupId} - someone still typing`);
+    
+    // Set another check in a reasonable time
+    if (groupBatch.batchTimeout) {
+      clearTimeout(groupBatch.batchTimeout);
+    }
+    
+    groupBatch.batchTimeout = setTimeout(() => {
+      checkAndProcessGroupBatch(sock, groupId);
+    }, GROUP_BATCH_CONFIG.typingTimeout);
+    
+    return;
+  }
+  
+  // Check maximum wait time (don't wait forever)
+  if (timeSinceFirstMessage > GROUP_BATCH_CONFIG.maxWaitTime) {
+    console.log(`[GROUP-BATCH] Maximum wait time reached for ${groupId}, forcing processing`);
+    processGroupMessageBatch(sock, groupId);
+    return;
+  }
+  
+  console.log(`[GROUP-BATCH] All conditions met, processing batch for ${groupId} (${groupBatch.messages.length} messages)`);
   processGroupMessageBatch(sock, groupId);
 }
 
@@ -783,6 +838,11 @@ async function processGroupMessageBatch(sock, groupId) {
   if (groupBatch.batchTimeout) {
     clearTimeout(groupBatch.batchTimeout);
     groupBatch.batchTimeout = null;
+  }
+  
+  if (groupBatch.maxTimeout) {
+    clearTimeout(groupBatch.maxTimeout);
+    groupBatch.maxTimeout = null;
   }
   
   groupBatch.typingTimeouts.forEach(timeout => clearTimeout(timeout));
@@ -934,7 +994,17 @@ async function handleGroupChatMessage(sock, message) {
   // Increment message count for this sender
   senderState.messageCount++;
   senderState.lastActivity = Date.now();
-  senderState.isTyping = false; // They just sent a message, so they're not typing anymore
+  
+  // Don't immediately set isTyping = false here!
+  // The user might still be typing more messages. Let presence updates handle this.
+  // Only clear if the typing state is very old (more than 10 seconds)
+  if (senderState.isTyping && senderState.lastTypingTime) {
+    const timeSinceTyping = Date.now() - senderState.lastTypingTime;
+    if (timeSinceTyping > 10000) { // 10 seconds old
+      console.log(`[GROUP-BATCH] Clearing stale typing state for ${sender} (${timeSinceTyping}ms old)`);
+      senderState.isTyping = false;
+    }
+  }
   
   // Add message to batch
   groupBatch.messages.push(message);
@@ -954,16 +1024,6 @@ async function handleGroupChatMessage(sock, message) {
     groupBatch.typingTimeouts.delete(sender);
   }
   
-  // Check if we should process immediately due to batch size limit
-  if (groupBatch.messages.length >= GROUP_BATCH_CONFIG.maxBatchSize) {
-    console.log(`[GROUP-BATCH] Batch size limit reached for ${chatId}, processing immediately`);
-    await processGroupMessageBatch(sock, chatId);
-    return;
-  }
-  
-  // Set timeout to process batch
-  updateGroupBatchTimeout(sock, chatId);
-  
   // Log message content for debugging (shortened)
   const content = message.message?.conversation || 
                  message.message?.extendedTextMessage?.text || 
@@ -971,6 +1031,74 @@ async function handleGroupChatMessage(sock, message) {
                  '[Media message]';
   
   console.log(`[GROUP-BATCH] Message content: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"`);
+  
+  // Check if we should process immediately due to batch size limit
+  if (groupBatch.messages.length >= GROUP_BATCH_CONFIG.maxBatchSize) {
+    console.log(`[GROUP-BATCH] Batch size limit reached for ${chatId}, processing immediately`);
+    await processGroupMessageBatch(sock, chatId);
+    return;
+  }
+  
+  // Set timeout to process batch - but check if someone is currently typing first
+  if (!groupBatch.processing) {
+    // Clear any existing timeouts for this group
+    if (groupBatch.batchTimeout) {
+      clearTimeout(groupBatch.batchTimeout);
+      groupBatch.batchTimeout = null;
+    }
+    
+    // Check if anyone (including the sender) is currently typing
+    const typingStates = Array.from(groupBatch.senderStates.entries())
+      .map(([senderId, state]) => ({
+        senderId: senderId.split('@')[0],
+        isTyping: state.isTyping,
+        lastTypingTime: state.lastTypingTime ? new Date(state.lastTypingTime).toLocaleTimeString() : 'never'
+      }));
+    
+    const someoneCurrentlyTyping = Array.from(groupBatch.senderStates.values())
+      .some(state => state.isTyping);
+    
+    console.log(`[GROUP-BATCH] Typing states check:`, JSON.stringify(typingStates, null, 2));
+    console.log(`[GROUP-BATCH] Someone currently typing: ${someoneCurrentlyTyping}`);
+    
+    if (someoneCurrentlyTyping) {
+      // Someone is typing - don't set regular timeout, use longer fallback like personal chat
+      console.log(`[GROUP-BATCH] Someone is typing in ${chatId}, not setting regular timeout yet (message ${groupBatch.messages.length})`);
+      
+      // Set longer fallback timeout in case typing updates stop coming
+      const fallbackDelay = GROUP_BATCH_CONFIG.maxWaitTime; // Use max wait time as fallback
+      groupBatch.batchTimeout = setTimeout(() => {
+        const currentBatch = groupMessageBatches.get(chatId);
+        if (currentBatch && !currentBatch.processing) {
+          console.log(`[GROUP-BATCH] Fallback timeout reached (no typing update received), processing batch`);
+          processGroupMessageBatch(sock, chatId);
+        }
+      }, fallbackDelay);
+      
+      console.log(`[GROUP-BATCH] Set fallback timeout for ${fallbackDelay}ms in case typing updates stop coming`);
+    } else {
+      // No one typing - use minimum delay
+      const groupMinDelay = Math.max(GROUP_BATCH_CONFIG.minWaitTime, 4000); // At least 4 seconds for groups
+      
+      groupBatch.batchTimeout = setTimeout(() => {
+        const currentBatch = groupMessageBatches.get(chatId);
+        if (currentBatch && !currentBatch.processing) {
+          console.log(`[GROUP-BATCH] Minimum group wait time elapsed, checking if ready to process`);
+          checkAndProcessGroupBatch(sock, chatId);
+        }
+      }, groupMinDelay);
+      
+      console.log(`[GROUP-BATCH] Set group batch timeout for ${chatId} - will process in ${groupMinDelay}ms (no one typing)`);
+    }
+  }
+  
+  // Show typing indicator after receiving message (like personal chat)
+  setTimeout(async () => {
+    if (!groupBatch.processing) {
+      console.log(`[GROUP-BATCH] Showing typing indicator for group ${chatId}`);
+      await sock.sendPresenceUpdate('composing', chatId);
+    }
+  }, GROUP_BATCH_CONFIG.processingDelay);
 }
 
 export {
