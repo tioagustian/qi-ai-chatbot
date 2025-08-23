@@ -792,6 +792,8 @@ async function processGroupMessageBatch(sock, groupId) {
     const { registerUserIdentity, getAllUserIds, getUnifiedUserId } = await import('../utils/messageUtils.js');
     const { processMessage } = await import('../handlers/messageHandler.js');
     
+    console.log(`[GROUP-BATCH] Processing ${groupBatch.messages.length} messages in batch`);
+    
     // Process each message with enhanced context
     for (let i = 0; i < groupBatch.messages.length; i++) {
       const message = groupBatch.messages[i];
@@ -840,6 +842,9 @@ async function processGroupMessageBatch(sock, groupId) {
           });
         
         message.batchMetadata.otherMessagesInBatch = otherMessages;
+      } else {
+        // Single message in batch - set empty array to avoid undefined errors
+        message.batchMetadata.otherMessagesInBatch = [];
       }
       
       // Process the message

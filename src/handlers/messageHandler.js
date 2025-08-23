@@ -413,15 +413,25 @@ async function processMessage(sock, message) {
         if (isBatchedMessage && message.batchMetadata.isLastInBatch) {
           logger.info(`Adding batch context for ${message.batchMetadata.totalInBatch} messages`);
           
-          const batchContextInfo = message.batchMetadata.otherMessagesInBatch
-            .map(msg => `Message ${msg.position}: "${msg.content}"`)
-            .join('\n');
-            
-          contextMessages.push({
-            role: 'system',
-            content: `BATCH CONTEXT: The user sent ${message.batchMetadata.totalInBatch} messages in sequence. Here are all messages in order:\n${batchContextInfo}\n\nRespond to the complete conversation flow, considering all messages together.`,
-            name: 'batch_context'
-          });
+          // Check if there are other messages in the batch
+          if (message.batchMetadata.otherMessagesInBatch && message.batchMetadata.otherMessagesInBatch.length > 0) {
+            const batchContextInfo = message.batchMetadata.otherMessagesInBatch
+              .map(msg => `Message ${msg.position}: "${msg.content}"`)
+              .join('\n');
+              
+            contextMessages.push({
+              role: 'system',
+              content: `BATCH CONTEXT: The user sent ${message.batchMetadata.totalInBatch} messages in sequence. Here are all messages in order:\n${batchContextInfo}\n\nRespond to the complete conversation flow, considering all messages together.`,
+              name: 'batch_context'
+            });
+          } else {
+            // Single message in batch
+            contextMessages.push({
+              role: 'system',
+              content: `BATCH CONTEXT: This message was processed as a single-message batch in ${message.batchMetadata.batchType} chat.`,
+              name: 'batch_context'
+            });
+          }
         }
         
         // NEW: Handle image generation requests
@@ -737,6 +747,12 @@ async function processMessage(sock, message) {
         } catch (responseError) {
         logger.error('Error generating or sending response', responseError);
         try {
+          // Check if this is a session error - don't try to send if session is broken
+          if (responseError.message && responseError.message.includes('session')) {
+            logger.warning('Session error detected, skipping error message to avoid further issues');
+            return;
+          }
+          
           // Calculate a short delay for error messages
           const errorMessageDelay = calculateResponseDelay("", 
             `Maaf, terjadi kesalahan saat memproses pesan: ${responseError.message}. Coba lagi nanti ya~`, 
@@ -752,6 +768,11 @@ async function processMessage(sock, message) {
             });
         } catch (sendError) {
           logger.error('Error sending error message', sendError);
+          
+          // If this is also a session error, we should probably reconnect
+          if (sendError.message && sendError.message.includes('session')) {
+            logger.error('Multiple session errors detected - WhatsApp connection may need to be restarted');
+          }
         }
       }
     } else {
