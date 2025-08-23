@@ -224,7 +224,7 @@ async function generateAnalysis(prompt, options = {}, context = []) {
 }
 
 // Generate a response using the AI model
-async function generateAIResponseLegacy(message, context, botData, senderName = null) {
+async function generateAIResponseLegacy(message, context, botData, senderName = null, batchAnalysis = null) {
   try {
     const startTime = Date.now();
     logger.info(`Generating AI response for message: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`);
@@ -297,7 +297,7 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
     }
     
     // Create system message with personality and mood
-    const systemMessage = createSystemMessage(config, state);
+    const systemMessage = createSystemMessage(config, state, batchAnalysis);
     logger.debug('System message created', { length: systemMessage.length });
     
     // Prepare messages array for the API
@@ -1150,7 +1150,7 @@ function formatContextForAPI(context) {
 }
 
 // Create system message based on bot's configuration
-function createSystemMessage(config, state) {
+function createSystemMessage(config, state, batchAnalysis = null) {
   const { botName, personality } = config;
   const { currentMood } = state;
   const db = getDb();
@@ -1211,6 +1211,30 @@ function createSystemMessage(config, state) {
   
   systemMessage += `Your current response reflects the mood "${currentMood}: ${moodDescription}".`;
   systemMessage += `In group conversations, you only respond when your name is mentioned (${botName}). `;
+  
+  // Add batch analysis information if available
+  if (batchAnalysis && batchAnalysis.aiAnalysis) {
+    const analysis = batchAnalysis.aiAnalysis;
+    systemMessage += `\n\nBATCH ANALYSIS CONTEXT: `;
+    
+    if (analysis.overallIntent) {
+      systemMessage += `The overall intent of this conversation batch is: ${analysis.overallIntent}. `;
+    }
+    
+    if (analysis.batchFlow) {
+      systemMessage += `Batch flow analysis: ${analysis.batchFlow}. `;
+    }
+    
+    if (analysis.contextRelevance) {
+      systemMessage += `Context relevance: ${analysis.contextRelevance}. `;
+    }
+    
+    if (analysis.responseStrategy) {
+      systemMessage += `Recommended response strategy: ${analysis.responseStrategy}. `;
+    }
+    
+    systemMessage += `Use this analysis to provide a more accurate and contextually appropriate response.`;
+  }
   
   return systemMessage;
 }

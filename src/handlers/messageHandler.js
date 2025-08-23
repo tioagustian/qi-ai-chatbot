@@ -5,6 +5,7 @@ import { detectCommand, executeCommand } from '../services/commandService.js';
 import { shouldRespond, QUESTION_INDICATORS } from '../utils/decisionMaker.js';
 import { extractMessageContent, isGroupMessage, isTaggedMessage, calculateResponseDelay, hasImage, extractImageData } from '../utils/messageUtils.js';
 import { updateContext, getRelevantContext, shouldIntroduceInGroup, generateGroupIntroduction } from '../services/contextService.js';
+import { shouldRespondToMessageWithBatch, shouldRespondToBatch, shouldRespondToMessageBasic } from '../services/responseDeterminationService.js';
 import chalk from 'chalk';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -280,13 +281,139 @@ async function processMessage(sock, message) {
       logger.error('Error extracting facts from message', factError);
     }
     
-    // Check if we need to respond to the message
-    let shouldRespond = shouldRespondToMessage(message, content, isTagged, isGroup, db.data.config.botName);
+    // Check if we need to respond to the message using enhanced AI-powered determination
+    let shouldRespond = false;
+    let responseDetermination = null;
     
-    // For batched messages, only respond to the last message in the batch
-    if (isBatchedMessage && !message.batchMetadata.isLastInBatch) {
-      logger.debug(`Skipping response for batched message ${message.batchMetadata.batchPosition}/${message.batchMetadata.totalInBatch} (not last in batch)`);
-      shouldRespond = false;
+    // For batched messages, analyze the entire batch at once
+    if (message.batchMetadata && message.batchMetadata.isBatchedMessage) {
+      // Create a unique batch key for caching
+      const batchKey = `${message.batchMetadata.batchId || 'unknown'}_${message.key.remoteJid}`;
+      
+      // Check if we already have batch analysis for this batch
+      if (!global.batchAnalysisCache) {
+        global.batchAnalysisCache = new Map();
+      }
+      
+      let batchAnalysis = global.batchAnalysisCache.get(batchKey);
+      
+      // Only analyze the batch once - on the first message
+      if (!batchAnalysis && message.batchMetadata.batchPosition === 1) {
+        // Collect all messages in the batch
+        let allBatchMessages = [];
+        
+        // Use otherMessagesInBatch which already contains all messages in the batch
+        if (message.batchMetadata.otherMessagesInBatch) {
+          allBatchMessages = message.batchMetadata.otherMessagesInBatch.map(msg => ({
+            content: msg.content,
+            sender: message.key.participant || message.key.remoteJid,
+            timestamp: msg.timestamp || Date.now() / 1000,
+            isTagged: msg.isThis ? isTagged : false, // Use isTagged for current message, false for others
+            hasImage: msg.isThis ? containsImage : false // Use containsImage for current message, false for others
+          }));
+        } else {
+          // Fallback: add current message if otherMessagesInBatch is not available
+          allBatchMessages.push({
+            content: content,
+            sender: message.key.participant || message.key.remoteJid,
+            timestamp: message.messageTimestamp || Date.now() / 1000,
+            isTagged: isTagged,
+            hasImage: containsImage
+          });
+        }
+        
+        // Analyze entire batch
+        batchAnalysis = await shouldRespondToBatch(
+          allBatchMessages,
+          isGroup,
+          db.data.config.botName,
+          message.batchMetadata
+        );
+        
+        // Cache the result
+        global.batchAnalysisCache.set(batchKey, batchAnalysis);
+        
+        logger.debug('Batch response determination (first message)', {
+          shouldRespond: batchAnalysis.shouldRespond,
+          confidence: batchAnalysis.confidence,
+          reason: batchAnalysis.reason,
+          responseToMessage: batchAnalysis.responseToMessage,
+          totalMessages: allBatchMessages.length,
+          aiAnalysis: batchAnalysis.aiAnalysis
+        });
+      } else if (batchAnalysis) {
+        logger.debug('Using cached batch analysis for message', {
+          batchPosition: message.batchMetadata.batchPosition,
+          totalInBatch: message.batchMetadata.totalInBatch,
+          cachedResponseToMessage: batchAnalysis.responseToMessage
+        });
+      } else {
+        logger.debug('No batch analysis available for message', {
+          batchPosition: message.batchMetadata.batchPosition,
+          totalInBatch: message.batchMetadata.totalInBatch
+        });
+        
+        // Use fallback logic
+        batchAnalysis = {
+          shouldRespond: shouldRespondToMessageBasic(message, content, isTagged, isGroup, db.data.config.botName),
+          confidence: 0.5,
+          reason: 'batch_fallback',
+          responseToMessage: message.batchMetadata.totalInBatch,
+          aiAnalysis: null
+        };
+      }
+      
+      // Use the batch analysis result
+      responseDetermination = batchAnalysis;
+      
+      // Only respond if this is the message that should get a response
+      if (batchAnalysis.responseToMessage) {
+        shouldRespond = batchAnalysis.shouldRespond && 
+                       batchAnalysis.responseToMessage === message.batchMetadata.batchPosition;
+      } else {
+        shouldRespond = batchAnalysis.shouldRespond;
+      }
+      
+      // Clean up cache after processing the last message
+      if (message.batchMetadata.isLastInBatch) {
+        global.batchAnalysisCache.delete(batchKey);
+        logger.debug('Cleaned up batch analysis cache', { batchKey });
+      }
+      
+    } else {
+      // For non-batched messages, use individual analysis
+      let batchMessages = [];
+      if (message.batchMetadata && message.batchMetadata.otherMessagesInBatch) {
+        batchMessages = message.batchMetadata.otherMessagesInBatch.map(msg => ({
+          content: msg.content,
+          position: msg.position,
+          timestamp: msg.timestamp
+        }));
+      }
+      
+      responseDetermination = await shouldRespondToMessageWithBatch(
+        message, 
+        content, 
+        isTagged, 
+        isGroup, 
+        db.data.config.botName,
+        message.batchMetadata,
+        batchMessages
+      );
+      
+      shouldRespond = responseDetermination.shouldRespond;
+      
+      logger.debug('Individual response determination', {
+        shouldRespond,
+        confidence: responseDetermination.confidence,
+        reason: responseDetermination.reason,
+        aiAnalysis: responseDetermination.aiAnalysis
+      });
+    }
+    
+    // If confidence is low, log a warning
+    if (responseDetermination && responseDetermination.confidence < 0.3) {
+      logger.warning(`Low confidence response determination (${responseDetermination.confidence}): ${responseDetermination.reason}`);
     }
     
     // Check if this is a query about a previous image
@@ -662,7 +789,7 @@ async function processMessage(sock, message) {
         }
         
         // Generate response
-        const aiResponse = await generateAIResponseLegacy(content || (containsImage ? `[User sent an image: ${imageData.caption || 'no caption'}]` : "[Empty message]"), contextMessages, db.data, senderName);
+        const aiResponse = await generateAIResponseLegacy(content || (containsImage ? `[User sent an image: ${imageData.caption || 'no caption'}]` : "[Empty message]"), contextMessages, db.data, senderName, responseDetermination);
         
         // Stop typing indicator interval
         stopTypingInterval = true;

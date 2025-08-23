@@ -174,8 +174,8 @@ async function handlePersonalChatMessage(sock, message) {
   setTimeout(async () => {
     const currentBatch = messageBatches.get(chatId);
     if (currentBatch && !currentBatch.processing) {
-      logger.debug(`Showing typing indicator after message ${typingState.messageCount}`);
-      await sock.sendPresenceUpdate('composing', chatId);
+      // logger.debug(`Showing typing indicator after message ${typingState.messageCount}`);
+      // await sock.sendPresenceUpdate('composing', chatId);
     }
   }, BATCH_CONFIG.INITIAL_DELAY);
   
@@ -1095,8 +1095,8 @@ async function handleGroupChatMessage(sock, message) {
   // Show typing indicator after receiving message (like personal chat)
   setTimeout(async () => {
     if (!groupBatch.processing) {
-      console.log(`[GROUP-BATCH] Showing typing indicator for group ${chatId}`);
-      await sock.sendPresenceUpdate('composing', chatId);
+      // console.log(`[GROUP-BATCH] Showing typing indicator for group ${chatId}`);
+      // await sock.sendPresenceUpdate('composing', chatId);
     }
   }, GROUP_BATCH_CONFIG.processingDelay);
 }
