@@ -1,4 +1,4 @@
-import { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
+import { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, isJidBroadcast } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import { Boom } from '@hapi/boom';
 import path from 'path';
@@ -14,6 +14,7 @@ import { calculateResponseDelay } from './utils/messageUtils.js';
 import { cleanupOldLogs } from './services/apiLogService.js';
 // Import message batching service
 import { handlePersonalChatMessage, handleGroupChatMessage, handleGroupPresenceUpdate, handleTypingUpdate } from './services/messageBatchingService.js';
+import { makeWASocket } from '@whiskeysockets/baileys';
 
 // Get current directory
 const __filename = fileURLToPath(import.meta.url);
@@ -25,8 +26,6 @@ const SESSION_NAME = process.env.SESSION_NAME || 'qi-ai-session';
 
 // Global connection object
 let sock = null;
-// Global store
-let store = null;
 // Reconnection attempts counter
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
@@ -36,17 +35,7 @@ const startBot = async () => {
     // Reset reconnect attempts on successful connect
     reconnectAttempts = 0;
     
-    // Dynamically import baileys
-    const baileys = await import('@whiskeysockets/baileys');
-    
-    // Access makeWASocket from the default export
-    const makeWASocket = baileys.default.makeWASocket;
-    const { makeInMemoryStore } = baileys;
-    
-    // Initialize store
-    store = makeInMemoryStore({ 
-      logger: pino().child({ level: 'silent', stream: 'store' }) 
-    });
+
     
     // Make sure the session directory exists
     if (!fs.existsSync(SESSION_DIR)) {
@@ -70,24 +59,50 @@ const startBot = async () => {
       auth: state,
       browser: ['Qi AI ChatBot', 'Chrome', '1.0.0'],
       getMessage: async key => {
-        if (store) {
-          const msg = await store.loadMessage(key.remoteJid, key.id);
-          return msg?.message || undefined;
-        }
         return { conversation: 'Hello' };
       },
       // Add retries for the connection
       retryRequestDelayMs: 1000,
       connectTimeoutMs: 30000,
+      // Recommended settings for better stability
+      markOnlineOnConnect: true, // Mark as online when connected
+      syncFullHistory: false, // Don't sync full history on connect (performance)
+      fireInitQueries: true, // Fire initial queries for better connection
+      shouldIgnoreJid: jid => isJidBroadcast(jid), // Ignore broadcast messages
+      patchMessageBeforeSending: (msg) => {
+        // Ensure messages have proper structure
+        const requiresPatch = !!(
+          msg.buttonsMessage 
+          || msg.templateMessage
+          || msg.listMessage
+        );
+        if (requiresPatch) {
+          msg = {
+            viewOnceMessage: {
+              message: {
+                messageContextInfo: {
+                  deviceListMetadataVersion: 2,
+                  deviceListMetadata: {},
+                },
+                ...msg,
+              },
+            },
+          };
+        }
+        return msg;
+      },
+      // Better connection settings
+      keepAliveIntervalMs: 30000, // Send keep-alive every 30 seconds
+      maxRetries: 5, // Maximum retry attempts
+      defaultQueryTimeoutMs: 60000, // 60 second timeout for queries
     });
 
-    // Bind store to connection
-    store.bind(sock.ev);
+
 
     // Automatically save session
     sock.ev.on('creds.update', saveCreds);
-
-    // Handle connection updates
+    
+    // Handle connection state changes for better stability
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
@@ -238,6 +253,8 @@ const startBot = async () => {
       }
     });
 
+
+
     // Handle incoming messages with proper routing
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type === 'notify') {
@@ -251,12 +268,9 @@ const startBot = async () => {
             const isGroup = chatId.endsWith('@g.us');
             
             if (isGroup) {
-              // TODO: Enhance group message handler with group-specific features
-              // Currently uses direct processing without batching
               console.log(`[ROUTING] Group message detected in ${chatId}, using group handler`);
               await handleGroupChatMessage(sock, message);
             } else {
-              // Personal chat - use batching service for better UX
               console.log(`[ROUTING] Personal chat message detected in ${chatId}, using batching system`);
               await handlePersonalChatMessage(sock, message);
             }
