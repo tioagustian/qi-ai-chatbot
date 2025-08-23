@@ -37,6 +37,17 @@ async function searchWeb(query) {
   try {
     logger.info(`Performing web search for: "${query}"`);
     
+    // Clean up old cache entries periodically (every 10th search)
+    const searchCount = Math.floor(Math.random() * 10);
+    if (searchCount === 0) {
+      try {
+        const { cleanupWebSearchCache } = await import('../services/memoryService.js');
+        await cleanupWebSearchCache(48); // Clean entries older than 48 hours
+      } catch (cleanupError) {
+        logger.warning(`Failed to cleanup cache: ${cleanupError.message}`);
+      }
+    }
+    
     // First, check for cached results
     const cachedResults = await getCachedSearchResults(query, {
       maxAgeMinutes: 120  // 2 hours cache validity
@@ -44,6 +55,7 @@ async function searchWeb(query) {
     
     if (cachedResults) {
       logger.success(`Found cached search results for: "${query}"`);
+      logger.debug(`Cache details: query="${cachedResults.query}", timestamp="${cachedResults.timestamp}", age="${Math.floor((Date.now() - new Date(cachedResults.timestamp).getTime()) / (1000 * 60))} minutes"`);
       
       // If we have a cached AI summary, return it directly
       if (cachedResults.aiSummary) {

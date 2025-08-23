@@ -1505,6 +1505,46 @@ function getRelevantWebResults(keywords, options = {}) {
 }
 
 /**
+ * Clean up old web search cache entries
+ * @param {number} maxAgeHours - Maximum age in hours before cleanup
+ */
+async function cleanupWebSearchCache(maxAgeHours = 48) {
+  try {
+    const db = getDb();
+    
+    if (!db.data.webSearchHistory || Object.keys(db.data.webSearchHistory).length === 0) {
+      return;
+    }
+    
+    const maxAgeMs = maxAgeHours * 60 * 60 * 1000;
+    const oldestAllowed = Date.now() - maxAgeMs;
+    
+    let cleanedCount = 0;
+    const entriesToRemove = [];
+    
+    Object.entries(db.data.webSearchHistory).forEach(([searchId, searchData]) => {
+      const searchTime = new Date(searchData.timestamp).getTime();
+      if (searchTime < oldestAllowed) {
+        entriesToRemove.push(searchId);
+        cleanedCount++;
+      }
+    });
+    
+    // Remove old entries
+    entriesToRemove.forEach(searchId => {
+      delete db.data.webSearchHistory[searchId];
+    });
+    
+    if (cleanedCount > 0) {
+      await db.write();
+      logger.info(`Cleaned up ${cleanedCount} old web search cache entries (older than ${maxAgeHours} hours)`);
+    }
+  } catch (error) {
+    logger.error('Error cleaning up web search cache', error);
+  }
+}
+
+/**
  * Get a cached search result by exact query
  * @param {string} query - The search query
  * @param {Object} options - Additional options
@@ -1536,7 +1576,10 @@ function getCachedWebSearch(query, options = {}) {
     Object.entries(db.data.webSearchHistory).forEach(([searchId, searchData]) => {
       // Skip expired cache entries
       const searchTime = new Date(searchData.timestamp).getTime();
-      if (searchTime < oldestAllowed) return;
+      if (searchTime < oldestAllowed) {
+        logger.debug(`Skipping expired cache entry: ${searchId} (age: ${Math.floor((Date.now() - searchTime) / (1000 * 60))} minutes)`);
+        return;
+      }
       
       const cachedQuery = searchData.query.toLowerCase().trim();
       
@@ -1588,7 +1631,14 @@ function getCachedWebSearch(query, options = {}) {
     });
     
     // Return the best match if it's above the threshold
-    const threshold = exactMatchOnly ? 1.0 : 0.7;
+    const threshold = exactMatchOnly ? 1.0 : 0.8; // Increased from 0.7 to 0.8 for stricter matching
+    
+    if (bestMatch) {
+      logger.debug(`Cache match found: "${bestMatch.query}" (similarity: ${highestSimilarity.toFixed(3)}, threshold: ${threshold})`);
+    } else {
+      logger.debug(`No cache match found for query: "${query}" (best similarity: ${highestSimilarity.toFixed(3)}, threshold: ${threshold})`);
+    }
+    
     return highestSimilarity >= threshold ? bestMatch : null;
   } catch (error) {
     logger.error('Error retrieving cached web search', error);
@@ -1647,7 +1697,9 @@ function getRelevantWebContent(keywords, options = {}) {
         const contentText = contentData.truncatedContent.toLowerCase();
         keywordArray.forEach(keyword => {
           // Count occurrences (more occurrences = higher score)
-          const regex = new RegExp(keyword.toLowerCase(), 'g');
+          // Escape special regex characters to prevent regex errors
+          const escapedKeyword = keyword.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const regex = new RegExp(escapedKeyword, 'g');
           const occurrences = (contentText.match(regex) || []).length;
           if (occurrences > 0) {
             // Score increases with more occurrences but with diminishing returns
@@ -3210,6 +3262,7 @@ export {
   storeWebContent,
   getRelevantWebResults,
   getCachedWebSearch,
+  cleanupWebSearchCache,
   getRelevantWebContent,
   updateRelevanceMetrics,
   formatRelevantFacts,

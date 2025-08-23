@@ -12,6 +12,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
 import { extractAndProcessFacts, formatRelevantFacts, getRelevantFactsForMessage } from '../services/memoryService.js';
+import { searchFacts } from '../services/factSearchService.js';
+import { enhanceContextWithFacts, integrateFactsIntelligently } from '../services/factIntegrationService.js';
+import { advancedFactSearch } from '../services/advancedFactSearchService.js';
 
 // Get current directory for temporary file storage
 const __filename = fileURLToPath(import.meta.url);
@@ -524,17 +527,8 @@ async function processMessage(sock, message) {
           }
         }
         
-        // Add relevant facts to context if available
-        if (relevantFacts.length > 0) {
-          logger.info(`Adding ${relevantFacts.length} relevant facts to context`);
-          
-          const factsString = relevantFacts.join(', ');
-          contextMessages.push({
-            role: 'system',
-            content: `IMPORTANT FACTS ABOUT THE USER: ${factsString}`,
-            name: 'user_facts'
-          });
-        }
+        // Add intelligently integrated facts to context if available
+        // (This will be handled after intelligent fact integration is performed)
         
         // Add batch context if this is the last message in a batch
         if (isBatchedMessage && message.batchMetadata.isLastInBatch) {
@@ -786,6 +780,126 @@ async function processMessage(sock, message) {
         } catch (moodError) {
           logger.error('Error updating mood and personality', moodError);
           // Continue with response generation even if mood update fails
+        }
+        
+        // Intelligently integrate facts based on user message and conversation context
+        let intelligentFactIntegration = null;
+        try {
+          if (content && content.trim().length > 0) {
+            logger.info('Intelligently integrating facts based on user message and context');
+            
+            // Get recent conversation history for context
+            const recentHistory = contextMessages
+              .filter(msg => msg.role === 'user' || msg.role === 'assistant')
+              .slice(-6) // Last 6 messages for context
+              .map(msg => msg.content);
+            
+            // Use advanced fact search for better results
+            const advancedSearchResult = await advancedFactSearch(sender, content, {
+              includeRelationships: true,
+              includeTaxonomies: true,
+              includeUsageAnalytics: true,
+              maxDepth: 2,
+              maxResults: 6,
+              minRelevance: 0.4,
+              useSemanticSearch: true,
+              includeGlobalFacts: true,
+              includeUserFacts: true
+            });
+            
+            // Convert advanced search results to intelligent integration format
+            intelligentFactIntegration = {
+              integratedFacts: advancedSearchResult.topResults.map(fact => ({
+                ...fact,
+                contextScore: fact.relevanceScore
+              })),
+              contextEnhancement: createAdvancedContextEnhancement(advancedSearchResult),
+              shouldUseFacts: advancedSearchResult.topResults.length > 0,
+              messageAnalysis: {
+                intent: 'enhanced_search',
+                isPersonal: content.toLowerCase().includes('saya') || content.toLowerCase().includes('aku'),
+                isQuestion: content.includes('?') || content.toLowerCase().includes('apa') || content.toLowerCase().includes('siapa'),
+                topics: extractTopicsFromAdvancedResults(advancedSearchResult)
+              },
+              searchQuality: advancedSearchResult.searchQuality || 0.8,
+              advancedMetrics: advancedSearchResult.advancedMetrics,
+              relatedFacts: advancedSearchResult.relatedFacts,
+              taxonomyInsights: advancedSearchResult.taxonomyInsights
+            };
+            
+            if (intelligentFactIntegration.integratedFacts && intelligentFactIntegration.integratedFacts.length > 0) {
+              logger.success(`Intelligently integrated ${intelligentFactIntegration.integratedFacts.length} facts for ${senderName || sender.split('@')[0]}`);
+              logger.debug('Intelligent fact integration:', {
+                userId: sender,
+                userName: senderName || sender.split('@')[0],
+                messageIntent: intelligentFactIntegration.messageAnalysis.intent,
+                shouldUseFacts: intelligentFactIntegration.shouldUseFacts,
+                searchQuality: intelligentFactIntegration.searchQuality,
+                facts: intelligentFactIntegration.integratedFacts.map(f => ({ 
+                  key: f.key, 
+                  value: f.value, 
+                  contextScore: f.contextScore,
+                  factType: f.factType 
+                }))
+              });
+              
+              // Add intelligently integrated facts to the relevant facts list
+              const factStrings = intelligentFactIntegration.integratedFacts.map(fact => 
+                `${fact.factType === 'global' ? 'GLOBAL: ' : ''}${fact.key}: ${fact.value} (context score: ${fact.contextScore.toFixed(2)})`
+              );
+              
+              if (relevantFacts) {
+                relevantFacts = [...relevantFacts, ...factStrings];
+              } else {
+                relevantFacts = factStrings;
+              }
+            } else {
+              logger.debug('No relevant facts found through intelligent integration');
+            }
+          }
+        } catch (integrationError) {
+          logger.error('Error in intelligent fact integration:', integrationError);
+          // Continue with response generation even if fact integration fails
+        }
+        
+        // Add intelligently integrated facts to context if available
+        if (intelligentFactIntegration && intelligentFactIntegration.contextEnhancement) {
+          logger.info(`Adding intelligent fact context: ${intelligentFactIntegration.contextEnhancement.substring(0, 100)}...`);
+          
+          contextMessages.push({
+            role: 'system',
+            content: intelligentFactIntegration.contextEnhancement,
+            name: 'intelligent_facts'
+          });
+        } else if (relevantFacts && relevantFacts.length > 0) {
+          // Fallback to basic fact integration if intelligent integration failed
+          logger.info(`Adding ${relevantFacts.length} relevant facts to context (fallback)`);
+          
+          // Group facts by type for better organization
+          const userFacts = relevantFacts.filter(fact => !fact.includes('GLOBAL:'));
+          const globalFacts = relevantFacts.filter(fact => fact.includes('GLOBAL:'));
+          
+          let factsContext = '';
+          
+          // Add user-specific facts in a conversational way
+          if (userFacts.length > 0) {
+            const userFactsString = userFacts.map(fact => fact.replace(/\(context score: [\d.]+\)/g, '')).join(', ');
+            factsContext += `Based on what I know about you: ${userFactsString}. `;
+          }
+          
+          // Add global facts as general knowledge
+          if (globalFacts.length > 0) {
+            const globalFactsString = globalFacts.map(fact => 
+              fact.replace('GLOBAL: ', '').replace(/\(context score: [\d.]+\)/g, '')
+            ).join(', ');
+            factsContext += `General knowledge: ${globalFactsString}. `;
+          }
+          
+          contextMessages.push({
+            role: 'system',
+            content: factsContext,
+            name: 'contextual_facts'
+          });
         }
         
         // Generate response
@@ -1123,6 +1237,108 @@ async function processStatusBroadcast(sock, message) {
   } catch (error) {
     console.error('Error processing status broadcast:', error);
   }
+}
+
+/**
+ * Create advanced context enhancement from advanced search results
+ * @param {Object} advancedSearchResult - Advanced search results
+ * @returns {string} - Context enhancement string
+ */
+function createAdvancedContextEnhancement(advancedSearchResult) {
+  if (!advancedSearchResult.topResults || advancedSearchResult.topResults.length === 0) {
+    return '';
+  }
+
+  const userFacts = advancedSearchResult.topResults.filter(fact => fact.factType === 'user');
+  const globalFacts = advancedSearchResult.topResults.filter(fact => fact.factType === 'global');
+  
+  let enhancement = '';
+  
+  // Add user facts in a conversational way
+  if (userFacts.length > 0) {
+    const userFactsText = userFacts
+      .map(fact => fact.value)
+      .join(', ');
+    
+    enhancement += `I remember that you mentioned: ${userFactsText}. `;
+  }
+  
+  // Add global facts as relevant information
+  if (globalFacts.length > 0) {
+    const globalFactsText = globalFacts
+      .map(fact => fact.value)
+      .join(', ');
+    
+    enhancement += `Relevant information: ${globalFactsText}. `;
+  }
+  
+  // Add relationship insights if available
+  if (advancedSearchResult.relatedFacts && advancedSearchResult.relatedFacts.length > 0) {
+    const relatedCount = advancedSearchResult.relatedFacts.length;
+    enhancement += `I also found ${relatedCount} related pieces of information that might be relevant. `;
+  }
+  
+  // Add taxonomy insights if available
+  if (advancedSearchResult.taxonomyInsights && advancedSearchResult.taxonomyInsights.categories) {
+    const topCategory = Object.entries(advancedSearchResult.taxonomyInsights.categories)
+      .sort(([,a], [,b]) => b - a)[0];
+    
+    if (topCategory) {
+      enhancement += `Most of this information relates to ${topCategory[0]} topics. `;
+    }
+  }
+  
+  return enhancement.trim();
+}
+
+/**
+ * Extract topics from advanced search results
+ * @param {Object} advancedSearchResult - Advanced search results
+ * @returns {Array} - Extracted topics
+ */
+function extractTopicsFromAdvancedResults(advancedSearchResult) {
+  const topics = [];
+  
+  if (advancedSearchResult.taxonomyInsights && advancedSearchResult.taxonomyInsights.categories) {
+    // Get top categories as topics
+    const topCategories = Object.entries(advancedSearchResult.taxonomyInsights.categories)
+      .sort(([,a], [,b]) => b - a)
+      .slice(0, 3)
+      .map(([category]) => category);
+    
+    topics.push(...topCategories);
+  }
+  
+  // Extract topics from fact keys and values
+  if (advancedSearchResult.topResults) {
+    advancedSearchResult.topResults.forEach(fact => {
+      const factText = `${fact.key} ${fact.value}`.toLowerCase();
+      
+      // Common topic patterns
+      const topicPatterns = [
+        { pattern: /(nama|name)/, topic: 'identity' },
+        { pattern: /(umur|age|tua)/, topic: 'age' },
+        { pattern: /(rumah|home|tinggal|live)/, topic: 'location' },
+        { pattern: /(kerja|work|job|profesi)/, topic: 'work' },
+        { pattern: /(hobi|hobby|suka|like)/, topic: 'interests' },
+        { pattern: /(makan|food|restoran|restaurant)/, topic: 'food' },
+        { pattern: /(musik|music|lagu|song)/, topic: 'music' },
+        { pattern: /(film|movie|nonton|watch)/, topic: 'entertainment' },
+        { pattern: /(olahraga|sport|main|play)/, topic: 'sports' },
+        { pattern: /(kuliah|study|sekolah|school)/, topic: 'education' },
+        { pattern: /(game|gaming|play)/, topic: 'gaming' },
+        { pattern: /(web|search|internet)/, topic: 'web_search' }
+      ];
+      
+      topicPatterns.forEach(({ pattern, topic }) => {
+        if (pattern.test(factText) && !topics.includes(topic)) {
+          topics.push(topic);
+        }
+      });
+    });
+  }
+  
+  return [...new Set(topics)];
 }
 
 export { processMessage, shouldRespondToMessage, getLastImageAnalysisId, detectImageGenerationRequest, extractImagePrompt, processStatusBroadcast };

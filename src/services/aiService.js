@@ -1172,6 +1172,12 @@ function createSystemMessage(config, state, batchAnalysis = null) {
     systemMessage += `You know that: ${characterKnowledge}. `;
   }
   
+  // Add fact utilization instructions
+  systemMessage += `When you have access to facts about the user or general knowledge, use them naturally in your responses. `;
+  systemMessage += `Reference these facts conversationally without explicitly mentioning that you're using stored information. `;
+  systemMessage += `For example, if you know the user's name, preferences, or location, incorporate this naturally into your responses. `;
+  systemMessage += `Make the conversation feel personal and contextual based on what you know about them. `;
+  
   // Add web search capability information
   const hasSearchCapability = process.env.GOOGLE_SEARCH_API_KEY && process.env.GOOGLE_SEARCH_ENGINE_ID;
   if (hasSearchCapability) {

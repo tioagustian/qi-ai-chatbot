@@ -8,6 +8,8 @@ import { getApiLogs, clearApiLogs } from './apiLogService.js';
 import { getDb } from '../database/index.js';
 import chalk from 'chalk';
 import { getBatchStatus, forceProcessBatch, getGroupPresenceStats, processGroupMessageBatch, GROUP_BATCH_CONFIG } from './messageBatchingService.js';
+import { searchFacts, getFactStatistics, getFactSuggestions } from './factSearchService.js';
+import { advancedFactSearch, searchByTaxonomy, getFactInsights } from './advancedFactSearchService.js';
 
 // Get current directory
 const __filename = fileURLToPath(import.meta.url);
@@ -155,6 +157,197 @@ async function executeCommand(sock, message, commandData, db) {
         const triggers = args.slice(1);
         const addTriggersResult = await addMoodTriggers(db, triggerMood, triggers);
         return addTriggersResult.message;
+        
+      case 'searchfacts':
+        if (args.length === 0) {
+          return 'Gunakan format: !searchfacts [query]\nContoh: !searchfacts nama saya\n\nPerintah ini akan mencari fakta yang relevan dengan query Anda dari database.';
+        }
+        const searchQuery = args.join(' ');
+        try {
+          const searchResult = await searchFacts(sender, searchQuery, {
+            includeGlobalFacts: true,
+            includeUserFacts: true,
+            includeOtherUsers: false,
+            maxResults: 10,
+            minRelevance: 0.2,
+            useSemanticSearch: true
+          });
+          
+          if (searchResult.topResults && searchResult.topResults.length > 0) {
+            const factList = searchResult.topResults.map((fact, index) => {
+              const sourceLabel = fact.source === 'global' ? '🌍' : fact.source === 'user' ? '👤' : '👥';
+              return `${index + 1}. ${sourceLabel} ${fact.key}: ${fact.value}\n   Relevansi: ${(fact.relevanceScore * 100).toFixed(1)}%`;
+            }).join('\n\n');
+            
+            return `🔍 Hasil Pencarian Fakta untuk "${searchQuery}":\n\n${factList}\n\nTotal: ${searchResult.topResults.length} fakta ditemukan\nKualitas pencarian: ${(searchResult.searchQuality * 100).toFixed(1)}%`;
+          } else {
+            return `❌ Tidak ada fakta yang ditemukan untuk query "${searchQuery}"\n\nCoba gunakan kata kunci yang berbeda atau lebih spesifik.`;
+          }
+        } catch (error) {
+          console.error('Error in fact search command:', error);
+          return '❌ Terjadi kesalahan saat mencari fakta. Silakan coba lagi.';
+        }
+        
+      case 'factstats':
+        try {
+          const stats = getFactStatistics(sender);
+          const userFactsByCategory = Object.entries(stats.userFactsByCategory)
+            .map(([category, count]) => `${category}: ${count}`)
+            .join(', ');
+          
+          const globalFactsByCategory = Object.entries(stats.globalFactsByCategory)
+            .map(([category, count]) => `${category}: ${count}`)
+            .join(', ');
+          
+          return `📊 Statistik Fakta:\n\n👤 Fakta Pengguna: ${stats.totalUserFacts}\n🌍 Fakta Global: ${stats.totalGlobalFacts}\n🆕 Fakta Terbaru: ${stats.recentFacts}\n⭐ Fakta Berkualitas Tinggi: ${stats.highConfidenceFacts}\n\n📂 Kategori Fakta Pengguna:\n${userFactsByCategory || 'Tidak ada'}\n\n📂 Kategori Fakta Global:\n${globalFactsByCategory || 'Tidak ada'}`;
+        } catch (error) {
+          console.error('Error in fact stats command:', error);
+          return '❌ Terjadi kesalahan saat mengambil statistik fakta.';
+        }
+        
+                  case 'factsuggest':
+              if (args.length === 0) {
+                return 'Gunakan format: !factsuggest [partial_input]\nContoh: !factsuggest nam\n\nPerintah ini akan memberikan saran fakta berdasarkan input parsial Anda.';
+              }
+              const partialInput = args.join(' ');
+              try {
+                const suggestions = await getFactSuggestions(sender, partialInput);
+                
+                if (suggestions.length > 0) {
+                  const suggestionList = suggestions.map((suggestion, index) => {
+                    const typeLabel = suggestion.type === 'user_fact' ? '👤' : '🌍';
+                    return `${index + 1}. ${typeLabel} ${suggestion.key}: ${suggestion.value}\n   Kategori: ${suggestion.category || 'Tidak ada'}\n   Kepercayaan: ${(suggestion.confidence * 100).toFixed(1)}%`;
+                  }).join('\n\n');
+                  
+                  return `💡 Saran Fakta untuk "${partialInput}":\n\n${suggestionList}`;
+                } else {
+                  return `❌ Tidak ada saran fakta untuk "${partialInput}"\n\nCoba gunakan kata kunci yang berbeda.`;
+                }
+              } catch (error) {
+                console.error('Error in fact suggestions command:', error);
+                return '❌ Terjadi kesalahan saat mencari saran fakta.';
+              }
+              
+            case 'advancedsearch':
+              if (args.length === 0) {
+                return 'Gunakan format: !advancedsearch [query]\nContoh: !advancedsearch game horror\n\nPerintah ini akan mencari fakta dengan analisis hubungan dan taksonomi.';
+              }
+              const advancedQuery = args.join(' ');
+              try {
+                const advancedResult = await advancedFactSearch(sender, advancedQuery, {
+                  includeRelationships: true,
+                  includeTaxonomies: true,
+                  includeUsageAnalytics: true,
+                  maxDepth: 2,
+                  maxResults: 8
+                });
+                
+                if (advancedResult.topResults && advancedResult.topResults.length > 0) {
+                  let resultText = `🔍 Pencarian Lanjutan untuk "${advancedQuery}":\n\n`;
+                  
+                  // Main results
+                  resultText += `📋 Hasil Utama (${advancedResult.topResults.length}):\n`;
+                  advancedResult.topResults.forEach((fact, index) => {
+                    const sourceLabel = fact.factType === 'global' ? '🌍' : '👤';
+                    resultText += `${index + 1}. ${sourceLabel} ${fact.key}: ${fact.value.substring(0, 80)}...\n   Relevansi: ${(fact.relevanceScore * 100).toFixed(1)}% | Kategori: ${fact.category || 'N/A'}\n`;
+                  });
+                  
+                  // Related facts
+                  if (advancedResult.relatedFacts && advancedResult.relatedFacts.length > 0) {
+                    resultText += `\n🔗 Fakta Terkait (${advancedResult.relatedFacts.length}):\n`;
+                    advancedResult.relatedFacts.slice(0, 3).forEach((fact, index) => {
+                      const sourceLabel = fact.factType === 'global' ? '🌍' : '👤';
+                      resultText += `${index + 1}. ${sourceLabel} ${fact.key}: ${fact.value.substring(0, 60)}...\n   Hubungan: ${fact.relationshipType} (${(fact.relationshipStrength * 100).toFixed(1)}%)\n`;
+                    });
+                  }
+                  
+                  // Metrics
+                  if (advancedResult.advancedMetrics) {
+                    const metrics = advancedResult.advancedMetrics;
+                    resultText += `\n📊 Metrik Lanjutan:\n`;
+                    resultText += `• Rata-rata Kepercayaan: ${(metrics.averageConfidence * 100).toFixed(1)}%\n`;
+                    resultText += `• Fakta Populer: ${metrics.popularFacts}\n`;
+                    resultText += `• Fakta Terbaru: ${metrics.recentFacts}\n`;
+                    resultText += `• Kepadatan Hubungan: ${(metrics.relationshipDensity * 100).toFixed(1)}%\n`;
+                  }
+                  
+                  return resultText;
+                } else {
+                  return `❌ Tidak ada hasil pencarian lanjutan untuk "${advancedQuery}"`;
+                }
+              } catch (error) {
+                console.error('Error in advanced search command:', error);
+                return '❌ Terjadi kesalahan saat melakukan pencarian lanjutan.';
+              }
+              
+            case 'factinsights':
+              try {
+                const insights = await getFactInsights(sender);
+                
+                let insightsText = `📊 Analisis Fakta Lanjutan:\n\n`;
+                insightsText += `📈 Statistik Umum:\n`;
+                insightsText += `• Total Fakta: ${insights.totalFacts}\n`;
+                insightsText += `• Fakta Pengguna: ${insights.userFacts}\n`;
+                insightsText += `• Fakta Global: ${insights.globalFacts}\n`;
+                
+                if (insights.relationshipStats) {
+                  insightsText += `\n🔗 Statistik Hubungan:\n`;
+                  insightsText += `• Total Hubungan: ${insights.relationshipStats.totalRelationships}\n`;
+                  insightsText += `• Hubungan Pengguna: ${insights.relationshipStats.userRelationships}\n`;
+                }
+                
+                if (insights.categories && Object.keys(insights.categories).length > 0) {
+                  insightsText += `\n📂 Kategori Teratas:\n`;
+                  const topCategories = Object.entries(insights.categories)
+                    .sort(([,a], [,b]) => (a.user + a.global) - (b.user + b.global))
+                    .slice(0, 5);
+                  
+                  topCategories.forEach(([category, counts]) => {
+                    insightsText += `• ${category}: ${counts.user + counts.global} (${counts.user} user, ${counts.global} global)\n`;
+                  });
+                }
+                
+                if (insights.usageStats && insights.usageStats.user) {
+                  const userStats = insights.usageStats.user;
+                  insightsText += `\n📊 Statistik Penggunaan:\n`;
+                  insightsText += `• Total Penggunaan: ${userStats.total}\n`;
+                  insightsText += `• Rata-rata Penggunaan: ${userStats.count > 0 ? (userStats.total / userStats.count).toFixed(1) : 0}\n`;
+                }
+                
+                return insightsText;
+              } catch (error) {
+                console.error('Error in fact insights command:', error);
+                return '❌ Terjadi kesalahan saat mengambil analisis fakta.';
+              }
+              
+            case 'taxonomysearch':
+              if (args.length < 2) {
+                return 'Gunakan format: !taxonomysearch [category] [query]\nContoh: !taxonomysearch web_search game\n\nPerintah ini akan mencari fakta berdasarkan kategori taksonomi.';
+              }
+              const category = args[0];
+              const taxonomyQuery = args.slice(1).join(' ');
+              try {
+                const taxonomyResults = await searchByTaxonomy(sender, {
+                  category: category,
+                  minConfidence: 0.5
+                });
+                
+                if (taxonomyResults.length > 0) {
+                  let resultText = `🔍 Pencarian Taksonomi: ${category} untuk "${taxonomyQuery}"\n\n`;
+                  
+                  taxonomyResults.slice(0, 5).forEach((fact, index) => {
+                    const sourceLabel = fact.factType === 'global' ? '🌍' : '👤';
+                    resultText += `${index + 1}. ${sourceLabel} ${fact.key}: ${fact.value.substring(0, 80)}...\n   Kepercayaan: ${(fact.confidence * 100).toFixed(1)}% | Tipe: ${fact.factType || 'N/A'}\n`;
+                  });
+                  
+                  return resultText;
+                } else {
+                  return `❌ Tidak ada fakta dalam kategori "${category}" untuk "${taxonomyQuery}"`;
+                }
+              } catch (error) {
+                console.error('Error in taxonomy search command:', error);
+                return '❌ Terjadi kesalahan saat mencari berdasarkan taksonomi.';
+              }
         
       case 'removemood':
         if (args.length === 0) {
@@ -707,6 +900,14 @@ function getHelpText() {
 !apilogs model [nama] - Filter log berdasarkan model
 !apilogs clear - Hapus log lama (simpan 24 jam terakhir)
 !apilogs clear all - Hapus semua log
+
+*Pencarian Fakta:*
+!searchfacts [query] - Mencari fakta yang relevan dengan query
+!factstats - Menampilkan statistik fakta pengguna
+!factsuggest [input] - Memberikan saran fakta berdasarkan input parsial
+!advancedsearch [query] - Pencarian lanjutan dengan analisis hubungan
+!factinsights - Analisis fakta lanjutan dan statistik
+!taxonomysearch [category] [query] - Pencarian berdasarkan kategori taksonomi
 
 Gunakan !help [perintah] untuk bantuan lebih detail tentang perintah tertentu.`;
 }
