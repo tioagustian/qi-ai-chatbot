@@ -305,25 +305,66 @@ async function processMessage(sock, message) {
         // Collect all messages in the batch
         let allBatchMessages = [];
         
-        // Use otherMessagesInBatch which already contains all messages in the batch
-        if (message.batchMetadata.otherMessagesInBatch) {
-          allBatchMessages = message.batchMetadata.otherMessagesInBatch.map(msg => ({
-            content: msg.content,
-            sender: message.key.participant || message.key.remoteJid,
-            timestamp: msg.timestamp || Date.now() / 1000,
-            isTagged: msg.isThis ? isTagged : false, // Use isTagged for current message, false for others
-            hasImage: msg.isThis ? containsImage : false // Use containsImage for current message, false for others
-          }));
-        } else {
-          // Fallback: add current message if otherMessagesInBatch is not available
+        // Always include the current message first
+        allBatchMessages.push({
+          content: content,
+          sender: message.key.participant || message.key.remoteJid,
+          timestamp: message.messageTimestamp || Date.now() / 1000,
+          isTagged: isTagged,
+          hasImage: containsImage,
+          chatId: message.key.remoteJid
+        });
+        
+        // Add other messages in the batch if available
+        if (message.batchMetadata.otherMessagesInBatch && message.batchMetadata.otherMessagesInBatch.length > 0) {
+          const otherMessages = message.batchMetadata.otherMessagesInBatch
+            .filter(msg => !msg.isThis) // Exclude the current message to avoid duplication
+            .map(msg => ({
+              content: msg.content,
+              sender: message.key.participant || message.key.remoteJid,
+              timestamp: msg.timestamp || Date.now() / 1000,
+              isTagged: false, // Other messages are not tagged
+              hasImage: false, // Other messages don't have images
+              chatId: message.key.remoteJid
+            }));
+          
+          allBatchMessages = allBatchMessages.concat(otherMessages);
+        }
+        
+        // Ensure we have at least one message
+        if (allBatchMessages.length === 0) {
+          logger.warning('No messages found in batch, adding current message as fallback');
           allBatchMessages.push({
             content: content,
             sender: message.key.participant || message.key.remoteJid,
             timestamp: message.messageTimestamp || Date.now() / 1000,
             isTagged: isTagged,
-            hasImage: containsImage
+            hasImage: containsImage,
+            chatId: message.key.remoteJid
           });
         }
+        
+        // Additional fallback: if we have batch metadata but no other messages, ensure current message is included
+        if (message.batchMetadata && message.batchMetadata.otherMessagesInBatch && 
+            message.batchMetadata.otherMessagesInBatch.length === 0 && allBatchMessages.length === 1) {
+          logger.debug('Single message in batch with empty otherMessagesInBatch - this is expected for first message');
+        }
+        
+        logger.debug('Batch messages prepared for analysis', {
+          totalMessages: allBatchMessages.length,
+          messages: allBatchMessages.map(msg => ({
+            content: msg.content?.substring(0, 50) + (msg.content?.length > 50 ? '...' : ''),
+            isTagged: msg.isTagged,
+            hasImage: msg.hasImage
+          })),
+          batchMetadata: {
+            otherMessagesInBatch: message.batchMetadata.otherMessagesInBatch?.map(msg => ({
+              position: msg.position,
+              content: msg.content?.substring(0, 30) + (msg.content?.length > 30 ? '...' : ''),
+              isThis: msg.isThis
+            }))
+          }
+        });
         
         // Analyze entire batch
         batchAnalysis = await shouldRespondToBatch(

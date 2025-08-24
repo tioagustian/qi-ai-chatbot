@@ -320,15 +320,46 @@ async function processMessageBatch(sock, chatId) {
         processingTime: Date.now() - typingState.firstMessageTime,
         messagesAlreadyRead: true,
         // Include other messages in batch for context
-        otherMessagesInBatch: messages.map((m, idx) => ({
-          position: idx + 1,
-          content: m.message?.conversation || m.message?.extendedTextMessage?.text || '',
-          timestamp: m.messageTimestamp,
-          isThis: idx === i
-        }))
+        otherMessagesInBatch: messages.map((m, idx) => {
+          // Enhanced content extraction
+          let content = '';
+          if (m.message?.conversation) {
+            content = m.message.conversation;
+          } else if (m.message?.extendedTextMessage?.text) {
+            content = m.message.extendedTextMessage.text;
+          } else if (m.message?.imageMessage?.caption) {
+            content = m.message.imageMessage.caption;
+          } else if (m.message?.videoMessage?.caption) {
+            content = m.message.videoMessage.caption;
+          } else if (m.message?.audioMessage?.caption) {
+            content = m.message.audioMessage.caption;
+          } else if (m.message?.documentMessage?.caption) {
+            content = m.message.documentMessage.caption;
+          } else {
+            content = '[Media message]';
+          }
+          
+          return {
+            position: idx + 1,
+            content: content,
+            timestamp: m.messageTimestamp,
+            isThis: idx === i
+          };
+        })
       };
       
       logger.info(`Processing message ${i + 1}/${messageCount} in batch: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"`);
+      
+      // Debug: Log the batch metadata for this message
+      logger.debug(`Batch metadata for message ${i + 1}:`, {
+        batchPosition: message.batchMetadata.batchPosition,
+        totalInBatch: message.batchMetadata.totalInBatch,
+        otherMessagesInBatch: message.batchMetadata.otherMessagesInBatch.map(msg => ({
+          position: msg.position,
+          content: msg.content?.substring(0, 30) + (msg.content?.length > 30 ? '...' : ''),
+          isThis: msg.isThis
+        }))
+      });
       
       // Process each message individually
       await processMessage(sock, message);
@@ -887,10 +918,24 @@ async function processGroupMessageBatch(sock, groupId) {
           .map((msg, index) => {
             const msgSender = msg.key.participant || msg.key.remoteJid;
             const msgUserIds = getAllUserIds(msgSender);
-            const content = msg.message?.conversation || 
-                           msg.message?.extendedTextMessage?.text || 
-                           msg.message?.imageMessage?.caption || 
-                           '[Media message]';
+            
+            // Enhanced content extraction (same as personal chat)
+            let content = '';
+            if (msg.message?.conversation) {
+              content = msg.message.conversation;
+            } else if (msg.message?.extendedTextMessage?.text) {
+              content = msg.message.extendedTextMessage.text;
+            } else if (msg.message?.imageMessage?.caption) {
+              content = msg.message.imageMessage.caption;
+            } else if (msg.message?.videoMessage?.caption) {
+              content = msg.message.videoMessage.caption;
+            } else if (msg.message?.audioMessage?.caption) {
+              content = msg.message.audioMessage.caption;
+            } else if (msg.message?.documentMessage?.caption) {
+              content = msg.message.documentMessage.caption;
+            } else {
+              content = '[Media message]';
+            }
             
             return {
               position: index < i ? index + 1 : index + 2, // Adjust position relative to current
@@ -906,6 +951,17 @@ async function processGroupMessageBatch(sock, groupId) {
         // Single message in batch - set empty array to avoid undefined errors
         message.batchMetadata.otherMessagesInBatch = [];
       }
+      
+      // Debug: Log the batch metadata for this message (after setting otherMessagesInBatch)
+      console.log(`[GROUP-BATCH] Batch metadata for message ${i + 1}:`, {
+        batchPosition: message.batchMetadata.batchPosition,
+        totalInBatch: message.batchMetadata.totalInBatch,
+        otherMessagesInBatch: message.batchMetadata.otherMessagesInBatch.map(msg => ({
+          position: msg.position,
+          content: msg.content?.substring(0, 30) + (msg.content?.length > 30 ? '...' : ''),
+          sender: msg.sender
+        }))
+      });
       
       // Process the message
       await processMessage(sock, message);
@@ -1024,11 +1080,23 @@ async function handleGroupChatMessage(sock, message) {
     groupBatch.typingTimeouts.delete(sender);
   }
   
-  // Log message content for debugging (shortened)
-  const content = message.message?.conversation || 
-                 message.message?.extendedTextMessage?.text || 
-                 message.message?.imageMessage?.caption || 
-                 '[Media message]';
+  // Enhanced content extraction for group messages
+  let content = '';
+  if (message.message?.conversation) {
+    content = message.message.conversation;
+  } else if (message.message?.extendedTextMessage?.text) {
+    content = message.message.extendedTextMessage.text;
+  } else if (message.message?.imageMessage?.caption) {
+    content = message.message.imageMessage.caption;
+  } else if (message.message?.videoMessage?.caption) {
+    content = message.message.videoMessage.caption;
+  } else if (message.message?.audioMessage?.caption) {
+    content = message.message.audioMessage.caption;
+  } else if (message.message?.documentMessage?.caption) {
+    content = message.message.documentMessage.caption;
+  } else {
+    content = '[Media message]';
+  }
   
   console.log(`[GROUP-BATCH] Message content: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"`);
   
