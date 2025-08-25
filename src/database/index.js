@@ -15,6 +15,7 @@ const defaultData = {
     botName: process.env.BOT_NAME || 'Qi',
     botId: process.env.BOT_ID || '',
     language: process.env.LANGUAGE || 'id',
+    defaultProvider: process.env.DEFAULT_PROVIDER || 'openrouter',
     model: process.env.DEFAULT_MODEL || 'anthropic/claude-3-opus-20240229',
     moodChangeProbability: parseFloat(process.env.MOOD_CHANGE_PROBABILITY || 0.15),
     personality: process.env.DEFAULT_PERSONALITY || 'friendly',
