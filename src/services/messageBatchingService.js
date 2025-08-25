@@ -404,9 +404,6 @@ async function handleTypingUpdate(sock, update) {
     return;
   }
   
-  logger.debug(`Received presence update for chat ${chatId}:`, update);
-  logger.debug(`Update structure: participants=${!!update.participants}, presences=${!!update.presences}`);
-  
   initializeTypingState(chatId);
   const typingState = typingStates.get(chatId);
   const messageBatch = messageBatches.get(chatId);
@@ -591,9 +588,6 @@ async function handleGroupPresenceUpdate(sock, update) {
   if (!groupId.endsWith('@g.us')) {
     return;
   }
-  
-  console.log(`[GROUP-PRESENCE][${new Date().toISOString()}] Received presence update for group ${groupId}`);
-  console.log(`[GROUP-PRESENCE] Update details:`, JSON.stringify(update, null, 2));
   
   // Initialize presence tracking and batching if not exists
   initializeGroupPresence(groupId);

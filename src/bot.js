@@ -281,7 +281,6 @@ const startBot = async () => {
 
     // Handle typing indicators for message batching and group presence monitoring
     sock.ev.on('presence.update', async (update) => {
-      console.log(chalk.blue(`[PRESENCE][${new Date().toISOString()}] Received presence update:`, update));
       
       // Check if this is a group presence update
       if (update.id && update.id.endsWith('@g.us')) {
