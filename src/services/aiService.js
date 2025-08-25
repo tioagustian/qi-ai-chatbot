@@ -22,6 +22,13 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1/models';
 const TOGETHER_API_URL = 'https://api.together.xyz/v1/chat/completions';
 
+// API Provider constants
+const API_PROVIDERS = {
+  OPENROUTER: 'openrouter',
+  GEMINI: 'gemini',
+  TOGETHER: 'together'
+};
+
 // List of models that support tool/function calling
 const TOOL_SUPPORTED_MODELS = [
   // Meta Llama models
