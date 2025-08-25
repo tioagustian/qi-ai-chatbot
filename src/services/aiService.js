@@ -12,9 +12,10 @@ import {
 } from './personalityService.js';
 import { logApiRequest } from './apiLogService.js';
 import { requestNvidiaChat } from './aiRequest.js';
-import fetchUrlContent from '../tools/fetchUrlContent.js';
-import { searchWeb } from '../tools/searchWeb.js';
-import { getSteamGameData, searchSteamGames, getSteamDeals } from '../tools/steamDBTools.js';
+import fetchUrlContent from '../utils/fetchUrlContentUtils.js';
+import { searchWeb } from '../utils/searchWebUtils.js';
+import { getSteamGameData, searchSteamGames, getSteamDeals } from '../utils/steamDBUtils.js';
+import { getTools as getToolsFromRegistry, handleToolCall as handleToolCallFromRegistry } from '../tools/toolsRegistry.js';
 
 // Constants for API URLs
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -327,7 +328,7 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
             stream: false,
             tools: TOOL_SUPPORTED_MODELS.some(model => 
               config.model.toLowerCase().includes(model.toLowerCase())
-            ) ? getTools() : null // Pass tools to Gemini if supported
+            ) ? await getTools() : null // Pass tools to Gemini if supported
           }
         );
         
@@ -395,7 +396,7 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
             stream: false,
             tools: TOOL_SUPPORTED_MODELS.some(model => 
               config.model.toLowerCase().includes(model.toLowerCase())
-            ) ? getTools() : null // Pass tools to Together API if supported
+            ) ? await getTools() : null // Pass tools to Together API if supported
           }
         );
         
@@ -504,7 +505,7 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
                 stream: false,
                 tools: TOOL_SUPPORTED_MODELS.some(model => 
                   config.model.toLowerCase().includes(model.toLowerCase())
-                ) ? getTools() : null // Pass tools to NVIDIA API if supported
+                ) ? await getTools() : null // Pass tools to NVIDIA API if supported
               }
             );
             
@@ -621,7 +622,7 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
                     max_tokens: 1000,
                     tools: TOOL_SUPPORTED_MODELS.some(model => 
                       config.model.toLowerCase().includes(model.toLowerCase())
-                    ) ? getTools() : null // Pass tools to Gemini fallback if supported
+                    ) ? await getTools() : null // Pass tools to Gemini fallback if supported
                   }
                 );
                 
@@ -702,14 +703,14 @@ async function generateAIResponseLegacy(message, context, botData, senderName = 
         config.model.toLowerCase().includes(model.toLowerCase())
       )) {
         logger.debug('Model supports tools, adding tool options');
-        requestBody.tools = getTools();
+        requestBody.tools = await getTools();
         requestBody.tool_choice = 'auto';
         
         logger.debug('Request payload', {
           model: config.model,
           messageCount: messages.length,
           temperature: 0.7,
-          tools_count: getTools().length,
+          tools_count: (await getTools()).length,
           tools_enabled: true
         });
       } else {
@@ -1245,109 +1246,12 @@ function createSystemMessage(config, state, batchAnalysis = null) {
   return systemMessage;
 }
 
-// Get tools that can be called by the AI (replacing getFunctions)
-function getTools() {
-  return [
-    {
-      type: "function",
-      function: {
-        name: "get_current_time",
-        description: "Get the current time and date",
-        parameters: {
-          type: "object",
-          properties: {},
-          required: []
-        }
-      }
-    },
-    {
-      type: "function",
-      function: {
-        name: "search_web",
-        description: "Search the web for current information on any topic",
-        parameters: {
-          type: "object",
-          properties: {
-            query: {
-              type: "string",
-              description: "The search query to look up information about"
-            }
-          },
-          required: ["query"]
-        }
-      }
-    },
-    {
-      type: "function",
-      function: {
-        name: "fetch_url_content",
-        description: "Fetch and extract the main content from a URL",
-        parameters: {
-          type: "object",
-          properties: {
-            url: {
-              type: "string",
-              description: "The URL to fetch content from (must be a valid HTTP or HTTPS URL)"
-            },
-            user_query: {
-              type: "string",
-              description: "The user's original question or request that led to fetching this URL (optional, helps make the summary more relevant)"
-            }
-          },
-          required: ["url"]
-        }
-      }
-    },
-    {
-      type: "function",
-      function: {
-        name: "get_steam_game_data",
-        description: "Get detailed information about a specific game from SteamDB including player count, price, metadata, and update history",
-        parameters: {
-          type: "object",
-          properties: {
-            app_id: {
-              type: "string",
-              description: "The Steam App ID of the game to look up (a numeric identifier)"
-            }
-          },
-          required: ["app_id"]
-        }
-      }
-    },
-    {
-      type: "function",
-      function: {
-        name: "search_steam_games",
-        description: "Search for games on SteamDB by name",
-        parameters: {
-          type: "object",
-          properties: {
-            query: {
-              type: "string",
-              description: "The name or partial name of the game to search for"
-            }
-          },
-          required: ["query"]
-        }
-      }
-    },
-    {
-      type: "function",
-      function: {
-        name: "get_steam_deals",
-        description: "Get the latest deals, top sellers, and new releases from the Steam store",
-        parameters: {
-          type: "object",
-          properties: {},
-          required: []
-        }
-      }
-    }
-  ];
+// Get tools that can be called by the AI (using tools registry)
+async function getTools() {
+  return await getToolsFromRegistry();
 }
 
-// Handle tool calls (replacing handleFunctionCall)
+// Handle tool calls (using tools registry with legacy support)
 async function handleToolCall(functionCall) {
   const { name, arguments: args } = functionCall;
   console.log(`Handling tool call: ${name}`);
@@ -1356,21 +1260,8 @@ async function handleToolCall(functionCall) {
     const parsedArgs = typeof args === 'string' ? JSON.parse(args) : args;
     const db = getDb();
     
+    // Handle legacy mood/personality tools that are not in the registry
     switch (name) {
-      case 'get_current_time':
-        const now = new Date();
-        const options = { 
-          weekday: 'long', 
-          year: 'numeric', 
-          month: 'long', 
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit'
-        };
-        const result = `Sekarang ${now.toLocaleDateString('id-ID', options)}`;
-        console.log(`Tool ${name} returned: ${result}`);
-        return result;
-        
       case 'get_mood_info':
         const currentMood = db.data.state.currentMood;
         const currentPersonality = db.data.config.personality;
@@ -1415,100 +1306,9 @@ async function handleToolCall(functionCall) {
         console.log(`Tool ${name} returned list of personalities`);
         return personalitiesResult;
         
-      case 'search_web':
-        if (!parsedArgs.query) {
-          console.log(`Tool ${name} failed: Missing query parameter`);
-          return 'Error: Missing query parameter. Please provide a search query.';
-        }
-        
-        console.log(`Tool ${name} executing with query: ${parsedArgs.query}`);
-        const searchResult = await searchWeb(parsedArgs.query);
-        
-        if (!searchResult.success) {
-          console.log(`Tool ${name} failed: ${searchResult.error}`);
-          return `Error mencari: ${searchResult.message}`;
-        }
-        
-        console.log(`Tool ${name} returned ${searchResult.results?.length || 0} results`);
-        return searchResult.message;
-        
-      case 'fetch_url_content':
-        if (!parsedArgs.url) {
-          console.log(`Tool ${name} failed: Missing url parameter`);
-          return 'Error: Missing url parameter. Please provide a valid URL.';
-        }
-        
-        console.log(`Tool ${name} executing with URL: ${parsedArgs.url}`);
-        // Pass the original user query to the fetchUrlContent function
-        const userQuery = parsedArgs.user_query || parsedArgs.query || '';
-        const contentResult = await fetchUrlContent(parsedArgs.url, { userQuery });
-        
-        if (!contentResult.success) {
-          console.log(`Tool ${name} failed: ${contentResult.error}`);
-          return `Error mengambil konten URL: ${contentResult.message}`;
-        }
-        
-        console.log(`Tool ${name} successfully fetched content from URL`);
-        return contentResult.message;
-        
-      case 'get_steam_game_data':
-        if (!parsedArgs.app_id) {
-          console.log(`Tool ${name} failed: Missing app_id parameter`);
-          return 'Error: Missing app_id parameter. Please provide a valid Steam App ID.';
-        }
-        
-        console.log(`Tool ${name} executing with app_id: ${parsedArgs.app_id}`);
-        // Pass useAI option to enable AI enhancement by default
-        const steamGameDataResult = await getSteamGameData(parsedArgs.app_id, { useAI: true });
-        
-        if (!steamGameDataResult.success) {
-          console.log(`Tool ${name} failed: ${steamGameDataResult.error}`);
-          return `Error getting Steam game data: ${steamGameDataResult.message || steamGameDataResult.error || 'Unknown error'}`;
-        }
-        
-        console.log(`Tool ${name} successfully fetched Steam game data`);
-        // Ensure we have a message to return
-        return steamGameDataResult.message || 
-               `Information about Steam App ID ${parsedArgs.app_id}: ${steamGameDataResult.gameInfo?.title || 'Game information'}\n\nView on Steam: https://store.steampowered.com/app/${parsedArgs.app_id}/`;
-        
-      case 'search_steam_games':
-        if (!parsedArgs.query) {
-          console.log(`Tool ${name} failed: Missing query parameter`);
-          return 'Error: Missing query parameter. Please provide a search query.';
-        }
-        
-        console.log(`Tool ${name} executing with query: ${parsedArgs.query}`);
-        // Pass useAI option to enable AI enhancement by default
-        const steamGamesResult = await searchSteamGames(parsedArgs.query, { useAI: true });
-        
-        if (!steamGamesResult.success) {
-          console.log(`Tool ${name} failed: ${steamGamesResult.error}`);
-          return `Error searching Steam games: ${steamGamesResult.message || steamGamesResult.error || 'Unknown error'}`;
-        }
-        
-        console.log(`Tool ${name} returned ${steamGamesResult.results?.length || 0} results`);
-        // Ensure we have a message to return
-        return steamGamesResult.message || 
-               `Search results for "${parsedArgs.query}" on Steam: Found ${steamGamesResult.results?.length || 0} games`;
-        
-      case 'get_steam_deals':
-        console.log(`Tool ${name} executing`);
-        // Pass useAI option to enable AI enhancement by default
-        const steamDealsResult = await getSteamDeals({ useAI: true });
-        
-        if (!steamDealsResult.success) {
-          console.log(`Tool ${name} failed: ${steamDealsResult.error}`);
-          return `Error getting Steam deals: ${steamDealsResult.message || steamDealsResult.error || 'Unknown error'}`;
-        }
-        
-        console.log(`Tool ${name} successfully fetched Steam deals`);
-        // Ensure we have a message to return
-        return steamDealsResult.message || 
-               `Current Steam Deals: Found ${steamDealsResult.specials?.length || 0} special offers and ${steamDealsResult.topSellers?.length || 0} top sellers`;
-        
       default:
-        console.log(`Unknown tool: ${name}`);
-        return `Error: Tool "${name}" tidak tersedia.`;
+        // Use the tools registry for all other tools
+        return await handleToolCallFromRegistry(functionCall);
     }
   } catch (error) {
     console.error(`Error handling tool call ${name}:`, error);

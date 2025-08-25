@@ -1,6 +1,6 @@
 import axios from 'axios';
-import { logger } from '../utils/logger.js';
-import fetchUrlContent from './fetchUrlContent.js';
+import { logger } from './logger.js';
+import fetchUrlContent from './fetchUrlContentUtils.js';
 import { requestGeminiChat } from '../services/aiRequest.js';
 
 /**
@@ -161,7 +161,7 @@ async function searchWeb(query) {
       const fetchContentWithSharedBrowser = async (url, options = {}) => {
         try {
           // Create a customized version of fetchUrlContent that uses our shared browser
-          const { default: fetchUrlContentOriginal } = await import('./fetchUrlContent.js');
+          const { default: fetchUrlContentOriginal } = await import('./fetchUrlContentUtils.js');
           
           // Get browser from our parent scope
           const sharedBrowser = browser;

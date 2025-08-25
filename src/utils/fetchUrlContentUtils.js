@@ -1,5 +1,5 @@
 import { requestGeminiChat } from '../services/aiRequest.js';
-import { logger } from '../utils/logger.js';
+import { logger } from './logger.js';
 
 // Function to fetch and extract content from a URL
 async function fetchUrlContent(url, options = {}) {

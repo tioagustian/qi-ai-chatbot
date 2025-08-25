@@ -10,6 +10,7 @@ import chalk from 'chalk';
 import { getBatchStatus, forceProcessBatch, getGroupPresenceStats, processGroupMessageBatch, GROUP_BATCH_CONFIG } from './messageBatchingService.js';
 import { searchFacts, getFactStatistics, getFactSuggestions } from './factSearchService.js';
 import { advancedFactSearch, searchByTaxonomy, getFactInsights } from './advancedFactSearchService.js';
+import { listAllTools, getRegistryStatus, enableTool, disableTool, enableAllTools, disableAllTools, enableToolsByCategory, disableToolsByCategory, getToolCategories, getToolsRegistry } from '../tools/toolsRegistry.js';
 
 // Get current directory
 const __filename = fileURLToPath(import.meta.url);
@@ -347,6 +348,167 @@ async function executeCommand(sock, message, commandData, db) {
               } catch (error) {
                 console.error('Error in taxonomy search command:', error);
                 return '❌ Terjadi kesalahan saat mencari berdasarkan taksonomi.';
+              }
+              
+            case 'tools':
+            case 'listtools':
+              try {
+                const tools = await listAllTools();
+                const status = await getRegistryStatus();
+                
+                if (tools.length === 0) {
+                  return '❌ Tidak ada tool yang tersedia.';
+                }
+                
+                let response = `🛠️ *Daftar Tools (${status.enabledTools}/${status.totalTools} aktif)*\n\n`;
+                
+                // Group tools by category
+                const toolsByCategory = {};
+                tools.forEach(tool => {
+                  if (!toolsByCategory[tool.category]) {
+                    toolsByCategory[tool.category] = [];
+                  }
+                  toolsByCategory[tool.category].push(tool);
+                });
+                
+                // Display tools by category
+                for (const [category, categoryTools] of Object.entries(toolsByCategory)) {
+                  response += `*${category.toUpperCase()}*\n`;
+                  categoryTools.forEach(tool => {
+                    const status = tool.enabled ? '✅' : '❌';
+                    response += `${status} ${tool.name}\n`;
+                    if (tool.description && tool.description !== 'No description available') {
+                      response += `   ${tool.description.substring(0, 60)}${tool.description.length > 60 ? '...' : ''}\n`;
+                    }
+                  });
+                  response += '\n';
+                }
+                
+                response += `*Commands:*\n`;
+                response += `!enabletool [nama] - Aktifkan tool\n`;
+                response += `!disabletool [nama] - Nonaktifkan tool\n`;
+                response += `!enablecategory [kategori] - Aktifkan semua tool dalam kategori\n`;
+                response += `!disablecategory [kategori] - Nonaktifkan semua tool dalam kategori\n`;
+                response += `!toolstatus - Status detail tools\n`;
+                
+                return response;
+              } catch (error) {
+                console.error('Error listing tools:', error);
+                return '❌ Terjadi kesalahan saat menampilkan daftar tools.';
+              }
+              
+            case 'enabletool':
+              if (args.length === 0) {
+                return 'Gunakan format: !enabletool [nama_tool]\nContoh: !enabletool searchWebTool\n\nGunakan !tools untuk melihat daftar tools yang tersedia.';
+              }
+              try {
+                const toolName = args[0];
+                const result = await enableTool(toolName);
+                return result.message;
+              } catch (error) {
+                console.error('Error enabling tool:', error);
+                return '❌ Terjadi kesalahan saat mengaktifkan tool.';
+              }
+              
+            case 'disabletool':
+              if (args.length === 0) {
+                return 'Gunakan format: !disabletool [nama_tool]\nContoh: !disabletool searchWebTool\n\nGunakan !tools untuk melihat daftar tools yang tersedia.';
+              }
+              try {
+                const toolName = args[0];
+                const result = await disableTool(toolName);
+                return result.message;
+              } catch (error) {
+                console.error('Error disabling tool:', error);
+                return '❌ Terjadi kesalahan saat menonaktifkan tool.';
+              }
+              
+            case 'enablecategory':
+              if (args.length === 0) {
+                try {
+                  const categories = await getToolCategories();
+                  return `Gunakan format: !enablecategory [kategori]\nContoh: !enablecategory search\n\nKategori yang tersedia: ${categories.join(', ')}`;
+                } catch (error) {
+                  return 'Gunakan format: !enablecategory [kategori]\nContoh: !enablecategory search';
+                }
+              }
+              try {
+                const category = args[0];
+                const result = await enableToolsByCategory(category);
+                return result.message;
+              } catch (error) {
+                console.error('Error enabling category:', error);
+                return '❌ Terjadi kesalahan saat mengaktifkan kategori tools.';
+              }
+              
+            case 'disablecategory':
+              if (args.length === 0) {
+                try {
+                  const categories = await getToolCategories();
+                  return `Gunakan format: !disablecategory [kategori]\nContoh: !disablecategory search\n\nKategori yang tersedia: ${categories.join(', ')}`;
+                } catch (error) {
+                  return 'Gunakan format: !disablecategory [kategori]\nContoh: !disablecategory search';
+                }
+              }
+              try {
+                const category = args[0];
+                const result = await disableToolsByCategory(category);
+                return result.message;
+              } catch (error) {
+                console.error('Error disabling category:', error);
+                return '❌ Terjadi kesalahan saat menonaktifkan kategori tools.';
+              }
+              
+            case 'enablealltools':
+              try {
+                const result = await enableAllTools();
+                return result.message;
+              } catch (error) {
+                console.error('Error enabling all tools:', error);
+                return '❌ Terjadi kesalahan saat mengaktifkan semua tools.';
+              }
+              
+            case 'disablealltools':
+              try {
+                const result = await disableAllTools();
+                return result.message;
+              } catch (error) {
+                console.error('Error disabling all tools:', error);
+                return '❌ Terjadi kesalahan saat menonaktifkan semua tools.';
+              }
+              
+            case 'toolstatus':
+              try {
+                const status = await getRegistryStatus();
+                const categories = await getToolCategories();
+                const toolsRegistry = await getToolsRegistry();
+                
+                let response = `📊 *Tool Status*\n\n`;
+                response += `Total Tools: ${status.totalTools}\n`;
+                response += `Aktif: ${status.enabledTools}\n`;
+                response += `Nonaktif: ${status.disabledTools}\n\n`;
+                
+                response += `*Kategori:*\n`;
+                categories.forEach(category => {
+                  const categoryTools = Object.values(toolsRegistry).filter(tool => tool.category === category);
+                  const enabledInCategory = categoryTools.filter(tool => tool.enabled);
+                  response += `• ${category}: ${enabledInCategory.length}/${categoryTools.length}\n`;
+                });
+                
+                if (status.disabledTools > 0) {
+                  response += `\n*Tools Nonaktif:*\n`;
+                  status.disabledToolNames.slice(0, 5).forEach(tool => {
+                    response += `• ${tool}\n`;
+                  });
+                  if (status.disabledToolNames.length > 5) {
+                    response += `• ... dan ${status.disabledToolNames.length - 5} lainnya\n`;
+                  }
+                }
+                
+                return response;
+              } catch (error) {
+                console.error('Error getting tool status:', error);
+                return '❌ Terjadi kesalahan saat mengambil status tools.';
               }
         
       case 'removemood':
@@ -908,6 +1070,16 @@ function getHelpText() {
 !advancedsearch [query] - Pencarian lanjutan dengan analisis hubungan
 !factinsights - Analisis fakta lanjutan dan statistik
 !taxonomysearch [category] [query] - Pencarian berdasarkan kategori taksonomi
+
+*Manajemen Tools:*
+!tools - Menampilkan daftar semua tools dengan status
+!enabletool [nama] - Mengaktifkan tool tertentu
+!disabletool [nama] - Menonaktifkan tool tertentu
+!enablecategory [kategori] - Mengaktifkan semua tool dalam kategori
+!disablecategory [kategori] - Menonaktifkan semua tool dalam kategori
+!enablealltools - Mengaktifkan semua tools
+!disablealltools - Menonaktifkan semua tools
+!toolstatus - Menampilkan status detail tools
 
 Gunakan !help [perintah] untuk bantuan lebih detail tentang perintah tertentu.`;
 }

@@ -28,7 +28,9 @@ const defaultData = {
     enhancedMemoryEnabled: process.env.ENHANCED_MEMORY_ENABLED !== 'false',
     dynamicFactExtractionEnabled: process.env.DYNAMIC_FACT_EXTRACTION_ENABLED !== 'false',
     apiLoggingEnabled: process.env.API_LOGGING_ENABLED !== 'false',
-    apiLogRetentionDays: parseInt(process.env.API_LOG_RETENTION_DAYS || 7)
+    apiLogRetentionDays: parseInt(process.env.API_LOG_RETENTION_DAYS || 7),
+    // Tool settings
+    toolSettings: {}
   },
   state: {
     currentMood: process.env.DEFAULT_MOOD || 'happy',
@@ -166,6 +168,11 @@ function ensureDataStructure() {
   
   if (db.data.config.apiLogRetentionDays === undefined) {
     db.data.config.apiLogRetentionDays = parseInt(process.env.API_LOG_RETENTION_DAYS || 7);
+  }
+  
+  // Add tool settings
+  if (db.data.config.toolSettings === undefined) {
+    db.data.config.toolSettings = {};
   }
   
   // Ensure existing conversations have the updated structure

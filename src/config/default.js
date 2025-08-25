@@ -35,6 +35,11 @@ const defaultConfig = {
   // System settings
   debugMode: true, // Enable detailed debug logging
   apiLogRetentionDays: 7, // Number of days to keep API logs
+  
+  // Tool management settings
+  toolManagementEnabled: true, // Enable tool management features
+  defaultToolSettings: {}, // Default tool enable/disable settings
+  autoLoadTools: true, // Automatically load tools on startup
 };
 
 export default defaultConfig; 
